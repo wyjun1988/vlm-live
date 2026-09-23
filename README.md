@@ -51,6 +51,9 @@ python -m pytest tests -q
 
 ## GPU 머신에서
 
+> **단계별 런북: [`docs/RUNBOOK.md`](docs/RUNBOOK.md)** — 설치부터 학습·평가까지 복붙 가능한 순서.
+> 실모델 경로는 아직 한 번도 안 돌았으니 싸게 실패하는 순서대로 가는 게 낫다.
+
 ```bash
 pip install -r requirements.txt
 # 1) 기하 인코더 어댑터를 실제 체크포인트로 검증 (형상·지연 실측)
@@ -126,6 +129,7 @@ OVO-S-Bench 저자 보고: 스트리밍/공간 특화 변형 **15개 중 13개�
 - `docs/RESEARCH_NOTES.md` — 2026-09 시점 기술 조사 (모델·벤치·데이터 비교표 + 출처)
 - `docs/DATA.md` — 무엇을 받아야 하나
 - `docs/BENCHMARKS.md` — 벤치·지연 지표·채택 게이트
+- `docs/RUNBOOK.md` — GPU 머신 단계별 실행
 
 ## 라이선스
 Apache-2.0. 참조 구현(SpatialStack, VLM-3R, CUT3R, Anchor3R, LingBot-Map, Qwen3.5)도 모두 호환.

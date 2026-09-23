@@ -10,7 +10,7 @@
 Qwen3.5-4B 스펙 (HF 모델카드):
 - hidden 2560, 32 layers, vocab 248,320
 - **하이브리드 어텐션**: Gated Attention(Q16/KV4, head_dim 256) + **Gated DeltaNet**(V32/QK16, head_dim 128)
-- sparse MoE
+- **dense** (MoE 아님 — 0.8B/2B/4B 전부 dense. MoE 는 상위 판본)
 - Thinking(기본) / Instruct(non-thinking) 모드
 
 > **이게 왜 중요한가**: Gated DeltaNet 계열 레이어는 **선형 어텐션 = 상태 크기 고정**이다.

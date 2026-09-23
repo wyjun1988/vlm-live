@@ -38,7 +38,11 @@ logger = logging.getLogger(__name__)
 
 
 class GeomCache:
-    """비디오 id → GeomOutput 리스트. 같은 영상이 여러 QA 에 쓰일 때만 이득."""
+    """(영상, 프레임인덱스) → GeomOutput 리스트.
+
+    ⚠️ 키를 영상만으로 잡으면 안 된다 — 프레임 샘플링에 jitter 가 있어 같은 영상이라도
+    에폭마다 다른 프레임을 본다. 잘못된 키는 **다른 샘플의 기하 토큰을 조용히 먹인다**.
+    """
 
     def __init__(self, capacity: int = 32) -> None:
         self.capacity = capacity
@@ -106,6 +110,15 @@ def train(args) -> int:
     model = model.to(device)
     if cfg.geometry.freeze:
         model.geometry.eval()
+    if args.grad_checkpointing:
+        # 4B + 16프레임이면 활성화 메모리가 병목이다. 인코더는 no_grad 라 영향 없음.
+        base = model.base
+        if hasattr(base, "gradient_checkpointing_enable"):
+            base.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
+            base.config.use_cache = False
+            logger.info("gradient checkpointing 켬")
+        else:
+            logger.warning("gradient_checkpointing_enable 이 없다 — 건너뜀")
 
     ds = SpatialVQADataset(
         ann_path=args.ann,
@@ -137,7 +150,7 @@ def train(args) -> int:
 
     for epoch in range(args.epochs):
         for i, batch in enumerate(dl):
-            key = batch.get("data_source", "") + str(batch["input_ids"].shape)
+            key = batch["cache_key"]
             geom_outs = cache.get(key) if cache else None
             if geom_outs is None:
                 geom_outs = run_geometry(model, batch["geom_frames"], device)
@@ -209,7 +222,9 @@ def main() -> int:
     ap.add_argument("--frame-mode", default="uniform", choices=["uniform", "fps", "prefix"])
     ap.add_argument("--vlm-short-side", type=int, default=224)
     ap.add_argument("--workers", type=int, default=4)
-    ap.add_argument("--geom-cache", type=int, default=0, help="LRU 용량 (0=끔)")
+    ap.add_argument("--geom-cache", type=int, default=0,
+                    help="LRU 용량 (0=끔). 키는 영상+프레임인덱스라 같은 코호트 재사용에만 걸린다")
+    ap.add_argument("--grad-checkpointing", action="store_true")
     ap.add_argument("--log-every", type=int, default=10)
     ap.add_argument("--save-every", type=int, default=500)
     ap.add_argument("--device", default=None)
