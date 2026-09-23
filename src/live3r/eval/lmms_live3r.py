@@ -64,6 +64,13 @@ class Live3R(_Qwen3_5Base):
         config: str | None = None,
         weights: str | None = None,
         auto_geometry: bool = True,
+        streaming: bool = False,
+        selector: str = "halving",
+        keyframe_budget: int = 32,
+        geom_stride: int = 3,
+        stream_mode: str = "deferred",
+        vlm_short_side: int = 224,
+        enable_thinking: bool = False,
         **kwargs,
     ) -> None:
         from ..config import Live3RConfig
@@ -73,7 +80,17 @@ class Live3R(_Qwen3_5Base):
         if config is None:
             raise ValueError("model_args 에 config=<live3r yaml> 이 필요하다")
         cfg = Live3RConfig.from_yaml(config)
-        super().__init__(pretrained=pretrained or cfg.base_model, **kwargs)
+        # thinking 은 전부 끈다 (사내 기준선 73.3 도 off. docs/DIRECTION_20260923.md)
+        super().__init__(
+            pretrained=pretrained or cfg.base_model, enable_thinking=enable_thinking, **kwargs
+        )
+        self.streaming = bool(streaming)
+        self.selector_name = selector
+        self.keyframe_budget = int(keyframe_budget)
+        self.geom_stride = int(geom_stride)
+        self.stream_mode = stream_mode
+        self.vlm_short_side = int(vlm_short_side)
+        self.stream_reports: list[dict] = []
 
         # 상위 클래스가 이미 올려둔 베이스 모델을 그대로 감싼다 (두 번 로드하지 않는다)
         live = Live3RModel(cfg, self._model)
@@ -81,8 +98,12 @@ class Live3R(_Qwen3_5Base):
 
         if cfg.lora.enabled:
             live = apply_lora(live, cfg.lora)
-        if auto_geometry:
+        if auto_geometry and not self.streaming:
             live.enable_auto_geometry()   # LoRA 적용 뒤에 걸어야 한다 (base 가 래핑되므로)
+        elif self.streaming:
+            # 스트리밍에서는 자동 기하를 쓰면 안 된다 — 그건 키프레임 픽셀만 보고 기하를
+            # 다시 계산하는 것이라, 전 구간을 먹은 스트리밍 상태를 버리는 셈이 된다.
+            logger.info("스트리밍 모드 — auto_geometry 비활성 (기하는 StreamingSession 이 관리)")
         else:
             logger.warning("auto_geometry=False — 기하 주입 없이 베이스 VLM 으로 평가한다")
 
@@ -102,6 +123,83 @@ class Live3R(_Qwen3_5Base):
     @property
     def model(self):
         return self._model
+
+    def generate_until(self, requests):
+        if not self.streaming:
+            return super().generate_until(requests)
+        return _streaming_generate(self, requests)
+
+
+def _streaming_generate(self, requests):
+    """스트리밍 제약 하에서 답한다. 프레임은 시간순 1패스, 총 길이는 보지 않는다.
+
+    부모의 generate_until 을 쓰지 않는 유일한 경로다 — 부모는 _probe_video_metadata 로
+    **총 프레임 수를 먼저 조회**해서 균등 샘플링한다. 그게 정확히 우리가 금지한 것이다.
+    """
+    import torch
+    from tqdm import tqdm
+
+    from .streaming import SELECTORS, CausalVideoFeed, StreamingAudit, StreamingSession
+
+    live, tok = self.live3r, self.tokenizer
+    results = []
+    for req in tqdm(requests, disable=(self.rank != 0), desc="Streaming"):
+        context, gen_kwargs, doc_to_visual, doc_id, task, split = req.args
+        visuals = doc_to_visual(self.task_dict[task][split][doc_id])
+        video = next((v for v in (visuals or []) if isinstance(v, str)), None)
+        if video is None:
+            raise ValueError(f"스트리밍 평가는 영상 태스크 전용이다 (doc {doc_id})")
+
+        sel_cls = SELECTORS[self.selector_name]
+        sel = sel_cls(self.keyframe_budget)
+        audit = StreamingAudit()
+        sess = StreamingSession(
+            live, sel, geom_stride=self.geom_stride, vlm_short_side=self.vlm_short_side,
+            mode=self.stream_mode, device=live.base.device, audit=audit,
+        )
+        sess.consume(CausalVideoFeed(video, audit))
+        pre = sess.prefill()
+
+        ids, mm = _build_stream_prompt(self, pre, context.replace("<image>", "").strip())
+        mask = live.visual_pos_mask(ids)
+        gk = self._build_generate_kwargs(gen_kwargs)
+        with torch.no_grad(), live.injector.primed(pre["geometry"].embeds, mask):
+            out = live.base.generate(
+                input_ids=ids, attention_mask=torch.ones_like(ids), mm_token_type_ids=mm,
+                pixel_values_videos=pre["pixel_values_videos"],
+                video_grid_thw=pre["video_grid_thw"], **gk,
+            )
+        ans = tok.decode(out[0, ids.shape[1]:], skip_special_tokens=True)
+        for term in gen_kwargs.get("until", []) or []:
+            if term:
+                ans = ans.split(term)[0]
+        results.append(self._strip_thinking(ans))
+        self.stream_reports.append(sess.report(strict=True) | {"doc_id": doc_id})
+    return results
+
+
+def _build_stream_prompt(self, pre, question: str):
+    """Qwen3.5 비디오 규약(프레임마다 별도 vision 세그먼트)으로 프롬프트를 만든다."""
+    import torch
+
+    from ..data.collate import Live3RCollator
+
+    tok = self.tokenizer
+    grid = pre["video_grid_thw"]
+    n_patches = int(grid[0, 0])
+    per_patch = pre["n_visual_tokens"] // max(1, n_patches)
+    col = Live3RCollator(self.processor, self.live3r.vision_patch,
+                         self.live3r.temporal_patch, self.live3r.spatial_merge)
+    body = col.build_video_prompt(n_patches, per_patch)
+    prompt = tok.apply_chat_template(
+        [{"role": "user", "content": body + "\n" + question}],
+        tokenize=False, add_generation_prompt=True,
+    )
+    ids = tok(prompt, return_tensors="pt", add_special_tokens=False).input_ids.to(
+        self.live3r.base.device
+    )
+    vid = tok.convert_tokens_to_ids(col.video_token)
+    return ids, (ids == vid).long() * 2
 
 
 def _load_trained(live, path: str) -> None:

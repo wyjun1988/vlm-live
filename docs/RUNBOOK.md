@@ -158,6 +158,36 @@ PYTHONPATH=src python -m live3r.train.train \
 
 ---
 
+## 6.5 스트리밍 VSI 평가 — **지금 가장 먼저 재야 할 것**
+
+학습 전에도 잰다. 학습 안 한 베이스라인 점수가 있어야 이후 변화가 해석된다.
+
+```bash
+# 라이브 제약 하에서 (기본: halving 선택기, 키프레임 32, 기하 10fps)
+bash scripts/run_streaming_eval.sh configs/live3r_4b.yaml "" outputs/stream_base
+
+# 오프라인 상한선 (⚠️ 총 길이를 보므로 라이브 점수가 아니다. 하니스가 표시한다)
+SELECTOR=uniform_oracle bash scripts/run_streaming_eval.sh configs/live3r_4b.yaml "" outputs/stream_oracle
+
+# 선택기 성질만 빠르게 (모델 불필요, 10초)
+PYTHONPATH=src python scripts/bench_selectors.py
+```
+
+**두 숫자의 차이가 "미래를 보는 균등 샘플링을 잃은 비용"이다.** 3.3점 예산 중 손실 ②에 해당한다.
+이게 크면 선택기를 손보고, 작으면 기하 인코더(손실 ①)에 예산을 몰아준다.
+
+노브:
+| 환경변수 | 기본 | 의미 |
+|---|---|---|
+| `SELECTOR` | `halving` | `halving` / `reservoir` / `stride` / `uniform_oracle`(라이브 아님) |
+| `BUDGET` | 32 | LLM 이 볼 키프레임 수 |
+| `GEOM_STRIDE` | 3 | 기하 인제스트 간격 (30fps ÷ 3 = 10fps) |
+
+하니스가 강제하는 제약(위반 시 예외): 시간순 1패스 · 상수 기하 상태 ·
+**총 길이 조회 금지** · 토큰 예산 · 질문 후 재인코딩 금지.
+
+---
+
 ## 7. 평가
 
 ```bash

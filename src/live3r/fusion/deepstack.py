@@ -35,8 +35,12 @@ class DeepStackInjector:
         self._handles: list[torch.utils.hooks.RemovableHandle] = []
         self._embeds: list[torch.Tensor] | None = None
         self._mask: torch.Tensor | None = None
-        #: 훅이 실제로 몇 번 불렸는지 — 조용한 미주입을 잡는 계측
+        #: 훅이 실제로 주입한 횟수 — 조용한 미주입을 잡는 계측
         self.hit_count = 0
+        #: 프리필이 아닌 forward(=디코딩 스텝)라 건너뛴 횟수.
+        #: generate() 는 프리필 1회 + 디코딩 N회를 부른다. 디코딩 스텝에는 비전 토큰이
+        #: 아예 없으므로 주입할 것도 없다. 숨기지 않고 센다.
+        self.skip_count = 0
 
     # --------------------------------------------------------------- lifecycle
     def attach(self) -> "DeepStackInjector":
@@ -87,10 +91,10 @@ class DeepStackInjector:
                 return output
             mask = self._mask.to(hidden.device)
             if mask.shape[:2] != hidden.shape[:2]:
-                raise RuntimeError(
-                    f"비전 위치 마스크 {tuple(mask.shape)} 가 히든 {tuple(hidden.shape[:2])} 과 안 맞는다. "
-                    "증분 디코딩이면 이번 스텝의 토큰 구간 기준으로 만들어야 한다."
-                )
+                # generate() 의 디코딩 스텝 — 새 토큰 1개뿐이라 비전 위치가 없다.
+                # 여기서 예외를 던지면 생성이 통째로 막히므로 세고 넘어간다.
+                self.skip_count += 1
+                return output
             n_pos = int(mask.sum().item())
             if n_pos != emb.shape[0]:
                 raise RuntimeError(
