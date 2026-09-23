@@ -1,0 +1,24 @@
+Loading weights:   0%|          | 0/473 [00:00<?, ?it/s]Loading weights: 100%|██████████| 473/473 [00:00<00:00, 6959.97it/s]
+Warning, cannot find cuda-compiled version of RoPE2D, using a slow pytorch version instead
+Warning, cannot find cuda-compiled version of RoPE2D, using a slow pytorch version instead
+가중치 로드: 28/28 텐서
+대조 가중치 로드: 28 텐서 (outputs/m2_s1_control/final.pt)
+  50 샘플
+
+홀드아웃 94 샘플 · 가중치 outputs/m2_s1_pilot/final.pt
+  loss[real    ] = 0.9277 ± 0.1702
+  loss[shuffled] = 0.9020 ± 0.1677
+  loss[none    ] = 2.4927 ± 0.5094
+  shuffled − real = -0.0257 ± 0.0465   (양수여야 '내용'을 쓴다)
+  none − real     = +1.5650 ± 0.4674
+  real 이 shuffled 보다 나은 샘플 비율 = 50.0%
+  대조군이 같은 격자 모양이었던 비율 = 72.3% (낮으면 판정에 격자 모양 차이가 섞인다 — n 을 늘려라)
+
+대조 프로젝터 (다른 샘플의 기하로 학습) — outputs/m2_s1_control/final.pt
+  loss[대조·shuffled] = 0.8865 ± 0.1694   (학습 조건 그대로)
+  loss[대조·real]     = 0.8980 ± 0.1685
+  기하 내용의 가치 = 대조·shuffled − real = -0.0411 ± 0.0518   (양수여야 가치 있음)
+  real 이 대조군보다 나은 샘플 비율 = 44.7%
+  대조 판정: 대조군과 구분 안 됨 — 이 규모에서 기하 내용의 가치가 보이지 않는다
+
+판정: 기하를 신호로만 쓴다 — 내용은 무시 (none 보다는 낫지만 shuffled 와 구분 안 됨)

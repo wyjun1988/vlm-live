@@ -40,7 +40,7 @@
 ### E. 게이트 (사전 등록 — 사용자 결정)
 | | 태스크 | 기준 | 용량 |
 |---|---|---|---|
-| 1. 공간 | `vsibench` | Δ ≥ +1.0 | 5.7 GB |
+| 1. 공간 | `vsibench` | Δ ≥ +1.0 — **기준선 = 베이스의 최선 형식** (이미지·비디오 모드 중 높은 쪽, 09-24 결정) | 5.7 GB |
 | 2. 일반 | **`videomme`** | Δ ≥ −1.0 | **101 GB** (서버 여유 1TB 확인 → 원래 게이트 유지) |
 | 참고 | `mmstar` | 판정 안 함, 보고만 | 0.1 GB |
 | 3. 지연 | `bench_latency.py` | drift < 1.2, ingest p95 예산 내 | — |
@@ -62,14 +62,15 @@
 실가중치 결과: 우리 입력 경로 = 공식 경로 (4B bf16 로짓 Δ **0.0**) · zero-init 주입은 베이스와 로짓 Δ 0.0 ·
 **VSI 키프레임 선택 비용 없음** (4B · 영상 60개 1,151문항: halving 49.9 vs 오라클 48.6, Δ 95% [−1.7, +4.9]) ·
 **베이스 4B VSI ≈ 50** (비디오 모드, 부분집합 — 73.3 까지 ~23점) · 4B 지연 모드 TTFT 의 94% 가 시각 프리필
-(질문만 TTFT 는 M2 에서도 0.41초) · **게이트 1 교란 발견** (아래 10-2 의 ⚠️).
+(질문만 TTFT 는 M2 에서도 0.41초) · **게이트 1 교란 발견 → 기준선을 베이스의 최선 형식으로** (10-2).
 
 **S1 파일럿 (0.8B + 실제 CUT3R · Sensenova 1k 미리보기 905건 · 114스텝)**: 학습은 깨끗하게 돌았다
 (주입 비율 < 1, 손실 1.7 → 0.7). 그런데 절제 판정은 **"기하를 신호로만 쓴다"** — 홀드아웃에서
 none 2.49 → real 0.93 이지만 **shuffled 0.90 ≈ real**. 생성해 보면 프로젝터가 배운 건 Sensenova 의
 **답 형식**(`C. the right`, 짧은 `yes`)과 답 분포였다 (베이스는 `A`, `Let's break this down…`).
-주입 경로가 기하와 무관한 소프트 프롬프트처럼 쓰인 것. 서버 규모에서 내용이 쓰이기 시작할지는
-9단계가 판정한다.
+주입 경로가 기하와 무관한 소프트 프롬프트처럼 쓰인 것. **대조 프로젝터**(같은 설정, 다른 샘플의 기하로 학습)도
+학습 곡선이 겹치고 홀드아웃 0.887 (진짜 쪽 0.928) — **기하 내용의 가치 −0.04 ± 0.05, 구분 안 됨.**
+서버 규모에서 내용이 쓰이기 시작할지는 8-2(대조 S1) · 9단계가 판정한다.
 
 로컬 검증: 테스트 90개(공식 프로세서·실제 Qwen3.5 토크나이저 대조 포함), 가짜 Sensenova 로
 S1 → S2(LoRA+checkpointing) → DDP 2프로세스 end-to-end, 실제 mp4 로 평가 3경로
@@ -246,6 +247,27 @@ PYTHONPATH=src torchrun --nproc_per_node 8 -m live3r.train.train \
 
 유효 배치 = 8 × 16 = 128. S1 은 프로젝터만 학습한다(LLM 동결). S2(LoRA)는 S1 결과를 보고 정한다.
 
+### 8-2. 대조 프로젝터 — 같은 S1 을 **다른 샘플의 기하**로 (09-24 결정)
+
+M2 파일럿에서 진짜 기하로 학습한 프로젝터가 기하 내용이 아니라 **답 형식**을 배웠다 (F 절). 주입 경로 자체가
+소프트 프롬프트처럼 학습되기 때문이다. 그래서 같은 데이터·스텝·시드로 **내용만 틀린 기하**를 주는 대조
+프로젝터를 나란히 학습한다 — 기하 없이 배울 수 있는 것(형식·분포)은 대조군도 다 배운다. 9단계에서 둘의
+홀드아웃 손실 차이가 **기하 내용의 가치**다.
+
+```bash
+PYTHONPATH=src torchrun --nproc_per_node 8 -m live3r.train.train \
+  --config configs/live3r_4b.yaml --base-model /group-volume/wooyeol/models/Qwen3.5-4B \
+  --geometry-checkpoint checkpoints/cut3r_512_dpt_4_64.pth --cut3r-repo third_party/CUT3R \
+  --stage align --ann data/sensenova.jsonl --media-root data/sensenova_media \
+  --output outputs/4b_s1_control --epochs 1 --lr 3e-5 --grad-accum 16 --log-every 20 --save-every 500 \
+  --grad-checkpointing --geom-control shuffled 2>&1 | tee outputs/4b_s1_control.log
+```
+
+8단계와 **옵션이 `--geom-control shuffled` 와 출력 경로만 다르다** (시드·데이터·스텝 동일해야 비교가 된다).
+로그 첫머리에 "대조 프로젝터 모드", 끝에 "같은 격자 기증자 N%" 가 찍힌다.
+GPU 를 나눠 두 S1 을 동시에 돌려도 된다 — 4장씩이면 `--grad-accum 32` 로 유효 배치 128 을 맞춘다
+(시드가 같으면 스텝마다 같은 샘플 묶음을 본다). S1 이 오래 걸리면 두 쪽 모두 같은 `--max-steps` 로 줄여라.
+
 > ⚠️ **lr 은 3e-5** 다 (예전 문서의 1e-3 아님). M2 에서 실데이터로 재보니 lr 1e-3 은 10스텝 만에
 > 레이어 0 의 주입 비율(`inj L0`)이 **15~30** 이 된다 — 기하 신호가 비전 표현을 수십 배로 덮는다.
 > LLaVA 식 프로젝터(비전 토큰을 **대체**)의 lr 관례를 **더하는** 구조에 그대로 쓰면 안 된다.
@@ -262,10 +284,14 @@ PYTHONPATH=src torchrun --nproc_per_node 8 -m live3r.train.train \
 PYTHONPATH=src python scripts/eval_geometry_ablation.py \
   --config configs/live3r_4b.yaml --base-model /group-volume/wooyeol/models/Qwen3.5-4B \
   --geometry-checkpoint checkpoints/cut3r_512_dpt_4_64.pth --cut3r-repo third_party/CUT3R \
-  --weights outputs/4b_s1/final.pt --stage align \
+  --weights outputs/4b_s1/final.pt --control-weights outputs/4b_s1_control/final.pt --stage align \
   --ann data/sensenova.holdout.jsonl --media-root data/sensenova_media --n 300 \
   --out outputs/4b_s1_ablation.json
 ```
+
+`--control-weights` 를 주면 같은 샘플·같은 기증자로 대조 프로젝터도 잰다:
+**기하 내용의 가치 = loss[대조·shuffled] − loss[real]** (95% 하한 > 0 이면 "가치 있다").
+이게 S2 로 넘어갈지의 1순위 판정이다 — 아래 real/shuffled/none 비교는 진짜 기하 프로젝터 안에서의 의존도.
 
 - `shuffled − real > 0` (95% 하한이 양수) → 기하의 **내용**을 쓴다 → S2 진행
 - `none − real > 0` 인데 shuffled 와 구분 안 됨 → 기하를 "신호"로만 쓴다 → S2 전에 원인을 본다
@@ -321,11 +347,9 @@ BASE_MODEL=/group-volume/wooyeol/models/Qwen3.5-4B TASKS=vsibench,videomme,mmsta
 # 스트리밍 (라이브 제약) vs 오프라인 오라클 — 이 둘의 차이가 '키프레임 선택 비용'
 bash scripts/run_streaming_eval.sh configs/live3r_4b.yaml "" outputs/stream_base
 SELECTOR=uniform_oracle bash scripts/run_streaming_eval.sh configs/live3r_4b.yaml "" outputs/stream_oracle
-
-# 같은 오라클을 비디오 모드로 — 게이트 1 기준선을 정할 재료 (10-2 의 ⚠️)
-VISUAL_MODE=video SELECTOR=uniform_oracle \
-  bash scripts/run_streaming_eval.sh configs/live3r_4b.yaml "" outputs/stream_oracle_video
 ```
+
+게이트 1 기준선용 **베이스 비디오 모드** 점수는 10-2 의 `run_gate.sh` 가 직접 잰다.
 
 ### 10-2. 게이트 — S1(또는 S2) 결과가 나오면
 
@@ -338,12 +362,14 @@ BASE_MODEL=/group-volume/wooyeol/models/Qwen3.5-4B \
 공간(vsibench) Δ ≥ +1.0 · 일반(videomme) Δ ≥ −1.0. MMStar 는 같이 재서 보고만 한다.
 대표 지표: vsibench → `vsibench_overall`, videomme → `videomme_perception_score`, mmstar → `average`.
 
-> ⚠️ **게이트 1 교란 (M2 실측 — 기준선 결정 대기 중)**: 베이스는 키프레임을 **이미지로** 받으면 VSI 답 형식을
-> 자주 어긴다 — 4B 에서 66% (선택형에 `"To determine..."` 으로 시작해 16토큰에서 잘려 0점). 같은 키프레임을
-> 비디오 모드로 주면 25%. 그래서 이미지 모드 베이스 점수가 비디오 모드보다 크게 낮고(4B 스모크 24 vs 41),
-> 학습이 공간 이해 없이 **"짧게 답하는 법"만 배워도** +1.0 을 넘을 수 있다. 기준선을 베이스의
-> **최선 형식**으로 바꿀지 정하는 중이니, 판정 출력과 함께 10-1 의 비디오 모드 오라클 점수를 보내달라.
-> 9단계 절제 평가는 이 교란에 안전하다 (다른 샘플의 기하도 같은 프로젝터를 지나 형식 효과가 양쪽에 똑같이 든다).
+> **게이트 1 기준선 = 베이스의 최선 형식** (09-24 결정): 베이스는 키프레임을 **이미지로** 받으면 VSI 답 형식을
+> 자주 어긴다 — M2 4B 영상 60개: **이미지 모드 24.7 vs 비디오 모드 48.6**, 선택형 4종은 **전부 0점**
+> (답이 전부 `"To determine..."`·`"Based on..."` 로 시작해 16토큰에서 잘린다). 같은 경로 비교만 하면
+> 학습이 공간 이해 없이 **"짧게 답하는 법"만 배워도** +1.0 을 넘는다. 그래서 `run_gate.sh` 는 베이스를
+> 3번 잰다: [1/3] 이미지 모드(전 태스크) · **[2/3] 비디오 모드(vsibench 만)** · [3/3] 학습 결과(이미지 모드).
+> `check_gate.py --base-alt video=...` 가 공간 게이트의 기준선으로 **높은 쪽**을 쓰고 출력에
+> `↳ 게이트1 기준선 = 베이스 최선 형식: 기본 X · video Y → ...` 로 표시한다. VideoMME 는 같은 경로 비교 그대로.
+> 베이스 실행은 `use_geometry=False` (zero-init 이라 출력이 같고 CUT3R 을 안 돌려 빠르다).
 
 **보내줄 것**: 10-1 의 VSI·VideoMME·MMStar 점수와 스트리밍/오라클 VSI, 10-2 의 판정 출력 전체.
 
@@ -360,7 +386,8 @@ BASE_MODEL=/group-volume/wooyeol/models/Qwen3.5-4B \
 [5] CUT3R: hidden_size, grid_hw, ms/frame, drift
 [6] smoke B: loss, inj, geom ms
 [7] DDP: sync OK?, samp/s → 1에폭 예상 시간
-[9] (S1 후) 절제: real / shuffled / none 손실, 판정, 같은 격자 비율
-[10-1] 베이스라인: VSI(오프라인) / VideoMME / MMStar / VSI(스트리밍) / VSI(오라클) / VSI(오라클·비디오 모드)
-[10-2] 게이트: check_gate.py 출력
+[8] S1 · 대조 S1: 마지막 loss·inj, 대조 로그 끝의 '같은 격자 기증자' 비율
+[9] (S1 후) 절제: real / shuffled / none / 대조·shuffled 손실, **기하 내용의 가치**, 두 판정, 같은 격자 비율
+[10-1] 베이스라인: VSI(오프라인) / VideoMME / MMStar / VSI(스트리밍) / VSI(오라클)
+[10-2] 게이트: check_gate.py 출력 전체 (기준선 줄 포함)
 ```

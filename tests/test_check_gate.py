@@ -104,3 +104,40 @@ def test_unknown_task_warns_and_explicit_metric_works(tmp_path):
         "--spatial", "foo", "--metric", "foo=b",
     )
     assert code == 0
+
+
+def _run_alt(tmp_path, base, trained, alt, *extra):
+    _write(tmp_path / "v", alt)
+    return _run(tmp_path, base, trained, "--base-alt", f"video={tmp_path / 'v'}", *extra)
+
+
+def test_best_format_baseline_blocks_format_only_gain(tmp_path):
+    """베이스가 이미지 모드에서 형식 실패로 낮으면, 형식만 배운 학습이 같은 경로 비교로는 통과한다.
+    기준선을 베이스의 최선 형식(비디오 모드)으로 잡으면 막힌다 (2026-09-24 결정, M2 실측 교란)."""
+    base = {"vsibench": vsi(0.24), "videomme": vmme(60.0)}          # 이미지 모드: 형식 실패로 낮다
+    trained = {"vsibench": vsi(0.45), "videomme": vmme(60.0)}       # 형식을 배워 크게 오름
+    code, out = _run(tmp_path / "same", base, trained)
+    assert code == 0, "같은 경로 비교로는 통과해야 한다 (교란 재현)"
+    code, out = _run_alt(tmp_path / "best", base, trained, {"vsibench": vsi(0.49)})
+    assert code == 1 and "기준선 video 49.00" in out and "-4.00" in out
+
+
+def test_best_format_baseline_passes_real_gain(tmp_path):
+    code, out = _run_alt(tmp_path, {"vsibench": vsi(0.24), "videomme": vmme(60.0)},
+                         {"vsibench": vsi(0.51), "videomme": vmme(59.5)}, {"vsibench": vsi(0.49)})
+    assert code == 0 and "+2.00" in out and "베이스 최선 형식" in out
+
+
+def test_best_format_uses_image_when_it_is_higher(tmp_path):
+    """후보가 더 낮으면 기본(이미지 모드) 기준선 그대로."""
+    code, out = _run_alt(tmp_path, {"vsibench": vsi(0.50), "videomme": vmme(60.0)},
+                         {"vsibench": vsi(0.52), "videomme": vmme(60.0)}, {"vsibench": vsi(0.40)})
+    assert code == 0 and "기준선 기본 50.00" in out
+
+
+def test_best_format_applies_only_to_spatial(tmp_path):
+    """일반 게이트(VideoMME)는 결정대로 같은 경로 비교 — 후보가 있어도 기준선을 바꾸지 않는다."""
+    code, out = _run_alt(tmp_path, {"vsibench": vsi(0.50), "videomme": vmme(55.0)},
+                         {"vsibench": vsi(0.52), "videomme": vmme(55.0)},
+                         {"vsibench": vsi(0.40), "videomme": vmme(65.0)})
+    assert code == 0

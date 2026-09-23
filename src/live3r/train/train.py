@@ -30,7 +30,7 @@ import logging
 import math
 import os
 import time
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from pathlib import Path
 
 import torch
@@ -95,6 +95,46 @@ class GeomCache:
         self._d.move_to_end(key)
         while len(self._d) > self.capacity:
             self._d.popitem(last=False)
+
+
+class GeomDonors:
+    """대조 프로젝터 학습용 — 이 샘플의 기하 대신 **최근의 다른 샘플의 기하**를 준다.
+
+    M2 파일럿(2026-09-24): 진짜 기하로 학습한 프로젝터가 기하 내용이 아니라 답 형식·분포를 배웠다
+    (절제 판정 "신호로만 쓴다"). 주입 경로 자체가 학습 가능한 소프트 프롬프트라서다. 그래서 같은 데이터·
+    스텝·시드로 **내용만 틀린 기하**를 주고 대조 프로젝터를 학습한다 — 기하 없이 주입 경로로 배울 수 있는
+    것(형식·분포)은 대조군도 전부 배운다. 두 프로젝터의 홀드아웃 손실 차이 = **기하 내용의 가치**.
+
+    기증자 규칙은 절제 평가(`eval_geometry_ablation.py`)와 같다: 같은 격자 모양을 우선하고
+    (모양 차이가 신호로 섞이지 않게), 이미지 수가 다르면 순환한다. 자기 기하(같은 이미지 세트)는
+    절대 주지 않는다. 첫 샘플도 기증자가 있도록 학습 전에 `prime()` 으로 채워둔다 — S1 은 프로젝터만
+    학습하므로 주입이 없는 샘플은 손실에 학습 파라미터가 없어 backward 가 안 된다.
+    """
+
+    def __init__(self, capacity: int = 8) -> None:
+        self.recent: deque = deque(maxlen=capacity)
+        self.total = self.no_donor = self.same_shape = 0
+
+    def prime(self, key, geo: list) -> None:
+        self.recent.append((key, tuple(g.grid_hw for g in geo), geo))
+
+    def swap(self, key, geo: list) -> list | None:
+        shape = tuple(g.grid_hw for g in geo)
+        cands = [(k, sh, g) for k, sh, g in reversed(self.recent) if k != key]
+        same = [g for _, sh, g in cands if sh == shape]
+        donor = same[0] if same else (cands[0][2] if cands else None)
+        self.recent.append((key, shape, geo))
+        self.total += 1
+        if donor is None:
+            self.no_donor += 1
+            return None
+        self.same_shape += bool(same)
+        return [donor[s % len(donor)] for s in range(len(geo))]
+
+    def summary(self) -> str:
+        n = max(1, self.total - self.no_donor)
+        return (f"대조(shuffled) 기하: {self.total}샘플 · 같은 격자 기증자 {self.same_shape / n:.0%} · "
+                f"기증자 없어 주입 없이 {self.no_donor}")
 
 
 @torch.no_grad()
@@ -223,10 +263,12 @@ def train(args) -> int:
     if is_main and args.dump_samples:
         dump_samples(ds, prompt, args.dump_samples)
 
+    # 순서는 시드만으로 정한다 — 전역 RNG 를 쓰면 모델 초기화·대조 기증자 준비가 소비한 난수만큼 순서가
+    # 바뀌어, 진짜 기하 / 대조(--geom-control) 두 학습이 다른 순서로 데이터를 보게 된다.
     sampler = (
         DistributedSampler(ds, num_replicas=world, rank=rank, shuffle=True, seed=args.seed)
         if world > 1
-        else RandomSampler(ds)
+        else RandomSampler(ds, generator=torch.Generator().manual_seed(args.seed))
     )
     dl = DataLoader(
         ds,
@@ -260,6 +302,17 @@ def train(args) -> int:
         opt, lambda s: cosine_with_warmup(s, total_steps, warmup)
     )
     cache = GeomCache(args.geom_cache) if args.geom_cache else None
+    donors = GeomDonors() if args.geom_control == "shuffled" else None
+    if donors is not None:  # 데이터 뒤쪽의 서로 다른 샘플 둘로 기증자 버퍼를 채운다
+        for j in range(len(ds) - 1 - rank, -1, -world):
+            if len(donors.recent) >= 2:
+                break
+            try:
+                item = ds.build(j)
+            except Exception:  # noqa: BLE001 — 망가진 레코드는 건너뛴다
+                continue
+            if item.get("geom_frames") and all(k != item["cache_key"] for k, _, _ in donors.recent):
+                donors.prime(item["cache_key"], live.run_geometry(item["geom_frames"]))
 
     out_dir = Path(args.output)
     if is_main:
@@ -268,6 +321,8 @@ def train(args) -> int:
         (out_dir / "config.json").write_text(json.dumps(cfg.to_dict(), indent=2, ensure_ascii=False))
         logger.info("스텝 %d (워밍업 %d) · GPU %d × 누적 %d = 유효 배치 %d · 샘플 %s",
                     total_steps, warmup, world, args.grad_accum, world * args.grad_accum, f"{len(ds):,}")
+        if donors is not None:
+            logger.info("⚠️ 대조 프로젝터 모드 — 각 샘플에 **다른 샘플의 기하**를 준다 (--geom-control shuffled)")
 
     step, micro = 0, 0
     skipped = 0
@@ -292,6 +347,8 @@ def train(args) -> int:
                     geom_outs = live.run_geometry(batch["geom_frames"])
                     if cache:
                         cache.put(batch["cache_key"], geom_outs)
+                if donors is not None:  # 대조 프로젝터: 내용만 틀린 기하 (GeomDonors)
+                    geom_outs = donors.swap(batch["cache_key"], geom_outs)
             t2 = time.perf_counter()
             t_geom += t2 - t1
 
@@ -310,7 +367,7 @@ def train(args) -> int:
                     labels=batch["labels"].to(device),
                     mm_token_type_ids=batch["mm_token_type_ids"].to(device),
                     geom_outs=geom_outs,
-                    llm_grids=batch.get("llm_grids"),
+                    llm_grids=batch.get("llm_grids") if geom_outs is not None else None,
                     pool_temporal=batch.get("pool_temporal", False),
                     keep_primed=True,
                     **pix,
@@ -318,6 +375,10 @@ def train(args) -> int:
                 loss = out.loss
                 if not torch.isfinite(loss):
                     raise FloatingPointError(f"손실이 {loss.item()} — 샘플 id={batch['id']}")
+                if not loss.requires_grad:
+                    raise RuntimeError(
+                        f"학습 파라미터가 손실 경로에 없다 (샘플 id={batch['id']}) — S1 은 프로젝터만 학습하는데 "
+                        "기하 주입이 없는 샘플이다 (텍스트 전용 레코드?). S1 데이터에서 빼거나 S2(LoRA)에서 써라.")
                 (loss / args.grad_accum).backward()
             live.injector.clear()  # 역전파 재계산까지 끝난 뒤에만 비운다
             if device.type == "mps":
@@ -388,6 +449,8 @@ def train(args) -> int:
 
     if is_main:
         _save(live, out_dir / "final.pt")
+        if donors is not None:
+            logger.info(donors.summary())
         logger.info("완료. 건너뛴 샘플 %d (랭크0 기준, 사유는 워커 로그의 '건너뜀' 경고 참고)", skipped)
     if world > 1:
         dist.barrier()
@@ -427,6 +490,9 @@ def main() -> int:
                     help="프로젝터 lr. 1e-3 은 주입이 비전 표현을 수십 배로 압도한다 (M2 실측) — 3e-5 권장")
     ap.add_argument("--inj-warn", type=float, default=3.0,
                     help="레이어별 ‖주입‖/‖비전 히든‖ 이 이 값을 넘으면 경고")
+    ap.add_argument("--geom-control", choices=["none", "shuffled"], default="none",
+                    help="shuffled = 대조 프로젝터: 다른 샘플의 기하로 학습한다 (같은 데이터·시드로 진짜 기하 "
+                         "학습과 나란히 돌려 차이를 기하 내용의 가치로 본다. GeomDonors 참고)")
     ap.add_argument("--weight-decay", type=float, default=0.0)
     ap.add_argument("--warmup-ratio", type=float, default=0.03)
     ap.add_argument("--grad-accum", type=int, default=16)

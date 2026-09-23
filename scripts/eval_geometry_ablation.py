@@ -12,6 +12,13 @@
     real ≈ shuffled < none   기하를 "뭔가 들어왔다" 신호로만 쓴다 (내용 무시)
     real ≈ none              기하가 무시된다
 
+대조 프로젝터 (`--control-weights`, 학습은 `train --geom-control shuffled`):
+    같은 데이터·스텝·시드로 **다른 샘플의 기하**를 받으며 학습한 프로젝터. 주입 경로로 기하 없이 배울 수
+    있는 것(답 형식·분포 — M2 파일럿에서 진짜 기하 프로젝터가 배운 게 이것뿐이었다)은 대조군도 다 배운다.
+    같은 샘플·같은 기증자로 대조군을 학습 조건 그대로(shuffled) 재서
+
+        기하 내용의 가치 = loss[대조·shuffled] − loss[real]   (95% 하한 > 0 이면 가치 있음)
+
     PYTHONPATH=src python scripts/eval_geometry_ablation.py \\
         --config configs/live3r_4b.yaml --base-model /path/Qwen3.5-4B \\
         --geometry-checkpoint checkpoints/cut3r_512_dpt_4_64.pth --cut3r-repo third_party/CUT3R \\
@@ -70,6 +77,8 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", required=True)
     ap.add_argument("--weights", default=None, help="학습 결과 (없으면 zero-init = 베이스 동작)")
+    ap.add_argument("--control-weights", default=None,
+                    help="대조 프로젝터 (train --geom-control shuffled 결과) — 같은 샘플·기증자로 비교한다")
     ap.add_argument("--stage", choices=["align", "sft"], default="align",
                     help="sft 면 LoRA 를 얹은 뒤 가중치를 로드한다 (학습 때와 같은 구조)")
     ap.add_argument("--ann", required=True, help="홀드아웃 어노테이션")
@@ -106,6 +115,21 @@ def main() -> int:
         model = build_model(ns, cfg, True)
     model.to(device).eval()
 
+    # 대조 프로젝터: 학습 파라미터만 갈아 끼운다 (베이스·기하 인코더는 같다)
+    states = None
+    if args.control_weights:
+        main_state = {k: v.to(device) for k, v in model.trainable_state_dict().items()}  # 사본
+        ctrl = torch.load(args.control_weights, map_location="cpu")
+        missing = [k for k in main_state if k not in ctrl]
+        if missing:
+            raise SystemExit(f"대조 가중치에 {len(missing)}개 텐서가 없다 (예: {missing[:2]}) — 같은 구조로 학습했나?")
+        states = {"main": main_state, "control": {k: ctrl[k].to(device) for k in main_state}}
+        print(f"대조 가중치 로드: {len(main_state)} 텐서 ({args.control_weights})")
+
+    def use(which: str) -> None:
+        if states is not None:
+            model.load_state_dict(states[which], strict=False)
+
     prompt = PromptBuilder.from_model(model)
     ds = SpatialVQADataset(args.ann, args.media_root, prompt, model.spec,
                            geom_long_side=cfg.geometry.image_size,
@@ -136,12 +160,18 @@ def main() -> int:
             continue
         n_same += bool(same)
         shuffled = [other[s % len(other)] for s in range(len(geo))]
-        rows.append({
+        row = {
             "id": item["id"],
             "real": loss_of(model, item, device, geo),
             "shuffled": loss_of(model, item, device, shuffled),
             "none": loss_of(model, item, device, None),
-        })
+        }
+        if states is not None:  # 같은 샘플·같은 기증자로 대조 프로젝터
+            use("control")
+            row["control_shuffled"] = loss_of(model, item, device, shuffled)
+            row["control_real"] = loss_of(model, item, device, geo)
+            use("main")
+        rows.append(row)
         if len(rows) % 50 == 0:
             print(f"  {len(rows)} 샘플", flush=True)
 
@@ -164,6 +194,26 @@ def main() -> int:
     print(f"  대조군이 같은 격자 모양이었던 비율 = {n_same / len(rows):.1%} "
           "(낮으면 판정에 격자 모양 차이가 섞인다 — n 을 늘려라)")
 
+    control = None
+    if states is not None:
+        cs, cr = mean_ci([r["control_shuffled"] for r in rows]), mean_ci([r["control_real"] for r in rows])
+        d_val = mean_ci([r["control_shuffled"] - r["real"] for r in rows])
+        win_ctrl = sum(r["real"] < r["control_shuffled"] for r in rows) / len(rows)
+        print(f"\n대조 프로젝터 (다른 샘플의 기하로 학습) — {args.control_weights}")
+        print(f"  loss[대조·shuffled] = {cs[0]:.4f} ± {cs[1]:.4f}   (학습 조건 그대로)")
+        print(f"  loss[대조·real]     = {cr[0]:.4f} ± {cr[1]:.4f}")
+        print(f"  기하 내용의 가치 = 대조·shuffled − real = {d_val[0]:+.4f} ± {d_val[1]:.4f}   (양수여야 가치 있음)")
+        print(f"  real 이 대조군보다 나은 샘플 비율 = {win_ctrl:.1%}")
+        if d_val[0] - d_val[1] > 0:
+            cverdict = "진짜 기하로 학습한 쪽이 낫다 — 기하 내용이 가치 있다 (95% 하한 > 0)"
+        elif d_val[0] + d_val[1] < 0:
+            cverdict = "대조군이 더 낫다 — 진짜 기하가 오히려 방해된다"
+        else:
+            cverdict = "대조군과 구분 안 됨 — 이 규모에서 기하 내용의 가치가 보이지 않는다"
+        print(f"  대조 판정: {cverdict}")
+        control = {"loss_control_shuffled": cs, "loss_control_real": cr, "value_of_content": d_val,
+                   "win_rate_vs_control": win_ctrl, "verdict": cverdict}
+
     lo = d_shuf[0] - d_shuf[1]
     if lo > 0:
         verdict = "기하의 내용을 쓴다 (shuffled − real 의 95% 하한 > 0)"
@@ -179,7 +229,7 @@ def main() -> int:
         Path(args.out).write_text(json.dumps(
             {"n": len(rows), "loss": res, "shuffled_minus_real": d_shuf, "none_minus_real": d_none,
              "win_rate_vs_shuffled": win_shuf, "same_shape_rate": n_same / len(rows),
-             "verdict": verdict, "rows": rows}, indent=2,
+             "verdict": verdict, "control": control, "rows": rows}, indent=2,
             ensure_ascii=False))
     return 0
 

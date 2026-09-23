@@ -13,6 +13,9 @@ lmms-eval 의 부모(qwen3_5) 경로는 학습(SenseNova-SI) 분포와 **세 군
 
   * 이미지 → 이미지마다 별도 비전 블록 (학습과 같다)
   * 영상   → 균등 키프레임 N장을 **이미지로** (스트리밍 평가의 기본 visual_mode 와도 같다)
+             `visual_mode="video"` 면 **같은 키프레임**을 Qwen 비디오 모드로 (2프레임=1블록, 타임스탬프).
+             게이트 1 의 "베이스 최선 형식" 기준선용이다 — 베이스는 키프레임을 이미지로 받으면 VSI 답 형식을
+             자주 어긴다 (M2 실측 4B: 이미지 24.7 vs 비디오 48.6). 학습 결과는 이미지 모드(라이브 경로)로만 잰다.
   * 시스템 프롬프트 없음, thinking off, 같은 VisionSpec
   * 기하는 이미지/키프레임 순서대로 스트리밍 인코더에 흘린다 (학습 때와 같은 방식)
 
@@ -30,7 +33,8 @@ import numpy as np
 import torch
 
 from ..data.prompt import PromptBuilder, PromptError
-from ..data.vision import geometry_frame, llm_grid, prepare_image, tokens_per_step
+from ..data.vision import (frame_timestamps, geometry_frame, llm_grid, prepare_image, prepare_video,
+                           tokens_per_step)
 
 _PH = re.compile(r"<image>|<video>")
 VIDEO_EXTS = {".mp4", ".avi", ".mov", ".mkv", ".webm", ".m4v", ".flv", ".mpg", ".mpeg"}
@@ -40,7 +44,7 @@ VIDEO_EXTS = {".mp4", ".avi", ".mov", ".mkv", ".webm", ".m4v", ".flv", ".mpg", "
 class PreparedInput:
     input_ids: torch.Tensor          # [1, L]
     mm_token_type_ids: torch.Tensor  # [1, L]
-    pixel_kwargs: dict               # pixel_values / image_grid_thw (이미지 모드뿐)
+    pixel_kwargs: dict               # pixel_values / image_grid_thw  또는  pixel_values_videos / video_grid_thw
     geometry: object | None          # GeometryBundle
     n_images: int
     frame_indices: list[int] | None = None
@@ -94,6 +98,27 @@ def read_video_frames(path, n: int) -> tuple[np.ndarray, list[int]]:
     return np.stack([out[i] for i in got]), got
 
 
+def video_fps(path) -> float | None:
+    """영상 fps — 비디오 모드 타임스탬프용. 못 읽으면 None."""
+    try:
+        import decord  # type: ignore
+
+        return float(decord.VideoReader(str(path)).get_avg_fps())
+    except ImportError:
+        pass
+    except Exception:  # noqa: BLE001
+        return None
+    try:
+        import av  # type: ignore
+
+        with av.open(str(path)) as c:
+            s = c.streams.video[0]
+            rate = s.average_rate or s.guessed_rate
+            return float(rate) if rate else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def load_visual(v):
     """lmms-eval 의 visual 항목 하나 → PIL/ndarray. 경로면 연다."""
     if isinstance(v, (str, Path)):
@@ -125,18 +150,27 @@ def prepare_inputs(
     visuals: list | None = None,
     frame_indices: list[int] | None = None,
     use_geometry: bool = True,
+    visual_mode: str = "image",
+    fps: float | None = None,
 ) -> PreparedInput:
     """이미지(또는 영상에서 뽑은 키프레임) 리스트 + 질문 → 모델 입력.
 
     Args:
         visuals: PIL / ndarray[H,W,3] / 텐서 이미지 리스트. 영상이면 이미 뽑은 키프레임들.
-        use_geometry: False 면 기하 없이 (베이스라인 확인용)
+        frame_indices: 영상 키프레임이면 원본 프레임 인덱스 (이미지 문항이면 None)
+        use_geometry: False 면 기하 없이 (베이스라인 확인용 — zero-init 이면 출력이 같고 더 빠르다)
+        visual_mode: "image" | "video". video 는 **영상 키프레임에만** 적용된다 (이미지 문항은 그대로)
+        fps: 비디오 모드 타임스탬프용 원본 fps (모르면 30)
     """
+    if visual_mode not in ("image", "video"):
+        raise ValueError(f"visual_mode 는 image | video — 받은 값 {visual_mode!r}")
     visuals = [load_visual(v) for v in (visuals or [])]
     spec = model.spec
     if not visuals:
         ids = prompt.build_query(_PH.sub("", question), [])
         return PreparedInput(ids, torch.zeros_like(ids), {}, None, 0, frame_indices)
+    if visual_mode == "video" and frame_indices is not None:
+        return _prepare_video_keyframes(model, prompt, question, visuals, frame_indices, use_geometry, fps)
 
     vlm = [prepare_image(v, spec) for v in visuals]
     segments = [prompt.image_segment(tokens_per_step(g[0], spec)) for _, g in vlm]
@@ -159,6 +193,31 @@ def prepare_inputs(
             outs, [llm_grid(g, spec) for g in grids], pool_temporal=False
         )
     return PreparedInput(ids, mm, pixel_kwargs, geometry, len(visuals), frame_indices)
+
+
+def _prepare_video_keyframes(model, prompt, question, frames, frame_indices, use_geometry, fps):
+    """같은 키프레임을 Qwen 비디오 모드로 — 스트리밍 세션의 video 경로(`StreamingSession.prefill`)와 같은 구성."""
+    spec = model.spec
+    arr = np.stack([np.asarray(f) for f in frames])                    # [N,H,W,3]
+    pv, grid = prepare_video(arr, spec)
+    stamps = frame_timestamps(frame_indices, float(fps or 30.0), spec.temporal_patch)
+    seg = prompt.video_segment(tokens_per_step(grid[0], spec), stamps)
+    q = _question_with_placeholders(question, 1)
+    try:
+        ids = prompt.build_query(q, [seg])
+    except PromptError:
+        ids = prompt.build_query(_PH.sub("", question), [seg])
+    mm = torch.zeros_like(ids)
+    mm[ids == model.video_token_id] = 2
+    geometry = None
+    if use_geometry and model.injector is not None:
+        unit = getattr(model.geometry, "patch_size", 16)
+        outs = model.run_geometry([geometry_frame(f, model.cfg.geometry.image_size, unit) for f in frames])
+        while len(outs) % spec.temporal_patch:
+            outs.append(outs[-1])  # patchify 가 마지막 프레임을 복제하는 것과 맞춘다
+        geometry = model.build_geometry_embeds(outs, llm_grid(grid[0], spec), pool_temporal=True)
+    return PreparedInput(ids, mm, {"pixel_values_videos": pv, "video_grid_thw": grid}, geometry,
+                         len(frames), frame_indices)
 
 
 @torch.no_grad()

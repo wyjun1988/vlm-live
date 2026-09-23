@@ -64,9 +64,11 @@ class Live3R(_Qwen3_5Base):
         weights: 학습된 프로젝터/LoRA 체크포인트 (.pt). 없으면 zero-init 이라
             **베이스 VLM 과 같은 출력**이 나온다 (같은 경로의 베이스라인).
         eval_path: "live3r"(기본, 학습과 같은 입력) | "lmms"(부모 경로, 참고용)
-        use_geometry: False 면 기하 주입 없이 (음성 대조군)
+        use_geometry: False 면 기하 주입 없이 (음성 대조군. weights 가 없으면 출력이 같고 더 빠르다)
         keyframe_budget: 영상에서 LLM 이 볼 키프레임 수 (오프라인·스트리밍 공통)
-        streaming, selector, geom_stride, stream_mode, visual_mode: 스트리밍 평가 설정
+        visual_mode: 영상 키프레임을 LLM 에 넣는 형식 — "image"(기본, 학습·라이브 경로) | "video".
+            오프라인·스트리밍 공통. video 는 게이트 1 의 "베이스 최선 형식" 기준선을 잴 때 쓴다.
+        streaming, selector, geom_stride, stream_mode: 스트리밍 평가 설정
     """
 
     #: greedy 기본값 — 태스크가 온도를 명시하면 그걸 따른다 (모듈 docstring 참고)
@@ -164,7 +166,7 @@ def _live3r_generate(self, requests) -> list[str]:
     from tqdm import tqdm
 
     from ..data.prompt import PromptBuilder
-    from .consistent import generate, is_video, prepare_inputs, read_video_frames
+    from .consistent import generate, is_video, prepare_inputs, read_video_frames, video_fps
 
     live = self.live3r
     prompt = PromptBuilder.from_model(live, tokenizer=self.tokenizer)
@@ -178,13 +180,16 @@ def _live3r_generate(self, requests) -> list[str]:
         if video is not None and self.streaming:
             ans = _stream_one(self, live, prompt, video, context, gk, doc_id)
         else:
+            mode = getattr(self, "visual_mode", "image")
+            fps = None
             if video is not None:
                 frames, idx = read_video_frames(video, self.keyframe_budget)
                 items, fidx = list(frames), idx
+                fps = video_fps(video) if mode == "video" else None
             else:
                 items, fidx = [v for v in visuals if not is_video(v)], None
             prepared = prepare_inputs(live, prompt, context, items, fidx,
-                                      use_geometry=self.use_geometry)
+                                      use_geometry=self.use_geometry, visual_mode=mode, fps=fps)
             ans = generate(live, prepared, self.tokenizer, **gk)
 
         for term in gen_kwargs.get("until", []) or []:

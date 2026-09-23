@@ -12,6 +12,11 @@
 경로가 다르면 차이에 입력 형식 차이가 섞인다. 베이스 = weights 없이 돌린 것 (zero-init =
 베이스 VLM 과 같은 출력).
 
+게이트 1 기준선 = 베이스의 **최선 형식** (2026-09-24 결정): `--base-alt video=<dir>` 로 같은 베이스를
+비디오 모드로 잰 결과를 주면, 공간 태스크의 기준선은 기본(이미지 모드)과 후보 중 **높은 쪽**이다.
+베이스는 키프레임을 이미지로 받으면 VSI 답 형식을 자주 어긴다 (M2 실측 4B: 이미지 24.7 vs 비디오 48.6, 선택형 전부 0점) — 같은 경로 비교만 하면
+학습이 공간 이해 없이 "짧게 답하는 법"만 배워도 +1.0 을 넘는다. 학습 결과는 이미지 모드(라이브 경로)로만 잰다.
+
 점수 단위: lmms-eval 태스크마다 0~1 이거나 0~100 이다. 두 값이 모두 1 이하면 ×100 해서
 "점" 단위로 맞춘다.
 """
@@ -66,11 +71,20 @@ def main() -> int:
     ap.add_argument("--reference", default="mmstar", help="쉼표 구분. 표시만 하고 판정에는 안 쓴다")
     ap.add_argument("--metric", action="append", default=[],
                     help="태스크별 대표 지표 지정 task=metric (기본: PRIMARY 표. 없으면 첫 지표 + 경고)")
+    ap.add_argument("--base-alt", action="append", default=[], metavar="LABEL=DIR",
+                    help="게이트 1 기준선 후보: 같은 베이스를 다른 입력 형식으로 잰 결과 (예: video=outputs/gate/base_video). "
+                         "공간 태스크의 기준선 = 기본 베이스와 후보 중 가장 높은 점수 (베이스의 최선 형식)")
     ap.add_argument("--min-gain", type=float, default=1.0)
     ap.add_argument("--max-drop", type=float, default=1.0)
     args = ap.parse_args()
 
     base, trained = latest_results(Path(args.base_dir)), latest_results(Path(args.trained_dir))
+    alts = {}
+    for spec in args.base_alt:
+        label, sep, d = spec.partition("=")
+        if not sep:
+            label, d = Path(spec).name, spec
+        alts[label] = latest_results(Path(d))
     chosen = dict(m.split("=", 1) for m in args.metric)
     spatial = [t for t in args.spatial.split(",") if t]
     general = [t for t in args.general.split(",") if t]
@@ -80,6 +94,7 @@ def main() -> int:
     print(f"{'태스크':<22} {'지표':<34} {'베이스':>8} {'학습':>8} {'Δ(점)':>8}")
     print("-" * 86)
     primary: dict[str, float] = {}
+    baseline_note: dict[str, str] = {}
     for task in sorted(set(base) | set(trained)):
         bm, tm = numeric_metrics(base.get(task, {})), numeric_metrics(trained.get(task, {}))
         keys = [k for k in bm if k in tm]
@@ -101,14 +116,27 @@ def main() -> int:
             print(f"{task:<22} {k:<34} {b:8.2f} {t:8.2f} {t - b:+8.2f}{mark}")
             if k == main_key:
                 primary[task] = t - b
+                if task in spatial and alts:  # 게이트 1 기준선 = 베이스의 최선 형식
+                    cands = {"기본": b}
+                    for label, res in alts.items():
+                        am = numeric_metrics(res.get(task, {}))
+                        if main_key in am:
+                            cands[label] = to_points(am[main_key], tm[k])[0]
+                    best = max(cands, key=cands.get)
+                    primary[task] = t - cands[best]
+                    listed = " · ".join(f"{lab} {v:.2f}" for lab, v in cands.items())
+                    baseline_note[task] = f"기준선 {best} {cands[best]:.2f}"
+                    print(f"{'':<22} ↳ 게이트1 기준선 = 베이스 최선 형식: {listed} → {best} {cands[best]:.2f}"
+                          f" · Δ {t - cands[best]:+.2f}")
 
     verdicts = []
     for task in spatial:
         d = primary.get(task)
         ok = d is not None and d >= args.min_gain
         verdicts.append(ok)
+        note = f"{baseline_note[task]} · " if task in baseline_note else ""
         print(f"\n[게이트1 공간] {task}: Δ={d if d is None else f'{d:+.2f}'} "
-              f"(기준 ≥ +{args.min_gain}) → {'통과' if ok else '미달'}")
+              f"({note}기준 ≥ +{args.min_gain}) → {'통과' if ok else '미달'}")
     for task in general:
         d = primary.get(task)
         ok = d is not None and d >= -args.max_drop

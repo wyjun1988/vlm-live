@@ -174,3 +174,68 @@ def test_adapter_loop_oracle_selector_runs_and_is_flagged(live, tmp_path):
     assert len(_live3r_generate(fake, [req])) == 1
     r = fake.stream_reports[0]
     assert r["causal"] is False and any("인과적이지 않다" in v for v in r["violations"])
+
+
+def test_video_fps(tmp_path):
+    from live3r.eval.consistent import video_fps
+
+    vid = tmp_path / "v.mp4"
+    _write_mp4(vid, n=20)  # rate=10
+    assert abs(video_fps(vid) - 10.0) < 0.5
+    assert video_fps(tmp_path / "없음.mp4") is None
+
+
+@needs_tok
+def test_video_mode_keyframes_match_streaming_layout(live):
+    """visual_mode=video — 같은 키프레임을 비디오 블록으로 (게이트 1 의 베이스 최선 형식 기준선용).
+
+    스트리밍 세션의 video 경로와 같은 구성이어야 한다: 2프레임=1 temporal patch, 패치 평균 타임스탬프,
+    기하는 2장 평균, 이미지 문항(frame_indices 없음)은 그대로 이미지 모드.
+    """
+    from live3r.data.prompt import PromptBuilder
+    from live3r.eval.consistent import prepare_inputs
+
+    pb = PromptBuilder.from_model(live)
+    frames = [np.full((240, 320, 3), 20 * i, dtype=np.uint8) for i in range(6)]
+    idx = [0, 10, 20, 30, 40, 50]
+    p = prepare_inputs(live, pb, "How many chairs?", frames, idx, visual_mode="video", fps=10.0)
+    text = pb.tok.decode(p.input_ids[0])
+    assert "pixel_values_videos" in p.pixel_kwargs and "pixel_values" not in p.pixel_kwargs
+    assert int(p.pixel_kwargs["video_grid_thw"][0, 0]) == 3            # 6장 → temporal patch 3개
+    assert "<0.5 seconds>" in text and "<2.5 seconds>" in text and "<4.5 seconds>" in text
+    n_vid = int((p.mm_token_type_ids == 2).sum())
+    assert n_vid > 0 and int((p.mm_token_type_ids == 1).sum()) == 0
+    assert p.geometry.embeds[0].shape[0] == n_vid, "기하 임베딩 수 != 비디오 토큰 수"
+    # 이미지 문항은 visual_mode 와 무관하게 이미지 모드
+    q = prepare_inputs(live, pb, "Which?", frames[:2], None, visual_mode="video")
+    assert "pixel_values" in q.pixel_kwargs and int((q.mm_token_type_ids == 2).sum()) == 0
+
+
+@needs_tok
+def test_adapter_loop_video_mode_offline(live, tmp_path):
+    from live3r.eval.lmms_live3r import _live3r_generate
+
+    vid = tmp_path / "v.mp4"
+    _write_mp4(vid, n=30)
+    seen = {}
+    orig = live.base.generate
+
+    def spy(**kw):
+        seen.update(kw)
+        return orig(**kw)
+
+    live.base.generate = spy
+    try:
+        fake = SimpleNamespace(
+            live3r=live, tokenizer=live.tokenizer, rank=0, streaming=False, use_geometry=False,
+            keyframe_budget=6, visual_mode="video", task_dict={"t": {"test": {0: {"v": str(vid)}}}},
+            _build_generate_kwargs=lambda g: {"max_new_tokens": 3, "do_sample": False},
+            _strip_thinking=lambda a: a,
+        )
+        req = SimpleNamespace(args=("How many chairs?", {}, lambda doc: [doc["v"]], 0, "t", "test"))
+        out = _live3r_generate(fake, [req])
+    finally:
+        live.base.generate = orig
+    assert len(out) == 1
+    assert "pixel_values_videos" in seen and "pixel_values" not in seen
+    assert int(seen["video_grid_thw"][0, 0]) == 3
