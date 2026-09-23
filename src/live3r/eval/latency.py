@@ -160,3 +160,116 @@ def save_report(report: LatencyReport, path: str | Path) -> None:
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps(asdict(report) | {"meets_live_budget": report.meets_live_budget}, indent=2))
+
+
+# --------------------------------------------------------------- 지연 모드 (실제 설계)
+def _sync(device: torch.device) -> None:
+    """GPU 는 비동기라 동기화 없이 재면 시간이 거짓말을 한다."""
+    if device.type == "cuda":
+        torch.cuda.synchronize()
+    elif device.type == "mps":
+        torch.mps.synchronize()
+
+
+@dataclass
+class DeferredReport:
+    label: str
+    device: str
+    frames: int
+    budget: int
+    geom_stride: int
+    geom_frame_ms_p50: float     # 기하 인코더가 도는 프레임의 비용
+    other_frame_ms_p50: float    # 선택기만 도는 프레임의 비용
+    geom_fps_max: float          # 기하 인코더가 낼 수 있는 최대 fps (= 1000 / geom_frame_ms)
+    live_fps_max: float          # 스트림을 실시간으로 따라갈 수 있는 입력 fps (geom_stride 반영)
+    prefill_ms: float            # 질문 도착 → 비전 인코딩 + 기하 임베딩 + LLM 프리필
+    ttft_ms: float               # 질문 도착 → 첫 토큰
+    tpot_ms: float
+    visual_tokens: int
+
+    def pretty(self) -> str:
+        ok_ttft = "OK " if self.ttft_ms < 1000 else "MISS"
+        return "\n".join([
+            f"[{self.label}]  {self.device} · {self.frames}프레임 · 키프레임 {self.budget} · 기하 stride {self.geom_stride}",
+            f"  기하 프레임     {self.geom_frame_ms_p50:8.1f} ms  → 기하 최대 {self.geom_fps_max:5.1f} fps",
+            f"  나머지 프레임   {self.other_frame_ms_p50:8.2f} ms",
+            f"  실시간 추종     입력 {self.live_fps_max:5.1f} fps 까지 — 프레임당 실측 평균 기준 (30fps 웹캠이면 "
+            f"{'가능' if self.live_fps_max >= 30 else '불가 — 기하 stride 를 늘려야 한다'})",
+            f"  [{ok_ttft}] TTFT {self.ttft_ms:8.0f} ms  (프리필 {self.prefill_ms:.0f} ms, 목표 < 1000)",
+            f"  TPOT            {self.tpot_ms:8.1f} ms · 비전 토큰 {self.visual_tokens}",
+        ])
+
+
+@torch.no_grad()
+def benchmark_deferred(
+    model,
+    prompt,
+    n_frames: int = 300,
+    frame_hw: tuple[int, int] = (480, 640),
+    budget: int = 32,
+    geom_stride: int = 3,
+    device: str | torch.device = "cpu",
+    visual_mode: str = "image",
+    question: str = "How many chairs are in this room?",
+    max_new_tokens: int = 16,
+    label: str = "live3r-deferred",
+) -> DeferredReport:
+    """우리 실제 설계(halving 지연 모드)의 지연을 잰다.
+
+    프레임 단계: 기하 인코더는 geom_stride 프레임마다만 돈다 → 그 프레임과 나머지 프레임의 비용을 따로 본다.
+    질문 단계: 모은 키프레임을 비전 인코딩 + 기하 임베딩 + LLM 프리필 → 첫 토큰.
+    """
+    from .streaming import HalvingSelector, StreamingSession
+
+    device = torch.device(device)
+    model = model.to(device).eval()
+    sess = StreamingSession(model, HalvingSelector(budget), geom_stride=geom_stride,
+                            visual_mode=visual_mode, device=device)
+    sess.begin(fps=30.0)
+    h, w = frame_hw
+    g_ms, o_ms, all_ms = [], [], []
+    for i in range(n_frames):
+        raw = torch.randint(0, 255, (h, w, 3), dtype=torch.uint8)
+        calls = sess.audit.geometry_calls
+        _sync(device)
+        t0 = time.perf_counter()
+        sess.push(i, raw)
+        _sync(device)
+        dt = (time.perf_counter() - t0) * 1e3
+        # 프레임 번호가 아니라 **실제로 기하가 돌았는지**로 나눈다 — halving 은 초반에 거의 모든
+        # 프레임을 키프레임으로 받고, 키프레임에서는 stride 와 무관하게 기하가 돈다.
+        (g_ms if sess.audit.geometry_calls > calls else o_ms).append(dt)
+        if i >= 2:
+            all_ms.append(dt)
+    g_ms, o_ms = sorted(g_ms[2:] or g_ms), sorted(o_ms or [0.0])  # 앞 2개는 워밍업
+
+    _sync(device)
+    t0 = time.perf_counter()
+    pre = sess.prefill()
+    ids = prompt.build_query(question, StreamingSession.segments(prompt, pre)).to(device)
+    mm = torch.zeros_like(ids)
+    mm[ids == model.image_token_id] = 1
+    mm[ids == model.video_token_id] = 2
+    kw = dict(input_ids=ids, attention_mask=torch.ones_like(ids), mm_token_type_ids=mm,
+              **{k: v.to(device) for k, v in pre["pixel_kwargs"].items()})
+    with model.injector.primed(pre["geometry"].embeds, model.visual_pos_mask(ids)):
+        out = model.base(**kw, use_cache=True)
+        _sync(device)
+        prefill = (time.perf_counter() - t0) * 1e3
+        nxt = out.logits[:, -1].argmax(-1, keepdim=True)
+        _sync(device)
+        ttft = (time.perf_counter() - t0) * 1e3
+        t1 = time.perf_counter()
+        gen = model.base.generate(**kw, max_new_tokens=max_new_tokens, do_sample=False)
+        _sync(device)
+    n_new = max(1, gen.shape[1] - ids.shape[1])
+    tpot = ((time.perf_counter() - t1) * 1e3 - prefill) / max(1, n_new - 1)
+    gms = g_ms[len(g_ms) // 2]
+    # 실시간 추종: 가정 공식이 아니라 실측 평균 (키프레임 때문에 도는 기하까지 포함)
+    per_frame_avg = sum(all_ms) / max(1, len(all_ms))
+    return DeferredReport(
+        label=label, device=str(device), frames=n_frames, budget=budget, geom_stride=geom_stride,
+        geom_frame_ms_p50=gms, other_frame_ms_p50=o_ms[len(o_ms) // 2],
+        geom_fps_max=1000.0 / max(gms, 1e-6), live_fps_max=1000.0 / max(per_frame_avg, 1e-6),
+        prefill_ms=prefill, ttft_ms=ttft, tpot_ms=max(0.0, tpot), visual_tokens=pre["n_visual_tokens"],
+    )

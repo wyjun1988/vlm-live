@@ -445,31 +445,45 @@ class StreamingSession:
     def consume(self, feed: CausalVideoFeed) -> "StreamingSession":
         """피드를 끝까지 먹는다. 프레임은 시간순 1패스."""
         feed.audit = self.audit
-        self.fps = float(getattr(feed, "fps", None) or 30.0)
-        m = self.model
-        m.geometry.reset()
+        self.begin(fps=getattr(feed, "fps", None))
+        for i, raw in feed.frames():
+            self.push(i, raw, count=False)  # 피드가 이미 frames_seen 을 센다
+        return self
+
+    def begin(self, fps: float | None = None) -> "StreamingSession":
+        """새 스트림 시작 — 상태를 비운다. 여러 세션을 한 디코딩으로 같이 돌릴 때 직접 부른다."""
+        self.fps = float(fps or 30.0)
+        self.model.geometry.reset()
         self.selector.reset()
         self._kept.clear()
-
-        for i, raw in feed.frames():
-            keep, evicted = self.selector.offer(i, raw)
-            run_geom = (i % self.geom_stride == 0) or keep
-            if run_geom:
-                self._last_geom = m.geometry.ingest(self._prep_geom(raw))
-                self.audit.geometry_calls += 1
-                self.audit.geometry_state_bytes.append(m.geometry.state_bytes())
-
-            if evicted is not None:
-                for e in (evicted if isinstance(evicted, (list, tuple, set)) else [evicted]):
-                    if self._kept.pop(e, None) is not None:
-                        self.audit.keyframes_evicted += 1
-            if keep:
-                self._kept[i] = _Kept(i, raw, self._last_geom)
-                self.audit.keyframes_kept += 1
-                self.audit.buffer_peak_frames = max(
-                    self.audit.buffer_peak_frames, len(self._kept)
-                )
+        self._last_geom = None
         return self
+
+    @torch.no_grad()
+    def push(self, i: int, raw: torch.Tensor, count: bool = True) -> None:
+        """프레임 하나 (시간순). consume() 의 한 스텝과 같다.
+
+        같은 영상을 여러 선택기로 비교할 때, 디코딩은 한 번만 하고 각 세션에 push 한다.
+        (각 세션이 피드를 따로 소비하면 영상을 세션 수만큼 다시 디코딩해야 한다.)
+        """
+        m = self.model
+        if count:
+            self.audit.frames_seen += 1
+        keep, evicted = self.selector.offer(i, raw)
+        run_geom = (i % self.geom_stride == 0) or keep
+        if run_geom:
+            self._last_geom = m.geometry.ingest(self._prep_geom(raw))
+            self.audit.geometry_calls += 1
+            self.audit.geometry_state_bytes.append(m.geometry.state_bytes())
+
+        if evicted is not None:
+            for e in (evicted if isinstance(evicted, (list, tuple, set)) else [evicted]):
+                if self._kept.pop(e, None) is not None:
+                    self.audit.keyframes_evicted += 1
+        if keep:
+            self._kept[i] = _Kept(i, raw, self._last_geom)
+            self.audit.keyframes_kept += 1
+            self.audit.buffer_peak_frames = max(self.audit.buffer_peak_frames, len(self._kept))
 
     def _prep_geom(self, raw: torch.Tensor) -> torch.Tensor:
         unit = getattr(self.model.geometry, "patch_size", 16)

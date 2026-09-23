@@ -31,6 +31,13 @@ def main() -> int:
     ap.add_argument("--height", type=int, default=256)
     ap.add_argument("--width", type=int, default=448)
     ap.add_argument("--offline", action="store_true", help="오프라인 재인코딩 대비도 잰다")
+    ap.add_argument("--mode", choices=["incremental", "deferred"], default="incremental",
+                    help="deferred = 실제 설계 (halving 키프레임을 모았다가 질문 시점에 프리필)")
+    ap.add_argument("--budget", type=int, default=32)
+    ap.add_argument("--geom-stride", type=int, default=3)
+    ap.add_argument("--base-model", default=None, help="로컬 경로로 덮어쓰기")
+    ap.add_argument("--geometry-checkpoint", default=None)
+    ap.add_argument("--cut3r-repo", default=None)
     ap.add_argument("--out", default=None)
     args = ap.parse_args()
 
@@ -38,6 +45,12 @@ def main() -> int:
         "cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu")
     )
     cfg = Live3RConfig.from_yaml(args.config)
+    if args.base_model:
+        cfg.base_model = args.base_model
+    if args.geometry_checkpoint:
+        cfg.geometry.checkpoint = args.geometry_checkpoint
+    if args.cut3r_repo:
+        cfg.geometry.options = dict(cfg.geometry.options, repo_path=args.cut3r_repo)
 
     if args.tiny:
         from tiny_model import tiny_model
@@ -51,6 +64,17 @@ def main() -> int:
     else:
         model = Live3RModel.from_pretrained(cfg)
         label = f"{cfg.base_model}+{cfg.geometry.name}"
+
+    if args.mode == "deferred":
+        from live3r.data.prompt import PromptBuilder
+        from live3r.eval.latency import benchmark_deferred
+
+        rep = benchmark_deferred(model, PromptBuilder.from_model(model), n_frames=args.frames,
+                                 frame_hw=(args.height, args.width), budget=args.budget,
+                                 geom_stride=args.geom_stride, device=device, label=label)
+        print()
+        print(rep.pretty())
+        return 0
 
     rep = benchmark_stream(
         model,

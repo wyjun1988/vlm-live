@@ -67,6 +67,15 @@ class LazyJsonl:
     def __len__(self) -> int:
         return len(self.offsets)
 
+    def __getstate__(self):
+        # 파일 핸들은 피클링이 안 된다 — macOS 등 spawn 방식 DataLoader 워커가 데이터셋을
+        # 피클링할 때 터진다 (리눅스 fork 에서는 안 드러난다). 핸들은 빼고, 워커에서 다시 연다.
+        state = self.__dict__.copy()
+        state["_fh"] = None
+        state["_pid"] = None
+        state["offsets"] = np.asarray(self.offsets)  # memmap 도 평범한 배열로 (수 MB)
+        return state
+
     def __getitem__(self, i: int) -> dict:
         import os
 

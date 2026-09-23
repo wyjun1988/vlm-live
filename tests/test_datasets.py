@@ -93,3 +93,20 @@ def test_dataset_builds_image_sequence_sample(tmp_path):
 
     other = ds[1]  # 이미지 누락 → 다른 샘플로 대체되고 재시도 횟수가 실린다
     assert other["retries"] >= 1 and other["id"] == "0"
+
+
+def test_lazy_jsonl_is_picklable_after_use(tmp_path):
+    """macOS 등 spawn 방식 DataLoader 워커는 데이터셋을 피클링한다 — 파일을 연 뒤에도 돼야 한다."""
+    import pickle
+
+    jl = tmp_path / "c.jsonl"
+    offsets = []
+    with open(jl, "wb") as f:
+        for i in range(3):
+            offsets.append(f.tell())
+            f.write(json.dumps({"id": i}).encode() + b"\n")
+    np.save(str(jl) + ".idx.npy", np.asarray(offsets))
+    recs = load_records(jl)
+    assert recs[1]["id"] == 1          # 파일 핸들이 열린다
+    again = pickle.loads(pickle.dumps(recs))
+    assert again[2]["id"] == 2 and len(again) == 3

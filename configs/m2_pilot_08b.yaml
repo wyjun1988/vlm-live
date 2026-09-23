@@ -1,0 +1,30 @@
+# M2 로컬 파일럿 — H100 이 막혔을 때 "기하가 쓰이는가"를 작은 규모로 먼저 본다 (2026-09-24).
+#   데이터: SenseNova-SI 1,000건 미리보기 (학습 905 / 홀드아웃 95)
+#   모델:   Qwen3.5-0.8B (4B 대비 5배 빠름) + 실제 CUT3R 체크포인트
+#   학습:   S1 정렬 — 프로젝터만 (LLM 동결)
+# 체크포인트 경로는 이 머신 기준 (gitignore 된 checkpoints/).
+base_model: checkpoints/qwen3.5-0.8b
+dtype: bf16
+
+geometry:
+  name: cut3r
+  checkpoint: checkpoints/cut3r_512_dpt_4_64.pth
+  tap_layers: [6, 9, 12]
+  hidden_size: 768
+  image_size: 512
+  options:
+    repo_path: .refs/CUT3R
+
+fusion:
+  mode: deepstack
+  inject_layers: [0, 1, 2]
+  merge_size: 2
+  zero_init: true
+
+lora:
+  enabled: false
+
+data:
+  max_pixels: 131072     # 128×32×32 → 이미지당 LLM 토큰 ≤128
+  max_images: 32
+  max_length: 8192
