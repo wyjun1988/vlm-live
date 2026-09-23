@@ -33,9 +33,11 @@ drift 1.08 (프레임당 비용이 스트림 길이에 거의 무관)
 - [x] **맥에서 가중치 없이 도는 엔드투엔드 형상 검증** (`scripts/smoke_test.py`, 19 tests)
 - [x] 지연 하니스 (`scripts/bench_latency.py`)
 - [x] 스케일별 설정 (4B / 2B / 0.8B)
+- [x] 데이터 로더 + 2단계 학습 스크립트 (`src/live3r/data`, `src/live3r/train`)
+- [x] 평가 계획 (`docs/BENCHMARKS.md`) — 채택 게이트 사전 등록
 - [ ] CUT3R 어댑터의 프레임 추론 연결 — **GPU 머신에서 30분 작업** (§막힌 곳)
-- [ ] 데이터 로더 / 학습 스크립트
-- [ ] 평가 (lmms-eval 연동)
+- [ ] lmms-eval 연동 (태스크 어댑터)
+- [ ] 2B / 0.8B 스케일 다운 실측
 
 ## 빠른 시작 (맥, 다운로드 0)
 
@@ -82,6 +84,10 @@ scripts/      setup_env.sh  smoke_test.py  bench_latency.py  verify_geometry_ada
 3. **스트리밍 M-RoPE** — Qwen3.5 는 `rope_deltas` 를 첫 프리필에 고정한다. 그대로 두면
    두 번째 비전 블록부터 3D 위치가 텍스트처럼 붙어 공간 정보가 뭉개진다.
    → `LiveSession` 이 M-RoPE 커서를 직접 관리한다.
+4. **비디오 프롬프트 규약** — Qwen3.5 는 프레임(temporal patch)마다 **별도 vision 세그먼트**를
+   기대한다(`<0.0s><|vision_start|>…<|vision_end|><1.0s>…`). 한 덩어리로 이어붙이면
+   `get_rope_index` 가 grid 를 프레임 수만큼 쪼개 소비하는 것과 어긋난다.
+   학습 콜레이터와 `LiveSession` 이 같은 형식을 쓴다.
 
 ## 막힌 곳 (GPU 머신에서 풀어야 함)
 
@@ -108,6 +114,7 @@ OVO-S-Bench 저자 보고: 스트리밍/공간 특화 변형 **15개 중 13개�
 - `docs/DESIGN.md` — 아키텍처 결정
 - `docs/RESEARCH_NOTES.md` — 2026-09 시점 기술 조사 (모델·벤치·데이터 비교표 + 출처)
 - `docs/DATA.md` — 무엇을 받아야 하나
+- `docs/BENCHMARKS.md` — 벤치·지연 지표·채택 게이트
 
 ## 라이선스
 Apache-2.0. 참조 구현(SpatialStack, VLM-3R, CUT3R, Anchor3R, LingBot-Map, Qwen3.5)도 모두 호환.

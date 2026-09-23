@@ -175,17 +175,36 @@ class LiveSession:
         grid_thw = torch.tensor([[1, gh, gw]], device=self.device)
 
         bundle = m.build_geometry_embeds(self._geom_buf, llm_grid, pool_temporal=True)
-        input_ids = torch.full((1, n_vis), m.video_token_id, dtype=torch.long, device=self.device)
 
-        # M-RoPE: 이 블록의 3D 위치를 모델 자신의 함수로 만든다 (get_rope_index 와 같은 규약)
-        pos = m.base.model.get_vision_position_ids(
-            self.state.mrope_pos, grid_thw[0], 1, sm, device=self.device
-        )  # [3, n_vis]
-        self.state.mrope_pos += max(gh, gw) // sm
+        # Qwen3.5 비디오 규약과 동일하게 vision_start/end 로 감싼다.
+        # 학습(collator)과 추론(여기)의 프롬프트 형식이 다르면 조용히 성능만 깎인다.
+        vs = m.base.config.vision_start_token_id
+        ve = m.base.config.vision_end_token_id
+        input_ids = torch.cat(
+            [
+                torch.tensor([[vs]], dtype=torch.long, device=self.device),
+                torch.full((1, n_vis), m.video_token_id, dtype=torch.long, device=self.device),
+                torch.tensor([[ve]], dtype=torch.long, device=self.device),
+            ],
+            dim=1,
+        )
+
+        # M-RoPE: 텍스트(vision_start) → 비전 블록 → 텍스트(vision_end) 순으로 커서를 굴린다.
+        cur = self.state.mrope_pos
+        pos_start = self._text_positions(cur, 1)                       # [3,1,1]
+        cur += 1
+        pos_vis = m.base.model.get_vision_position_ids(
+            cur, grid_thw[0], 1, sm, device=self.device
+        ).unsqueeze(1)                                                  # [3,1,n_vis]
+        cur += max(gh, gw) // sm
+        pos_end = self._text_positions(cur, 1)
+        cur += 1
+        pos = torch.cat([pos_start, pos_vis, pos_end], dim=2)           # [3,1,n_vis+2]
+        self.state.mrope_pos = cur
         pixel_kwargs = {
             "pixel_values_videos": x,
             "video_grid_thw": grid_thw,
-            "position_ids": pos.unsqueeze(1),  # [3, 1, n_vis]
+            "position_ids": pos,  # [3, 1, n_vis+2]
         }
         return n_vis, bundle, input_ids, pixel_kwargs
 
