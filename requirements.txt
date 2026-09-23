@@ -11,8 +11,12 @@ pillow
 decord               # 비디오 프레임 디코딩 (av 로 대체 가능)
 einops
 
+# CUT3R (기하 인코더) 의존성
+scipy                # dust3r.utils.geometry
+roma                 # 회전 유틸
+
 # 평가
-lmms-eval            # vsibench / mmsibench / videomme 등
+lmms-eval>=0.7.3     # vsibench / mmsi_bench / videomme 등. 자체 의존성을 많이 끌어온다
 
 # 선택
 flash-attn           # CUDA 전용. 맥에서는 설치하지 마라

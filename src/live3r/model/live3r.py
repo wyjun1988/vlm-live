@@ -235,6 +235,74 @@ class Live3RModel(nn.Module):
                 input_ids=input_ids, attention_mask=attention_mask, labels=labels, **kwargs
             )
 
+    # ------------------------------------------------------- 자동 기하 (auto mode)
+    def enable_auto_geometry(self, enabled: bool = True) -> "Live3RModel":
+        """`base.forward` 를 감싸서 기하 인코딩·주입을 **자동으로** 하게 만든다.
+
+        이게 있으면 `base.generate(...)` 를 그냥 부르는 외부 코드(lmms-eval 등)가
+        수정 없이 Live3R 을 쓸 수 있다. 프리필(비디오 픽셀이 들어오는 스텝)에서만
+        기하를 돌리고, 디코딩 스텝에는 비전 토큰이 없으므로 아무것도 하지 않는다.
+
+        **주의**: 이 경로는 VLM 전처리를 마친 픽셀을 기하 인코더에도 재사용한다.
+        CUT3R 과 Qwen3.5 의 정규화가 mean/std=0.5 로 같아서 성립한다 — 다른 인코더를
+        꽂을 때는 정규화를 확인해라. 학습 경로는 프레임을 두 번 전처리하므로 영향 없다.
+        """
+        if not enabled:
+            if getattr(self, "_auto_geom_orig", None) is not None:
+                self.base.forward = self._auto_geom_orig
+                self._auto_geom_orig = None
+            return self
+        if getattr(self, "_auto_geom_orig", None) is not None:
+            return self
+        if self.injector is None:
+            raise RuntimeError("fusion.mode 가 deepstack 이 아니면 자동 기하를 쓸 수 없다")
+
+        self._auto_geom_orig = self.base.forward
+        orig = self._auto_geom_orig
+
+        def wrapped(*args, **kwargs):
+            bundle = self._geometry_from_inputs(kwargs)
+            if bundle is None:
+                return orig(*args, **kwargs)
+            mask = self.visual_pos_mask(kwargs["input_ids"])
+            with self.injector.primed(bundle.embeds, mask):
+                return orig(*args, **kwargs)
+
+        self.base.forward = wrapped
+        return self
+
+    @torch.no_grad()
+    def _geometry_from_inputs(self, kwargs: dict) -> GeometryBundle | None:
+        """프리필 입력에서 프레임을 복원해 기하 토큰을 만든다. 해당 없으면 None."""
+        from ..data.collate import unpack_video_patches
+
+        pvv = kwargs.get("pixel_values_videos")
+        ids = kwargs.get("input_ids")
+        grid = kwargs.get("video_grid_thw")
+        if pvv is None or ids is None or grid is None:
+            return None
+        if not bool(self.visual_pos_mask(ids).any()):
+            return None
+
+        frames = unpack_video_patches(pvv, grid, self.vision_patch, self.temporal_patch)
+        size = self.cfg.geometry.image_size
+        if frames.shape[-1] != size or frames.shape[-2] != size:
+            import torch.nn.functional as F
+
+            gp = getattr(self.geometry, "patch_size", 16)
+            h = max(gp, int(round(size * frames.shape[-2] / max(1, frames.shape[-1]))))
+            h -= h % gp
+            w = size - size % gp
+            frames = F.interpolate(frames.float(), size=(h, w), mode="bilinear",
+                                   align_corners=False).to(pvv.dtype)
+
+        self.geometry.reset()
+        outs = [self.geometry.ingest(frames[t : t + 1]) for t in range(frames.shape[0])]
+        tt, gh, gw = (int(v) for v in grid[0])
+        return self.build_geometry_embeds(
+            outs, (gh // self.spatial_merge, gw // self.spatial_merge), pool_temporal=True
+        )
+
     # ------------------------------------------------------------- 파라미터 관리
     def trainable_parameter_summary(self) -> dict[str, int]:
         total = trainable = 0

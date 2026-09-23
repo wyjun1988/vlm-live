@@ -9,6 +9,9 @@ description = "Streaming 3D-aware VLM: CUT3R-lineage geometry tokens injected in
 requires-python = ">=3.10"
 dependencies = ["torch", "transformers>=5.16", "pyyaml", "numpy"]
 
+[project.entry-points."lmms_eval.models"]
+live3r = "live3r.eval.lmms_live3r:manifest"
+
 [tool.setuptools.packages.find]
 where = ["src"]
 

@@ -3,13 +3,27 @@
 ## 1. 정확도
 
 `lmms-eval` 로 통일한다 (SpatialStack 이 쓰는 것과 같은 태스크명 — 수치 비교가 바로 된다).
+어댑터는 `src/live3r/eval/lmms_live3r.py` (`--model live3r`). lmms-eval 0.7.3 에서
+아래 태스크가 전부 존재하는 것을 확인했다 (`tests/test_lmms_adapter.py` 가 회귀를 막는다).
+
+```bash
+pip install -e .            # entry point 로 live3r 모델이 등록된다
+bash scripts/run_eval.sh configs/live3r_4b.yaml outputs/4b_s2/final.pt outputs/eval_4b
+```
+
+어댑터 설계: lmms-eval 의 `qwen3_5` 모델을 상속해 **로딩만** 바꾼다. 생성 경로는 손대지 않는다 —
+`Live3RModel.enable_auto_geometry()` 가 `base.forward` 를 감싸 기하 인코딩·주입을 자동으로 하므로
+상위 코드는 평범한 Qwen3.5 를 돌린다고 믿으면 된다. 업스트림이 바뀌어도 잘 안 깨진다.
 
 | 태스크 | 역할 | 기준선 |
 |---|---|---|
 | `vsibench` | **주 지표**. 비디오 공간지능 8태스크 | SpatialStack-5B 67.5 (오픈소스 1위) |
-| `mmsibench` | 멀티이미지 공간지능 (ICLR'26) | EASI 리더보드 |
-| `cvbench` | 2D/3D 일반 공간 | SpatialStack 85.5 (3D 92.2) |
-| `blink_spatial`, `sparbench` | 보조 | — |
+| `vsibench_debiased` | 지름길 해법 제거판 — **같이 봐야 한다** | — |
+| `mmsi_bench` | 멀티이미지 공간지능 (ICLR'26) | EASI 리더보드 |
+| `mmsi_video` | 비디오판 | — |
+| `vsisuper`, `revsi` | 장시간·반복 공간 | — |
+| `cv_bench` | 2D/3D 일반 공간 | SpatialStack 85.5 (3D 92.2) |
+| `blink`, `sparbench` | 보조 | — |
 | **`videomme`** | **회귀 게이트** — 일반 비디오 능력 | 베이스 Qwen3.5-4B 자체 |
 
 ## 2. 스트리밍 공간지능 — OVO-S-Bench
