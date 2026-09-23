@@ -55,11 +55,27 @@ def test_single_turn_matches_official_template(tok, pb):
 
 
 def test_generation_prompt_is_thinking_off(tok, pb):
+    """thinking off 는 템플릿 **기본값에 기대지 않고** 명시해야 한다.
+
+    Qwen3.5 템플릿 기본값이 크기마다 반대다 (2026-09-24 실측):
+      0.8B·2B → enable_thinking 미지정이면 꺼짐 / 4B·9B → 미지정이면 **켜짐**
+    PromptBuilder 는 빈 think 블록을 직접 넣으므로 어느 크기든 off 여야 한다.
+    """
     q = pb.build_query("Q?", [])
-    official = tok.apply_chat_template([{"role": "user", "content": "Q?"}],
-                                       tokenize=False, add_generation_prompt=True)
+    official = tok.apply_chat_template([{"role": "user", "content": "Q?"}], tokenize=False,
+                                       add_generation_prompt=True, enable_thinking=False)
     assert tok.decode(q[0]) == official
-    assert official.endswith("<think>\n\n</think>\n\n"), "thinking 이 켜진 템플릿이다"
+    assert official.endswith("<think>\n\n</think>\n\n")
+
+
+def test_builder_does_not_depend_on_template_default(tok, pb):
+    """템플릿 기본값이 on 이든 off 든, 우리 프롬프트는 항상 off 다."""
+    default = tok.apply_chat_template([{"role": "user", "content": "Q?"}], tokenize=False,
+                                      add_generation_prompt=True)
+    ours = tok.decode(pb.build_query("Q?", [])[0])
+    assert ours.endswith("<think>\n\n</think>\n\n")
+    if default.endswith("<think>\n"):  # 4B·9B — 기본이 thinking on
+        assert ours != default
 
 
 def test_labels_cover_only_answers_and_im_end(tok, pb):
@@ -78,7 +94,8 @@ def test_images_match_official_processor(pb, proc):
     msgs = [{"role": "user", "content": [{"type": "image"}, {"type": "text", "text": "A"},
                                          {"type": "image"}, {"type": "text", "text": "Q?"}]},
             {"role": "assistant", "content": "1.43"}]
-    off = proc(text=[proc.apply_chat_template(msgs, tokenize=False)], images=imgs, return_tensors="pt")
+    off = proc(text=[proc.apply_chat_template(msgs, tokenize=False, enable_thinking=False)],
+               images=imgs, return_tensors="pt")
     vlm = [prepare_image(im, spec) for im in imgs]
     segs = [pb.image_segment(tokens_per_step(g[0], spec)) for _, g in vlm]
     built = pb.build([("<image>A<image>Q?", "1.43")], segs, "images")
@@ -94,7 +111,8 @@ def test_video_matches_official_processor(pb, proc):
     vid = np.random.default_rng(1).integers(0, 255, (4, 256, 320, 3), dtype=np.uint8)
     spec = VisionSpec(min_pixels=65536, max_pixels=16777216)
     msgs = [{"role": "user", "content": [{"type": "video"}, {"type": "text", "text": "Q?"}]}]
-    off = proc(text=[proc.apply_chat_template(msgs, tokenize=False, add_generation_prompt=True)],
+    off = proc(text=[proc.apply_chat_template(msgs, tokenize=False, add_generation_prompt=True,
+                                              enable_thinking=False)],
                videos=[vid], return_tensors="pt", do_sample_frames=False,
                video_metadata=[{"fps": 2.0, "total_num_frames": 4, "frames_indices": [0, 1, 2, 3]}])
     pv, grid = prepare_video(vid, spec)

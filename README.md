@@ -123,7 +123,7 @@ GPU 머신에서 남은 건 **실가중치 실측** 뿐이다:
 ```bash
 git clone https://github.com/CUT3R/CUT3R
 cd CUT3R/src/croco/models/curope && python setup.py build_ext --inplace && cd -
-gdown --fuzzy 'https://drive.google.com/file/d/1Asz-ZB3FfpzZYwunhQvNPZEUA8XUNAYD/'
+gdown 1Asz-ZB3FfpzZYwunhQvNPZEUA8XUNAYD -O cut3r_512_dpt_4_64.pth   # 이 블록은 cut3r_512_dpt_4_64.pth 를 현재 폴더 기준으로 쓴다
 PYTHONPATH=src python scripts/verify_geometry_adapter.py --name cut3r \
     --checkpoint cut3r_512_dpt_4_64.pth --tap-layers 6 9 12 --repo-path ./CUT3R
 ```

@@ -72,7 +72,7 @@ OmniWorld / CODa / Honda HDD 등에서 각각 받아야 하고 라이선스가 �
 ```bash
 # 기하 인코더 (기본값 CUT3R)
 mkdir -p checkpoints
-gdown --fuzzy 'https://drive.google.com/file/d/1Asz-ZB3FfpzZYwunhQvNPZEUA8XUNAYD/'  # cut3r_512_dpt_4_64.pth
+gdown 1Asz-ZB3FfpzZYwunhQvNPZEUA8XUNAYD -O checkpoints/cut3r_512_dpt_4_64.pth
 
 # 업그레이드 후보 (둘 다 Apache-2.0, 상수 메모리)
 hf download polar-explorer/Anchor3R --local-dir checkpoints/anchor3r

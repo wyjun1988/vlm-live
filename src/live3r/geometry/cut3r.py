@@ -15,7 +15,8 @@ VLM-3R 이 검증한 경로라 재현 기준선이 된다.
 **설치:**
     git clone https://github.com/CUT3R/CUT3R
     # geometry.options.repo_path 에 CUT3R 경로를 주거나 PYTHONPATH=<repo>/src
-    gdown --fuzzy 'https://drive.google.com/file/d/1Asz-ZB3FfpzZYwunhQvNPZEUA8XUNAYD/'
+    gdown 1Asz-ZB3FfpzZYwunhQvNPZEUA8XUNAYD -O checkpoints/cut3r_512_dpt_4_64.pth
+    pip install omegaconf   # 체크포인트 안의 학습 설정 객체를 읽는 데 필요
 
 GPU 머신에서 먼저 실측해라:
     PYTHONPATH=src python scripts/verify_geometry_adapter.py --name cut3r \
@@ -170,6 +171,36 @@ class CUT3RStream(GeometryStream):
         return out
 
 
+# CUT3R 체크포인트 = {"args": omegaconf 학습 설정, "model": state_dict}.
+# torch>=2.6 은 torch.load 기본이 weights_only=True 라 omegaconf 객체를 거부한다 → CUT3R 원본
+# load_model() 은 그대로는 실패한다 (서버 torch 2.7.1 포함). weights_only=False(pickle 임의 코드
+# 실행 가능)로 풀지 않고, 실제로 필요한 클래스만 허용한다 (2026-09-24, cut3r_512_dpt_4_64.pth 실측).
+_SAFE_GLOBALS = (
+    "omegaconf.dictconfig.DictConfig",
+    "omegaconf.base.ContainerMetadata",
+    "omegaconf.base.Metadata",
+    "omegaconf.nodes.AnyNode",
+    "typing.Any",
+    "collections.defaultdict",
+    "dict",
+)
+
+
+def _load_checkpoint_safely(path: str) -> dict:
+    import builtins
+    import importlib
+
+    allowed = []
+    for name in _SAFE_GLOBALS:
+        mod, _, attr = name.rpartition(".")
+        try:
+            allowed.append(getattr(builtins, attr) if not mod else getattr(importlib.import_module(mod), attr))
+        except ImportError as exc:
+            raise ImportError("CUT3R 체크포인트를 읽으려면 omegaconf 가 필요하다: pip install omegaconf") from exc
+    with torch.serialization.safe_globals(allowed):
+        return torch.load(path, map_location="cpu", weights_only=True)
+
+
 def _load_cut3r(checkpoint: str, repo_path: str | None, device):
     if repo_path:
         root = Path(repo_path)
@@ -181,7 +212,7 @@ def _load_cut3r(checkpoint: str, repo_path: str | None, device):
                         sys.path.insert(0, pth)
                 break
     try:
-        from dust3r.model import ARCroco3DStereo  # type: ignore
+        from dust3r.model import ARCroco3DStereo, ARCroco3DStereoConfig  # type: ignore
     except ImportError as exc:
         raise ImportError(
             f"CUT3R 코드를 못 찾았다 ({exc}).\n"
@@ -191,9 +222,31 @@ def _load_cut3r(checkpoint: str, repo_path: str | None, device):
     if not Path(checkpoint).is_file():
         raise FileNotFoundError(
             f"CUT3R 체크포인트가 없다: {checkpoint}\n"
-            "  gdown --fuzzy 'https://drive.google.com/file/d/1Asz-ZB3FfpzZYwunhQvNPZEUA8XUNAYD/'"
+            "  gdown 1Asz-ZB3FfpzZYwunhQvNPZEUA8XUNAYD -O checkpoints/cut3r_512_dpt_4_64.pth"
         )
-    net = ARCroco3DStereo.from_pretrained(checkpoint)
+    ckpt = _load_checkpoint_safely(checkpoint)
+
+    # CUT3R load_model() 과 같은 처리 — 모델 생성자 문자열을 체크포인트에서 읽어 만든다
+    # (원본 설계). ManyAR 패치임베드는 종횡비가 제각각일 때만 필요해서 원본도 교체한다.
+    args = ckpt["args"].model.replace("ManyAR_PatchEmbed", "PatchEmbedDust3R")
+    if "landscape_only" not in args:
+        args = args[:-2] + ", landscape_only=False))"
+    else:
+        args = args.replace(" ", "").replace("landscape_only=True", "landscape_only=False")
+    # 평가 네임스페이스를 좁힌다: 생성자 두 개와 inf 만 (문자열 안에는 리터럴뿐이다)
+    net = eval(args, {"__builtins__": {}},  # noqa: S307
+               {"ARCroco3DStereo": ARCroco3DStereo, "ARCroco3DStereoConfig": ARCroco3DStereoConfig,
+                "inf": float("inf")})
+    res = net.load_state_dict(ckpt["model"], strict=False)
+    # 원본은 strict=False 로 넘어간다. 우리가 쓰는 부분(인코더·디코더·상태·포즈)이 비면
+    # 랜덤 가중치로 조용히 도는 셈이라 여기서 막는다.
+    used = ("enc_", "patch_embed", "dec_", "decoder_embed", "register_tokens", "pose_")
+    missing = [k for k in res.missing_keys if k.startswith(used)]
+    if missing:
+        raise RuntimeError(f"CUT3R 체크포인트에 필요한 가중치가 없다 ({len(missing)}개, 예: {missing[:3]})")
+    if res.missing_keys or res.unexpected_keys:
+        logger.info("CUT3R state_dict: missing %d (미사용 헤드) · unexpected %d",
+                    len(res.missing_keys), len(res.unexpected_keys))
     return net.to(device).eval()
 
 

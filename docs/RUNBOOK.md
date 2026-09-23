@@ -28,7 +28,7 @@ cd third_party/CUT3R/src/croco/models/curope && python setup.py build_ext --inpl
 #      (live3r 이 폴백을 고쳐두긴 했지만 느리다)
 
 mkdir -p checkpoints && cd checkpoints
-pip install gdown && gdown --fuzzy 'https://drive.google.com/file/d/1Asz-ZB3FfpzZYwunhQvNPZEUA8XUNAYD/'
+pip install gdown && gdown 1Asz-ZB3FfpzZYwunhQvNPZEUA8XUNAYD -O cut3r_512_dpt_4_64.pth
 cd -
 ```
 

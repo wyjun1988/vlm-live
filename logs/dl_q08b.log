@@ -1,0 +1,7 @@
+Hint: A new version of huggingface_hub (1.32.0) is available! You are using version 1.30.0.
+To update, run: hf update
+Hint: The `hf-cli` skill is not installed. Run `hf skills add -g --claude` to teach your AI agents how to use the `hf` CLI.
+Still waiting to acquire lock on /Users/wooyeol/work/3d-vlm-live/checkpoints/qwen3.5-0.8b/.cache/huggingface/.gitignore.lock (elapsed: 0.1 seconds)
+Still waiting to acquire lock on /Users/wooyeol/work/3d-vlm-live/checkpoints/qwen3.5-0.8b/.cache/huggingface/.gitignore.lock (elapsed: 0.1 seconds)
+Still waiting to acquire lock on /Users/wooyeol/work/3d-vlm-live/checkpoints/qwen3.5-0.8b/.cache/huggingface/.gitignore.lock (elapsed: 0.1 seconds)
+path=/Users/wooyeol/work/3d-vlm-live/checkpoints/qwen3.5-0.8b

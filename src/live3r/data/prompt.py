@@ -11,8 +11,10 @@
              <|im_start|>assistant\\n<think>\\n\\n</think>\\n\\n{answer}<|im_end|>\\n
 
 규칙 (공식 템플릿에서 확인한 것):
-  * thinking off — enable_thinking 을 true 로 주지 않으면 템플릿이 빈 think 블록을 넣는다.
-    사내 기준선(73.3)도 off 였고, 사용자 결정으로 전부 끈다.
+  * thinking off — 사내 기준선(73.3)도 off 였고, 사용자 결정으로 전부 끈다.
+    ⚠️ 템플릿 **기본값에 기대면 안 된다.** Qwen3.5 템플릿은 크기마다 기본이 반대다 (2026-09-24 실측):
+       0.8B·2B → enable_thinking 미지정이면 꺼짐 / 4B·9B → 미지정이면 **켜짐**
+    그래서 빈 think 블록(`<think>\n\n</think>\n\n`)을 여기서 직접 넣는다 — 어느 크기든 off 다.
   * content 는 앞뒤 공백을 trim 한다 (템플릿의 `|trim`).
   * 학습 타깃은 `{answer}<|im_end|>`. <|im_end|> 가 생성 종료 토큰(tokenizer.eos_token)이다.
   * 멀티턴: 공식 템플릿은 **과거** assistant 턴을 think 블록 없이 렌더링한다. 우리는 모든 턴에

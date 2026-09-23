@@ -14,6 +14,7 @@ einops
 # CUT3R (기하 인코더) 의존성
 scipy                # dust3r.utils.geometry
 roma                 # 회전 유틸
+omegaconf            # CUT3R 체크포인트 안의 학습 설정 객체 (torch>=2.6 안전 로딩)
 
 # 평가
 lmms-eval>=0.7.3     # vsibench / mmsi_bench / videomme 등. 자체 의존성을 많이 끌어온다

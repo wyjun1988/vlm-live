@@ -154,7 +154,7 @@ PYTHONPATH=src python -m live3r.train.train \
 git clone https://github.com/CUT3R/CUT3R third_party/CUT3R
 cd third_party/CUT3R/src/croco/models/curope && python setup.py build_ext --inplace && cd -
 mkdir -p checkpoints && cd checkpoints
-gdown --fuzzy 'https://drive.google.com/file/d/1Asz-ZB3FfpzZYwunhQvNPZEUA8XUNAYD/' && cd -
+gdown 1Asz-ZB3FfpzZYwunhQvNPZEUA8XUNAYD -O cut3r_512_dpt_4_64.pth && cd -
 
 PYTHONPATH=src python scripts/verify_geometry_adapter.py --name cut3r \
   --checkpoint checkpoints/cut3r_512_dpt_4_64.pth --tap-layers 6 9 12 \
@@ -162,7 +162,15 @@ PYTHONPATH=src python scripts/verify_geometry_adapter.py --name cut3r \
 ```
 
 > ⚠️ **curope 컴파일은 필수다.** CUT3R 포즈 토큰의 2D 위치가 `-1` 인데 순수 PyTorch RoPE2D
-> 폴백은 음수에서 죽는다 (live3r 이 폴백을 고쳐두긴 했지만 느리다).
+> 폴백은 음수에서 죽는다 (live3r 이 폴백을 고쳐두긴 했지만 느리다 — M2 MPS 폴백 실측 307ms/프레임).
+>
+> 체크포인트 로딩: CUT3R 원본 `load_model()` 은 torch≥2.6 에서 실패한다 (`weights_only` 기본값 변경,
+> 체크포인트 안에 omegaconf 학습 설정이 들어 있다). live3r 어댑터는 필요한 클래스만 허용해서 안전하게
+> 연다 — `pip install omegaconf` 만 되어 있으면 된다 (requirements 에 추가됨).
+>
+> M2 실측 기준값 (2026-09-24): 793M 파라미터 · 탭 `[1,768,768]`×3 · 포즈 `[1,1,768]` ·
+> 512×384 입력 → 격자 24×32 · **재귀 상태 768 토큰 (7.88MB, 상수)** · drift 1.000.
+> 서버 값이 이와 다르면 알려달라.
 
 **보내줄 것**: 출력 전체 — `hidden_size`(768 이어야), `grid_hw`(512×384 → 24×32), 프레임당 ms, drift.
 
