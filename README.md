@@ -151,6 +151,8 @@ OVO-S-Bench 저자 보고: 스트리밍/공간 특화 변형 **15개 중 13개�
 - `docs/DATA.md` — 무엇을 받아야 하나
 - `docs/BENCHMARKS.md` — 벤치·지연 지표·채택 게이트
 - `docs/RUNBOOK.md` — GPU 머신 단계별 실행
+- `docs/NEXT_STEPS_SERVER.md` — **지금 서버가 할 일** (2026-09-23)
+- `docs/REVIEW_20260923.md` — 방향·구현 검증 (증명된 것 / 미검증 / 방향 문제 7건)
 
 ## 라이선스
 Apache-2.0. 참조 구현(SpatialStack, VLM-3R, CUT3R, Anchor3R, LingBot-Map, Qwen3.5)도 모두 호환.

@@ -80,7 +80,8 @@ PYTHONPATH=src python scripts/prepare_annotations.py \
   --media-root data/sensenova_media --check-files 5000
 ```
 
-만드는 것: `data/sensenova.jsonl` + `.jsonl.idx.npy`(지연 로딩 인덱스) + `data/sensenova.report.json`.
+만드는 것: `data/sensenova.jsonl` + `.jsonl.idx.npy`(지연 로딩 인덱스) + `data/sensenova.report.json`
++ **`data/sensenova.holdout.jsonl`** (무작위 2,000건 — 학습에 절대 안 들어간다. 9단계에서 쓴다).
 83만 건 JSON 배열을 DDP 8프로세스가 각자 통째로 파싱하면 메모리가 수십 GB 로 불어난다.
 인덱스가 있으면 필요한 줄만 읽는다.
 
@@ -178,6 +179,28 @@ PYTHONPATH=src torchrun --nproc_per_node 8 -m live3r.train.train \
 
 ---
 
+## 9. S1 이 끝나면 — 기하가 실제로 쓰이는지 판정 (30분)
+
+손실이 내려가도 그게 기하 덕인지는 모른다. 홀드아웃에서 **진짜 기하 / 다른 샘플의 기하 / 기하 없음**의
+손실을 비교한다. 이게 S2(LoRA)로 넘어갈지 정하는 관문이다.
+
+```bash
+PYTHONPATH=src python scripts/eval_geometry_ablation.py \
+  --config configs/live3r_4b.yaml --base-model /group-volume/wooyeol/models/Qwen3.5-4B \
+  --geometry-checkpoint checkpoints/cut3r_512_dpt_4_64.pth --cut3r-repo third_party/CUT3R \
+  --weights outputs/4b_s1/final.pt --stage align \
+  --ann data/sensenova.holdout.jsonl --media-root data/sensenova_media --n 300 \
+  --out outputs/4b_s1_ablation.json
+```
+
+- `shuffled − real > 0` (95% 하한이 양수) → 기하의 **내용**을 쓴다 → S2 진행
+- `none − real > 0` 인데 shuffled 와 구분 안 됨 → 기하를 "신호"로만 쓴다 → S2 전에 원인을 본다
+- 둘 다 ≈ 0 → 기하가 무시된다 → 멈추고 보고
+
+**보내줄 것**: 콘솔 요약 전체 (특히 판정 줄과 "같은 격자 모양 비율")
+
+---
+
 ## 병행 — VSI-Bench 확보 (가능하면)
 
 주지표가 VSI-Bench 다. **학습 전 베이스라인 숫자**(스트리밍 vs 오프라인 오라클)가 있어야 이후
@@ -202,4 +225,5 @@ huggingface-cli download nyu-visionx/VSI-Bench --repo-type dataset --local-dir d
 [5] CUT3R: hidden_size, grid_hw, ms/frame, drift
 [6] smoke B: loss, inj, geom ms
 [7] DDP: sync OK?, samp/s → 1에폭 예상 시간
+[9] (S1 후) 절제: real / shuffled / none 손실, 판정, 같은 격자 비율
 ```
