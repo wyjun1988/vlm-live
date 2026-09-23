@@ -31,7 +31,8 @@ def main() -> int:
     ap.add_argument("--checkpoint", default=None)
     ap.add_argument("--tap-layers", type=int, nargs="+", default=[11, 17, 23])
     ap.add_argument("--hidden-size", type=int, default=768, help="모르면 그대로 두고 출력값을 봐라")
-    ap.add_argument("--image-size", type=int, default=512)
+    ap.add_argument("--image-size", type=int, default=512, help="긴 변 기준 (CUT3R 512 판본)")
+    ap.add_argument("--repo-path", default=None, help="CUT3R 클론 경로 (PYTHONPATH 대신)")
     ap.add_argument("--frames", type=int, default=200)
     ap.add_argument("--device", default=None)
     args = ap.parse_args()
@@ -45,6 +46,7 @@ def main() -> int:
         tap_layers=tuple(args.tap_layers),
         hidden_size=args.hidden_size,
         image_size=args.image_size,
+        options={"repo_path": args.repo_path} if args.repo_path else {},
     )
     print(f"기하 인코더: {cfg.name}  device={device}")
     geo = build_geometry_stream(cfg).to(device).eval()
@@ -53,8 +55,9 @@ def main() -> int:
     n_params = sum(p.numel() for p in geo.parameters())
     print(f"  파라미터      = {n_params / 1e6:.1f}M")
 
+    # 실제 입력과 같은 모양: 4:3 영상 → 긴 변 512 → 512x384
     s = args.image_size
-    frame = torch.randn(1, 3, s, s, device=device)
+    frame = torch.randn(1, 3, (s * 3 // 4) // 16 * 16, s, device=device)
     geo.reset()
 
     print("\n--- 첫 프레임 ---")

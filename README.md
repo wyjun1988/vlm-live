@@ -38,7 +38,9 @@ drift 1.08 (프레임당 비용이 스트림 길이에 거의 무관)
 - [x] **CUT3R 어댑터 완성** — 실제 저장소 코드로 재귀 루프·탭 토큰·포즈 토큰 검증
 - [x] **lmms-eval 연동** — `--model live3r` 등록, 타깃 태스크 9종 존재 확인
 - [x] **스트리밍 VSI 평가 하니스** — 제약을 기계가 강제, 인과적 키프레임 선택기 4종
-- [ ] 기하 인코더 베이크오프 (다음)
+- [x] **Sensenova(이미지 시퀀스) 어댑터 + torchrun DDP 학습** — 가짜 데이터로 S1→S2→DDP end-to-end 검증
+- [ ] 서버 스모크 → S1 본 학습 (`docs/NEXT_STEPS_SERVER.md`)
+- [ ] 기하 인코더 베이크오프
 - [ ] 2B / 0.8B 스케일 다운 실측
 
 ## 빠른 시작 (맥, 다운로드 0)
@@ -53,6 +55,8 @@ python -m pytest tests -q
 
 ## GPU 머신에서
 
+> **지금 서버가 할 일: [`docs/NEXT_STEPS_SERVER.md`](docs/NEXT_STEPS_SERVER.md)** (2026-09-23)
+>
 > **단계별 런북: [`docs/RUNBOOK.md`](docs/RUNBOOK.md)** — 설치부터 학습·평가까지 복붙 가능한 순서.
 > 실모델 경로는 아직 한 번도 안 돌았으니 싸게 실패하는 순서대로 가는 게 낫다.
 
@@ -80,7 +84,22 @@ configs/      live3r_{4b,2b,08b,dummy}.yaml
 scripts/      setup_env.sh  smoke_test.py  bench_latency.py  verify_geometry_adapter.py
 ```
 
-### 설계상 조용히 틀리기 쉬운 3곳 (전부 테스트로 막아둠)
+### 에러 없이 조용히 틀리던 것들 (전부 테스트로 막아둠)
+
+2026-09-23 에 Qwen3.5 공식 프로세서·템플릿과 **직접 대조**해서 찾은 것들이 가장 무거웠다.
+랜덤 초소형 모델 테스트로는 하나도 안 잡힌다 — 전부 에러 없이 돈다.
+
+| 버그 | 결과 | 막는 테스트 |
+|---|---|---|
+| 패치 평탄화가 래스터 순서 (공식은 2×2 merge 블록) | 실가중치에서 이미지가 뒤섞임 | `test_vision_official.py` |
+| 프로젝터 fc2=0 · gate=0 동시 초기화 | 모든 기울기 0, 영원히 학습 안 됨 | `test_train_step.py` |
+| LoRA 타깃 `in_proj_qkvz` (Qwen3-Next 이름) | DeltaNet 24층에 LoRA 누락 | `test_lora_targets.py` |
+| 타임스탬프 `<0.0s>` (공식 `<0.2 seconds>`) | 사전학습 분포 이탈 | `test_prompt_builder.py` |
+| CUT3R 입력 짧은 변 512 (공식 긴 변) | 1.8배 큰 입력 | `test_streaming_harness.py` |
+| checkpointing 재계산 때 주입 상태 비어 있음 | 기울기 오류 | `test_grad_checkpointing.py` |
+| `.gitignore` 의 `data/` 가 `src/live3r/data/` 까지 무시 | 패키지가 커밋에서 빠짐 | 깨끗한 클론 테스트 |
+
+### 설계상 조용히 틀리기 쉬운 곳 (형상)
 
 1. **격자 불일치** — 기하 인코더 patch14 vs Qwen3.5 patch16+merge2. 리샘플 없으면 엉뚱한
    위치에 더해지고 에러는 안 난다. → `GeometryProjector` 가 src/dst 격자를 모두 요구한다.
@@ -90,7 +109,7 @@ scripts/      setup_env.sh  smoke_test.py  bench_latency.py  verify_geometry_ada
    두 번째 비전 블록부터 3D 위치가 텍스트처럼 붙어 공간 정보가 뭉개진다.
    → `LiveSession` 이 M-RoPE 커서를 직접 관리한다.
 4. **비디오 프롬프트 규약** — Qwen3.5 는 프레임(temporal patch)마다 **별도 vision 세그먼트**를
-   기대한다(`<0.0s><|vision_start|>…<|vision_end|><1.0s>…`). 한 덩어리로 이어붙이면
+   기대한다(`<0.2 seconds><|vision_start|>…<|vision_end|><1.2 seconds>…`). 한 덩어리로 이어붙이면
    `get_rope_index` 가 grid 를 프레임 수만큼 쪼개 소비하는 것과 어긋난다.
    학습 콜레이터와 `LiveSession` 이 같은 형식을 쓴다.
 
