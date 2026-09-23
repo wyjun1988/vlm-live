@@ -15,15 +15,16 @@ OUT="${3:-outputs/stream}"
 SELECTOR="${SELECTOR:-halving}"      # halving | reservoir | stride | uniform_oracle(라이브 아님)
 BUDGET="${BUDGET:-32}"               # LLM 이 볼 키프레임 수
 GEOM_STRIDE="${GEOM_STRIDE:-3}"      # 기하 인코더 인제스트 간격 (30fps ÷ 3 = 10fps)
+VISUAL_MODE="${VISUAL_MODE:-image}"  # image(키프레임마다 이미지 블록, 라이브 기본) | video(2프레임씩 묶음)
 TASKS="${TASKS:-vsibench}"
 
-ARGS="config=${CONFIG},streaming=True,selector=${SELECTOR},keyframe_budget=${BUDGET},geom_stride=${GEOM_STRIDE},enable_thinking=False"
+ARGS="config=${CONFIG},streaming=True,selector=${SELECTOR},keyframe_budget=${BUDGET},geom_stride=${GEOM_STRIDE},visual_mode=${VISUAL_MODE},enable_thinking=False"
 [[ -n "${BASE_MODEL:-}" ]] && ARGS="pretrained=${BASE_MODEL},${ARGS}"
 [[ -n "$WEIGHTS" ]] && ARGS="${ARGS},weights=${WEIGHTS}"
 
 mkdir -p "$OUT"
 echo "== 스트리밍 VSI ==  (로컬 모델은 BASE_MODEL=/path 로)"
-echo "   선택기=${SELECTOR}  키프레임=${BUDGET}  기하 stride=${GEOM_STRIDE}  thinking=off"
+echo "   선택기=${SELECTOR}  키프레임=${BUDGET}  기하 stride=${GEOM_STRIDE}  입력=${VISUAL_MODE}  thinking=off"
 python -m lmms_eval --model live3r --model_args "$ARGS" \
   --tasks "$TASKS" --batch_size 1 --log_samples --output_path "$OUT"
 

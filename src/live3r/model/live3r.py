@@ -299,19 +299,32 @@ class Live3RModel(nn.Module):
         if geom_outs is not None:
             geometry = self.build_geometry_embeds(geom_outs, llm_grids, pool_temporal)
         if geometry is None or self.injector is None:
-            return self.base(
-                input_ids=input_ids, attention_mask=attention_mask, labels=labels, **kwargs
-            )
+            return self._run_base(input_ids, attention_mask, labels, **kwargs)
         mask = self.visual_pos_mask(input_ids)
         if keep_primed:
             self.injector.prime(list(geometry.embeds), mask)
-            return self.base(
-                input_ids=input_ids, attention_mask=attention_mask, labels=labels, **kwargs
-            )
+            return self._run_base(input_ids, attention_mask, labels, **kwargs)
         with self.injector.primed(list(geometry.embeds), mask):
-            return self.base(
-                input_ids=input_ids, attention_mask=attention_mask, labels=labels, **kwargs
-            )
+            return self._run_base(input_ids, attention_mask, labels, **kwargs)
+
+    def _run_base(self, input_ids, attention_mask, labels, **kwargs):
+        """labels 가 있으면 **감독 위치의 로짓만** 만든다. 손실은 HF 의 전 위치 계산과 같다.
+
+        Qwen3.5 어휘가 248k 라서 전 위치 로짓(CE 때 fp32 로 올린다)은 2k 토큰이면 2GB,
+        max_length 8k 면 8GB 에 같은 크기의 기울기가 더 붙는다. 감독되는 건 답변 토큰 수십 개뿐이다
+        (M2 실측: 0.8B 파일럿이 LM 헤드 로짓 1.9GB 한 번 할당에서 OOM). 반환하는 `.logits` 도
+        그 위치들뿐이다 — 전 위치 로짓이 필요하면 labels 없이 불러라.
+        """
+        if labels is None:
+            return self.base(input_ids=input_ids, attention_mask=attention_mask, **kwargs)
+        shift = labels[:, 1:]                                  # 위치 p 의 로짓이 labels[p+1] 을 맞힌다
+        keep = (shift != -100).any(0).nonzero().squeeze(1)     # 배치 합집합 (배치마다 다른 건 -100 이 가린다)
+        if keep.numel() == 0:
+            return self.base(input_ids=input_ids, attention_mask=attention_mask, labels=labels, **kwargs)
+        out = self.base(input_ids=input_ids, attention_mask=attention_mask, logits_to_keep=keep, **kwargs)
+        out.loss = nn.functional.cross_entropy(
+            out.logits.float().flatten(0, 1), shift[:, keep].flatten(), ignore_index=-100)
+        return out
 
     # ------------------------------------------------------- 자동 기하 (auto mode)
     def enable_auto_geometry(self, enabled: bool = True) -> "Live3RModel":

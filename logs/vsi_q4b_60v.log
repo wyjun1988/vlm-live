@@ -1,0 +1,82 @@
+영상 60 · 문항 1151 · 모드 ['halving-video', 'oracle-video'] · 키프레임 32
+Loading weights:   0%|          | 0/723 [00:00<?, ?it/s]Loading weights: 100%|██████████| 723/723 [00:00<00:00, 8038.62it/s]
+모델 로드 4.3s (checkpoints/qwen3.5-4b, mps bf16)
+  [1/60] scannet/scene0153_00 (582프레임, 6문항) · 누적 6문항 · halving-video 12s oracle-video 11s
+  [2/60] arkitscenes/42444950 (2494프레임, 14문항) · 누적 20문항 · halving-video 25s oracle-video 24s
+  [3/60] scannet/scene0435_02 (1617프레임, 34문항) · 누적 54문항 · halving-video 62s oracle-video 64s
+  [4/60] scannet/scene0699_00 (2197프레임, 42문항) · 누적 96문항 · halving-video 164s oracle-video 119s
+  [5/60] arkitscenes/47334372 (2617프레임, 5문항) · 누적 101문항 · halving-video 212s oracle-video 152s
+  [6/60] scannetpp/5ee7c22ba0 (3808프레임, 16문항) · 누적 117문항 · halving-video 242s oracle-video 176s
+  [7/60] scannetpp/38d58a7a31 (6566프레임, 31문항) · 누적 148문항 · halving-video 289s oracle-video 199s
+  [8/60] scannetpp/31a2c91c43 (3826프레임, 14문항) · 누적 162문항 · halving-video 316s oracle-video 239s
+  [9/60] scannet/scene0086_02 (1268프레임, 12문항) · 누적 174문항 · halving-video 374s oracle-video 285s
+  [10/60] arkitscenes/45663105 (1680프레임, 4문항) · 누적 178문항 · halving-video 410s oracle-video 309s
+  [11/60] scannet/scene0196_00 (1920프레임, 9문항) · 누적 187문항 · halving-video 470s oracle-video 351s
+  [12/60] scannetpp/13c3e046d7 (4608프레임, 5문항) · 누적 192문항 · halving-video 936s oracle-video 466s
+  [13/60] scannetpp/5f99900f09 (4131프레임, 47문항) · 누적 239문항 · halving-video 1234s oracle-video 632s
+  [14/60] scannetpp/0d2ee665be (2700프레임, 42문항) · 누적 281문항 · halving-video 1380s oracle-video 783s
+  [15/60] arkitscenes/47331262 (2072프레임, 6문항) · 누적 287문항 · halving-video 1790s oracle-video 886s
+  [16/60] scannetpp/e398684d27 (2933프레임, 16문항) · 누적 303문항 · halving-video 1814s oracle-video 901s
+  [17/60] scannet/scene0616_01 (3329프레임, 12문항) · 누적 315문항 · halving-video 1826s oracle-video 913s
+  [18/60] scannet/scene0496_00 (1336프레임, 8문항) · 누적 323문항 · halving-video 1836s oracle-video 927s
+  [19/60] scannet/scene0494_00 (741프레임, 8문항) · 누적 331문항 · halving-video 1849s oracle-video 937s
+  [20/60] arkitscenes/41159530 (2662프레임, 2문항) · 누적 333문항 · halving-video 1856s oracle-video 944s
+  [21/60] arkitscenes/47333436 (1584프레임, 5문항) · 누적 338문항 · halving-video 1865s oracle-video 952s
+  [22/60] arkitscenes/47115469 (1605프레임, 7문항) · 누적 345문항 · halving-video 1874s oracle-video 962s
+  [23/60] scannetpp/a24f64f7fb (1818프레임, 20문항) · 누적 365문항 · halving-video 1891s oracle-video 979s
+  [24/60] scannetpp/3864514494 (3114프레임, 18문항) · 누적 383문항 · halving-video 1912s oracle-video 996s
+  [25/60] scannet/scene0553_00 (1501프레임, 17문항) · 누적 400문항 · halving-video 1927s oracle-video 1010s
+  [26/60] arkitscenes/42897550 (1544프레임, 5문항) · 누적 405문항 · halving-video 1935s oracle-video 1019s
+  [27/60] scannet/scene0050_01 (3711프레임, 33문항) · 누적 438문항 · halving-video 1958s oracle-video 1044s
+  [28/60] arkitscenes/45261142 (1494프레임, 8문항) · 누적 446문항 · halving-video 1968s oracle-video 1054s
+  [29/60] arkitscenes/41142280 (1745프레임, 5문항) · 누적 451문항 · halving-video 1977s oracle-video 1062s
+  [30/60] arkitscenes/45260856 (3136프레임, 6문항) · 누적 457문항 · halving-video 1986s oracle-video 1072s
+  [31/60] scannetpp/e7af285f7d (5163프레임, 3문항) · 누적 460문항 · halving-video 1994s oracle-video 1079s
+  [32/60] arkitscenes/41159572 (3962프레임, 6문항) · 누적 466문항 · halving-video 2003s oracle-video 1088s
+  [33/60] arkitscenes/47429977 (1309프레임, 36문항) · 누적 502문항 · halving-video 2028s oracle-video 1113s
+  [34/60] arkitscenes/42899725 (1543프레임, 4문항) · 누적 506문항 · halving-video 2036s oracle-video 1121s
+  [35/60] scannet/scene0696_01 (1914프레임, 23문항) · 누적 529문항 · halving-video 2054s oracle-video 1139s
+  [36/60] scannet/scene0663_00 (2946프레임, 16문항) · 누적 545문항 · halving-video 2067s oracle-video 1152s
+  [37/60] arkitscenes/42446151 (1939프레임, 8문항) · 누적 553문항 · halving-video 2077s oracle-video 1162s
+  [38/60] scannet/scene0077_01 (935프레임, 10문항) · 누적 563문항 · halving-video 2088s oracle-video 1173s
+  [39/60] arkitscenes/45261620 (1827프레임, 3문항) · 누적 566문항 · halving-video 2095s oracle-video 1180s
+  [40/60] scannet/scene0307_02 (2091프레임, 34문항) · 누적 600문항 · halving-video 2120s oracle-video 1206s
+  [41/60] scannet/scene0354_00 (1126프레임, 29문항) · 누적 629문항 · halving-video 2141s oracle-video 1227s
+  [42/60] scannetpp/5942004064 (5239프레임, 67문항) · 누적 696문항 · halving-video 2200s oracle-video 1273s
+  [43/60] scannet/scene0580_01 (3821프레임, 58문항) · 누적 754문항 · halving-video 2244s oracle-video 1320s
+  [44/60] scannetpp/40aec5fffa (3386프레임, 17문항) · 누적 771문항 · halving-video 2260s oracle-video 1336s
+  [45/60] arkitscenes/41254432 (4533프레임, 6문항) · 누적 777문항 · halving-video 2270s oracle-video 1346s
+  [46/60] arkitscenes/42897528 (1428프레임, 12문항) · 누적 789문항 · halving-video 2283s oracle-video 1358s
+  [47/60] arkitscenes/45662924 (2361프레임, 20문항) · 누적 809문항 · halving-video 2300s oracle-video 1375s
+  [48/60] arkitscenes/47334096 (3270프레임, 37문항) · 누적 846문항 · halving-video 2326s oracle-video 1401s
+  [49/60] arkitscenes/47331063 (3527프레임, 10문항) · 누적 856문항 · halving-video 2336s oracle-video 1411s
+  [50/60] scannet/scene0701_00 (1011프레임, 6문항) · 누적 862문항 · halving-video 2345s oracle-video 1420s
+  [51/60] scannet/scene0338_00 (804프레임, 6문항) · 누적 868문항 · halving-video 2354s oracle-video 1429s
+  [52/60] scannet/scene0046_01 (2469프레임, 47문항) · 누적 915문항 · halving-video 2389s oracle-video 1466s
+  [53/60] scannetpp/c50d2d1d42 (4921프레임, 48문항) · 누적 963문항 · halving-video 2421s oracle-video 1498s
+  [54/60] scannet/scene0144_00 (1437프레임, 29문항) · 누적 992문항 · halving-video 2441s oracle-video 1521s
+  [55/60] scannet/scene0203_01 (1466프레임, 9문항) · 누적 1001문항 · halving-video 2451s oracle-video 1531s
+  [56/60] arkitscenes/45662987 (2020프레임, 9문항) · 누적 1010문항 · halving-video 2462s oracle-video 1541s
+  [57/60] scannetpp/7b6477cb95 (3605프레임, 48문항) · 누적 1058문항 · halving-video 2493s oracle-video 1572s
+  [58/60] arkitscenes/42444976 (2891프레임, 26문항) · 누적 1084문항 · halving-video 2515s oracle-video 1595s
+  [59/60] scannetpp/09c1414f1b (5450프레임, 63문항) · 누적 1147문항 · halving-video 2572s oracle-video 1651s
+  [60/60] arkitscenes/47331331 (1280프레임, 4문항) · 누적 1151문항 · halving-video 2580s oracle-video 1659s
+
+유형                                   halving-video    oracle-video
+------------------------------------------------------------------
+obj_appearance_order_accuracy                 44.6            48.0
+object_abs_distance_MRA:.5:.95:.05            42.8            41.2
+object_counting_MRA:.5:.95:.05                49.9            44.4
+object_rel_distance_accuracy                  61.6            52.9
+object_size_estimation_MRA:.5:.95:.05            69.6            66.2
+room_size_estimation_MRA:.5:.95:.05            53.3            51.8
+route_planning_accuracy                       29.7            35.1
+object_rel_direction_accuracy                 47.9            49.3
+overall                                       49.9            48.6
+
+답 형식 실패율 (선택형: 첫 단어가 A~D 아님 / 수치형: 숫자 추출 실패):
+  halving-video      6.5%
+  oracle-video       6.9%
+
+문항 1151 · 디코딩 783s · halving-video 2.24s/문항 · oracle-video 1.44s/문항
+저장: outputs/vsi_local/q4b_60v_video.json

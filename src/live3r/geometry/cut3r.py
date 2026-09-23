@@ -211,6 +211,10 @@ def _load_cut3r(checkpoint: str, repo_path: str | None, device):
                     if pth not in sys.path:
                         sys.path.insert(0, pth)
                 break
+    # dust3r/model.py 가 임포트 시점에 accelerate get_logger(log_level="DEBUG") 로 **루트 로거**를
+    # DEBUG 로 바꾼다 → PIL 이 이미지 한 장마다 DEBUG 10줄을 찍어 학습 로그가 불어난다 (M2 실측).
+    root = logging.getLogger()
+    root_level = root.level
     try:
         from dust3r.model import ARCroco3DStereo, ARCroco3DStereoConfig  # type: ignore
     except ImportError as exc:
@@ -219,6 +223,8 @@ def _load_cut3r(checkpoint: str, repo_path: str | None, device):
             "  git clone https://github.com/CUT3R/CUT3R\n"
             "  → geometry.options.repo_path 에 클론 경로를 주거나 PYTHONPATH=<repo>/src"
         ) from exc
+    finally:
+        root.setLevel(root_level)
     if not Path(checkpoint).is_file():
         raise FileNotFoundError(
             f"CUT3R 체크포인트가 없다: {checkpoint}\n"

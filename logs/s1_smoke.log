@@ -1,0 +1,32 @@
+Loading weights:   0%|          | 0/473 [00:00<?, ?it/s]Loading weights: 100%|██████████| 473/473 [00:00<00:00, 6383.86it/s]
+Warning, cannot find cuda-compiled version of RoPE2D, using a slow pytorch version instead
+Warning, cannot find cuda-compiled version of RoPE2D, using a slow pytorch version instead
+2026-09-24 02:28:32,726 [r0] INFO RoPE2D 폴백 2개를 음수 위치 지원 판본으로 교체했다
+2026-09-24 02:28:35,224 [r0] INFO 파라미터: 전체 1.67B / 학습 27.0M (프로젝터 27.0M, LoRA 0.0M)
+2026-09-24 02:28:35,231 [r0] INFO data/sensenova_1k/sn1k.jsonl: 905 레코드 (LazyJsonl)
+
+==============================================================================
+샘플 1개 (전체 905)
+==============================================================================
+2026-09-24 02:28:35,231 [r0] DEBUG Importing JpegImagePlugin
+
+[0] id=670487 media=images 토큰=2597 (이미지 2457 / 비디오 0) 턴=1 기하프레임=21
+    grid_thw=[[1, 18, 26], [1, 18, 26], [1, 18, 26], [1, 18, 26], [1, 18, 26], [1, 18, 26], [1, 18, 26], [1, 18, 26], [1, 18, 26], [1, 18, 26], [1, 18, 26], [1, 18, 26], [1, 18, 26], [1, 18, 26], [1, 18, 26], [1, 18, 26], [1, 18, 26], [1, 18, 26], [1, 18, 26], [1, 18, 26], [1, 18, 26]]
+    기하 입력 크기=[(384, 512), (384, 512), (384, 512), (384, 512)]
+    <|im_start|>user
+    Image sequence:: <|vision_start|><|image_pad|>×117<|vision_end|><|vision_start|><|image_pad|>×117<|vision_end|><|vision_start|><|image_pad|>×117<|vision_end|><|vision_start|><|image_pad|>×117<|vision_end|><|vision_start|><|image_pad|>×117<|vision_end|><|vision_start|><|image_pad|>×117<|vision_end|><|vision_start|><|image_pad|>×117<|vision_end|><|vision_start|><|image_pad|>×117<|vision_end|><|vision_start|><|image_pad|>×117<|vision_end|><|vision_start|><|image_pad|>×117<|vision_e…
+      ⟦감독⟧ 'refrigerator and shelf are 2.9 meters apart, shelf and sink have a distance of 1.2 meters, and sink is 2.4 meters away from refrigerator. The corresponding angles at these points are 23, 54, and 103 degrees.<|im_end|>'
+==============================================================================
+
+2026-09-24 02:28:35,901 [r0] INFO 스텝 3 (워밍업 1) · GPU 1 × 누적 1 = 유효 배치 1 · 샘플 905
+[transformers] `use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`.
+2026-09-24 02:28:42,311 [r0] INFO ep 0 step 1/3 loss 0.9017 lr 1.00e-03 | inj L0:0.000 L1:0.000 L2:0.000 | gate +1.00 +1.00 +1.00 | 0.2 samp/s | data 8 geom 1872 fb 4231 ms/샘플 | mem 0.0GB | skip 0 | sync -
+2026-09-24 02:28:42,313 [r0] DEBUG Importing PngImagePlugin
+2026-09-24 02:28:42,315 [r0] DEBUG STREAM b'IHDR' 16 13
+2026-09-24 02:28:42,316 [r0] DEBUG STREAM b'IDAT' 41 65536
+2026-09-24 02:28:42,333 [r0] DEBUG STREAM b'IHDR' 16 13
+2026-09-24 02:28:42,333 [r0] DEBUG STREAM b'IDAT' 41 65536
+2026-09-24 02:28:47,550 [r0] INFO ep 0 step 2/3 loss 0.5843 lr 5.00e-04 | inj L0:1.576 L1:0.674 L2:0.475 | gate +1.00 +1.00 +1.00 | 0.2 samp/s | data 356 geom 2905 fb 2185 ms/샘플 | mem 0.0GB | skip 0 | sync -
+2026-09-24 02:28:49,419 [r0] INFO ep 0 step 3/3 loss 4.6743 lr 0.00e+00 | inj L0:3.290 L1:0.710 L2:0.280 | gate +1.00 +1.00 +1.00 | 0.6 samp/s | data 133 geom 454 fb 1291 ms/샘플 | mem 0.0GB | skip 0 | sync -
+2026-09-24 02:28:49,583 [r0] INFO 저장 outputs/m2_s1_smoke/final.pt (28 텐서, 108.1 MB)
+2026-09-24 02:28:49,584 [r0] INFO 완료. 건너뛴 샘플 0 (랭크0 기준, 사유는 워커 로그의 '건너뜀' 경고 참고)

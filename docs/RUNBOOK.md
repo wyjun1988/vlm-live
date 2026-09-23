@@ -144,7 +144,7 @@ PYTHONPATH=src python -m live3r.train.train \
 PYTHONPATH=src python -m live3r.train.train \
   --config configs/live3r_4b.yaml --stage align \
   --ann data/raw/vsi590k --video-root data/raw \
-  --output outputs/4b_s1 --epochs 1 --lr 1e-3 --grad-accum 16 --grad-checkpointing
+  --output outputs/4b_s1 --epochs 1 --lr 3e-5 --grad-accum 16 --grad-checkpointing   # 1e-3 은 주입 폭주 (M2 실측)
 
 # S2 SFT — 프로젝터 + LoRA. S1 을 반드시 이어받는다.
 PYTHONPATH=src python -m live3r.train.train \

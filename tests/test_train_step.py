@@ -111,3 +111,55 @@ def test_train_mode_keeps_frozen_geometry_in_eval():
     m = build()
     m.train()
     assert m.training and not m.geometry.training
+
+
+def test_supervised_only_logits_match_full_loss_and_grads():
+    """감독 위치만 LM 헤드에 넣는 손실 == HF 전 위치 손실 (값과 기울기 모두).
+
+    어휘 248k 에서 전 위치 로짓은 2k 토큰에 2GB — M2 파일럿이 여기서 OOM 났다.
+    감독 구간이 흩어진 경우(멀티턴)와 배치마다 다른 경우도 본다.
+    """
+    torch.manual_seed(0)
+    m = build(zero_init=False)
+    trainable_only_projectors(m)
+    b = image_batch(m)
+    ids = b["input_ids"]
+    labels = torch.full_like(ids, -100)
+    labels[:, 3:5] = ids[:, 3:5]           # 앞쪽 구간
+    labels[:, -3:] = ids[:, -3:]           # 뒤쪽 구간 (끝 토큰 포함)
+    b["labels"] = labels
+
+    def run(sparse: bool):
+        m.zero_grad(set_to_none=True)
+        if sparse:
+            out = m(**b)
+        else:  # HF 기준: 전 위치 로짓 + 내장 손실
+            orig = m._run_base
+            m._run_base = lambda i, a, lab, **kw: m.base(input_ids=i, attention_mask=a, labels=lab, **kw)
+            try:
+                out = m(**b)
+            finally:
+                m._run_base = orig
+        out.loss.backward()
+        grads = [p.grad.clone() for p in m.projectors.parameters() if p.grad is not None]
+        return out, grads
+
+    sparse, g_sparse = run(True)
+    full, g_full = run(False)
+    assert sparse.logits.shape[1] == 5 < full.logits.shape[1]   # 감독 5개 위치만
+    assert torch.allclose(sparse.loss, full.loss, atol=1e-6), (sparse.loss, full.loss)
+    assert g_sparse and all(torch.allclose(a, c, atol=1e-6) for a, c in zip(g_sparse, g_full))
+
+
+def test_supervised_only_logits_batch_union():
+    """배치 안에서 감독 위치가 다르면 합집합을 계산하고, 각자 아닌 위치는 -100 이 가린다."""
+    m = build(zero_init=False)
+    ids = torch.randint(0, 900, (2, 12), generator=torch.Generator().manual_seed(1))
+    lab = torch.full_like(ids, -100)
+    lab[0, -2:] = ids[0, -2:]
+    lab[1, 4:6] = ids[1, 4:6]
+    with torch.no_grad():
+        out = m(input_ids=ids, attention_mask=torch.ones_like(ids), labels=lab)
+        ref = m.base(input_ids=ids, attention_mask=torch.ones_like(ids), labels=lab)
+    assert out.logits.shape[1] == 4
+    assert torch.allclose(out.loss, ref.loss, atol=1e-6)

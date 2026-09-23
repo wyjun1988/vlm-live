@@ -320,6 +320,11 @@ def train(args) -> int:
                     raise FloatingPointError(f"손실이 {loss.item()} — 샘플 id={batch['id']}")
                 (loss / args.grad_accum).backward()
             live.injector.clear()  # 역전파 재계산까지 끝난 뒤에만 비운다
+            if device.type == "mps":
+                # MPS 캐시 할당기는 모양이 제각각인 샘플마다 새 버퍼를 잡고 잘 놓지 않는다. 상한 기본값이
+                # 권장 작업 세트의 1.7배(32GB 맥에서 ~45GB)라 물리 메모리를 넘겨 스왑으로 빠진다
+                # (M2 실측: 0.8B 파일럿이 80샘플 만에 39GB → 스왑 16GB). CUDA 에서는 해당 없음.
+                torch.mps.empty_cache()
             t0 = time.perf_counter()
             t_fb += t0 - t2
             run_loss += float(loss.detach())
@@ -346,12 +351,25 @@ def train(args) -> int:
                 sps = all_mean(samples_since / max(dt, 1e-9), world, device) * world
                 if is_main:
                     ratios = " ".join(f"L{k}:{v:.3f}" for k, v in sorted(live.injector.last_ratio.items()))
+                    worst = max(live.injector.last_ratio.values(), default=0.0)
+                    if worst > args.inj_warn:
+                        # M2 실측(2026-09-24): lr 1e-3 이면 10스텝 만에 레이어 0 비율이 15~30 이 된다.
+                        # 잔차 스트림 노름은 깊이에 따라 커지므로 레이어 0 에서 같은 주입이 상대적으로 가장 크다.
+                        logger.warning(
+                            "기하 주입이 비전 표현을 압도한다 (최대 비율 %.1f > %.1f) — 시각 정보가 묻힌다. "
+                            "lr 을 낮춰라 (S1 권장 3e-5).", worst, args.inj_warn)
                     gates = " ".join(f"{p.gate.item():+.2f}" for p in live.projectors)
-                    mem = (torch.cuda.max_memory_allocated(device) / 1e9) if device.type == "cuda" else 0.0
+                    if device.type == "cuda":
+                        mem = f"{torch.cuda.max_memory_allocated(device) / 1e9:.1f}GB"
+                    elif device.type == "mps":  # 살아 있는 텐서 / 드라이버 전체(캐시 포함 — 스왑 위험의 지표)
+                        mem = (f"{torch.mps.current_allocated_memory() / 1e9:.1f}/"
+                               f"{torch.mps.driver_allocated_memory() / 1e9:.1f}GB")
+                    else:
+                        mem = "-"
                     n = max(1, run_n)
                     logger.info(
                         "ep %d step %d/%d loss %.4f lr %.2e | inj %s | gate %s | %.1f samp/s | "
-                        "data %.0f geom %.0f fb %.0f ms/샘플 | mem %.1fGB | skip %d | sync %s",
+                        "data %.0f geom %.0f fb %.0f ms/샘플 | mem %s | skip %d | sync %s",
                         epoch, step, total_steps, loss_avg, sched.get_last_lr()[0], ratios or "-",
                         gates, sps, 1e3 * t_data / n, 1e3 * t_geom / n, 1e3 * t_fb / n, mem, skipped,
                         "-" if world == 1 else ("OK" if drift <= 1e-6 else f"DIFF {drift:.1e}"),
@@ -405,7 +423,10 @@ def main() -> int:
     ap.add_argument("--epochs", type=int, default=1)
     ap.add_argument("--max-steps", type=int, default=0)
     ap.add_argument("--max-samples", type=int, default=None)
-    ap.add_argument("--lr", type=float, default=1e-3)
+    ap.add_argument("--lr", type=float, default=3e-5,
+                    help="프로젝터 lr. 1e-3 은 주입이 비전 표현을 수십 배로 압도한다 (M2 실측) — 3e-5 권장")
+    ap.add_argument("--inj-warn", type=float, default=3.0,
+                    help="레이어별 ‖주입‖/‖비전 히든‖ 이 이 값을 넘으면 경고")
     ap.add_argument("--weight-decay", type=float, default=0.0)
     ap.add_argument("--warmup-ratio", type=float, default=0.03)
     ap.add_argument("--grad-accum", type=int, default=16)

@@ -1,3 +1,29 @@
 영상 3 · 문항 119 · 모드 ['halving-image', 'oracle-image', 'oracle-video'] · 키프레임 32
 Loading weights:   0%|          | 0/723 [00:00<?, ?it/s]Loading weights:  85%|████████▍ | 613/723 [00:00<00:00, 6096.04it/s]Loading weights: 100%|██████████| 723/723 [00:00<00:00, 6707.49it/s]
 모델 로드 5.6s (checkpoints/qwen3.5-4b, mps bf16)
+  [1/3] scannetpp/ac48a9b736 (7189프레임, 26문항) · 누적 26문항 · halving-image 35s oracle-image 34s oracle-video 21s
+  [2/3] scannetpp/e398684d27 (2933프레임, 16문항) · 누적 42문항 · halving-image 60s oracle-image 59s oracle-video 36s
+  [3/3] scannetpp/d755b3d9d8 (4434프레임, 77문항) · 누적 119문항 · halving-image 145s oracle-image 144s oracle-video 99s
+
+유형                                   halving-image    oracle-image    oracle-video
+----------------------------------------------------------------------------------
+obj_appearance_order_accuracy                  0.0             0.0            10.0
+object_abs_distance_MRA:.5:.95:.05             9.1            14.5            24.5
+object_counting_MRA:.5:.95:.05                68.7            70.0            49.3
+object_rel_distance_accuracy                   0.0             0.0            56.0
+object_size_estimation_MRA:.5:.95:.05            56.7            60.0            57.5
+room_size_estimation_MRA:.5:.95:.05            50.0            50.0            70.0
+route_planning_accuracy                        0.0             0.0             0.0
+object_rel_direction_accuracy                  0.0             0.0            57.4
+overall                                       23.1            24.3            40.6
+
+키프레임 선택 비용 (halving − oracle, 이미지 모드): -1.3 점
+입력 형식 효과 (이미지 − 비디오 모드, 오라클 선택): -16.3 점
+
+답 형식 실패율 (선택형: 첫 단어가 A~D 아님 / 수치형: 숫자 추출 실패):
+  halving-image     66.4%
+  oracle-image      66.4%
+  oracle-video      25.2%
+
+문항 119 · 디코딩 51s · halving-image 1.22s/문항 · oracle-image 1.21s/문항 · oracle-video 0.83s/문항
+저장: outputs/vsi_local/q4b_smoke.json

@@ -1,0 +1,46 @@
+Loading weights:   0%|          | 0/473 [00:00<?, ?it/s]Loading weights: 100%|██████████| 473/473 [00:00<00:00, 14508.28it/s]
+Warning, cannot find cuda-compiled version of RoPE2D, using a slow pytorch version instead
+Warning, cannot find cuda-compiled version of RoPE2D, using a slow pytorch version instead
+2026-09-24 03:19:49,767 [r0] INFO RoPE2D 폴백 2개를 음수 위치 지원 판본으로 교체했다
+2026-09-24 03:19:52,515 [r0] INFO 파라미터: 전체 1.67B / 학습 27.0M (프로젝터 27.0M, LoRA 0.0M)
+2026-09-24 03:19:52,526 [r0] INFO data/sensenova_1k/sn1k.jsonl: 905 레코드 (LazyJsonl)
+2026-09-24 03:19:52,529 [r0] INFO 스텝 4 (워밍업 1) · GPU 1 × 누적 4 = 유효 배치 4 · 샘플 905
+[transformers] `use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`.
+2026-09-24 03:20:01,880 [r0] INFO ep 0 step 1/4 loss 1.8265 lr 3.00e-05 | inj L0:0.000 L1:0.000 L2:0.000 | gate +1.00 +1.00 +1.00 | 0.4 samp/s | data 48 geom 775 fb 1492 ms/샘플 | mem 5.4/6.4GB | skip 0 | sync -
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/Users/wooyeol/work/3d-vlm-live/src/live3r/train/train.py", line 448, in <module>
+    raise SystemExit(main())
+                     ^^^^^^
+  File "/Users/wooyeol/work/3d-vlm-live/src/live3r/train/train.py", line 444, in main
+    return train(ap.parse_args())
+           ^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wooyeol/work/3d-vlm-live/src/live3r/train/train.py", line 307, in train
+    out = ddp(
+          ^^^^
+  File "/Users/wooyeol/miniforge3/envs/live3r/lib/python3.11/site-packages/torch/nn/modules/module.py", line 1783, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wooyeol/miniforge3/envs/live3r/lib/python3.11/site-packages/torch/nn/modules/module.py", line 1794, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wooyeol/work/3d-vlm-live/src/live3r/model/live3r.py", line 308, in forward
+    return self.base(
+           ^^^^^^^^^^
+  File "/Users/wooyeol/miniforge3/envs/live3r/lib/python3.11/site-packages/torch/nn/modules/module.py", line 1783, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wooyeol/miniforge3/envs/live3r/lib/python3.11/site-packages/torch/nn/modules/module.py", line 1794, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wooyeol/miniforge3/envs/live3r/lib/python3.11/site-packages/transformers/utils/generic.py", line 939, in wrapper
+    output = func(self, *args, **kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wooyeol/miniforge3/envs/live3r/lib/python3.11/site-packages/transformers/models/qwen3_5/modeling_qwen3_5.py", line 1791, in forward
+    loss = self.loss_function(logits=logits, labels=labels, vocab_size=self.config.text_config.vocab_size)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wooyeol/miniforge3/envs/live3r/lib/python3.11/site-packages/transformers/loss/loss_utils.py", line 59, in ForCausalLMLoss
+    logits = logits.float()
+             ^^^^^^^^^^^^^^
+RuntimeError: MPS backend out of memory (MPS allocated: 7.56 GiB, other allocations: 151.77 MiB, max allowed: 8.74 GiB). Tried to allocate 1.91 GiB on shared pool. Use PYTORCH_MPS_HIGH_WATERMARK_RATIO=0.0 to disable upper limit for memory allocations (may cause system failure).

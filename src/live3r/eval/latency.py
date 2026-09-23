@@ -183,9 +183,12 @@ class DeferredReport:
     geom_fps_max: float          # 기하 인코더가 낼 수 있는 최대 fps (= 1000 / geom_frame_ms)
     live_fps_max: float          # 스트림을 실시간으로 따라갈 수 있는 입력 fps (geom_stride 반영)
     prefill_ms: float            # 질문 도착 → 비전 인코딩 + 기하 임베딩 + LLM 프리필
-    ttft_ms: float               # 질문 도착 → 첫 토큰
+    ttft_ms: float               # 질문 도착 → 첫 토큰 (지연 모드: 시각 프리필 전부 포함)
     tpot_ms: float
     visual_tokens: int
+    select_embed_ms: float = 0.0   # 키프레임 확정 + 픽셀 준비 + 기하 임베딩 (prefill() 호출)
+    vision_llm_prefill_ms: float = 0.0  # 비전 타워 + LLM 이 시각 프리픽스를 먹는 시간
+    question_only_ttft_ms: float = 0.0  # 시각 프리픽스가 미리 캐시돼 있을 때 질문 → 첫 토큰
 
     def pretty(self) -> str:
         ok_ttft = "OK " if self.ttft_ms < 1000 else "MISS"
@@ -195,7 +198,11 @@ class DeferredReport:
             f"  나머지 프레임   {self.other_frame_ms_p50:8.2f} ms",
             f"  실시간 추종     입력 {self.live_fps_max:5.1f} fps 까지 — 프레임당 실측 평균 기준 (30fps 웹캠이면 "
             f"{'가능' if self.live_fps_max >= 30 else '불가 — 기하 stride 를 늘려야 한다'})",
-            f"  [{ok_ttft}] TTFT {self.ttft_ms:8.0f} ms  (프리필 {self.prefill_ms:.0f} ms, 목표 < 1000)",
+            f"  [{ok_ttft}] TTFT {self.ttft_ms:8.0f} ms  (질문 도착 후 시각 프리필 전부 포함, 목표 < 1000)",
+            f"      = 키프레임 확정·기하 임베딩 {self.select_embed_ms:.0f} ms"
+            f" + 비전 타워·LLM 시각 프리필 {self.vision_llm_prefill_ms:.0f} ms + 질문·첫 토큰",
+            f"  [{'OK ' if self.question_only_ttft_ms < 1000 else 'MISS'}] 질문만 TTFT "
+            f"{self.question_only_ttft_ms:6.0f} ms  (시각 프리픽스를 스트림 중에 미리 만들어 뒀을 때)",
             f"  TPOT            {self.tpot_ms:8.1f} ms · 비전 토큰 {self.visual_tokens}",
         ])
 
@@ -243,27 +250,33 @@ def benchmark_deferred(
             all_ms.append(dt)
     g_ms, o_ms = sorted(g_ms[2:] or g_ms), sorted(o_ms or [0.0])  # 앞 2개는 워밍업
 
+    from .prefix_cache import PrefixCache
+
+    # (1) 질문 도착 → 키프레임 확정 + 기하 임베딩
     _sync(device)
     t0 = time.perf_counter()
     pre = sess.prefill()
-    ids = prompt.build_query(question, StreamingSession.segments(prompt, pre)).to(device)
-    mm = torch.zeros_like(ids)
-    mm[ids == model.image_token_id] = 1
-    mm[ids == model.video_token_id] = 2
-    kw = dict(input_ids=ids, attention_mask=torch.ones_like(ids), mm_token_type_ids=mm,
-              **{k: v.to(device) for k, v in pre["pixel_kwargs"].items()})
-    with model.injector.primed(pre["geometry"].embeds, model.visual_pos_mask(ids)):
-        out = model.base(**kw, use_cache=True)
-        _sync(device)
-        prefill = (time.perf_counter() - t0) * 1e3
-        nxt = out.logits[:, -1].argmax(-1, keepdim=True)
-        _sync(device)
-        ttft = (time.perf_counter() - t0) * 1e3
-        t1 = time.perf_counter()
-        gen = model.base.generate(**kw, max_new_tokens=max_new_tokens, do_sample=False)
-        _sync(device)
-    n_new = max(1, gen.shape[1] - ids.shape[1])
-    tpot = ((time.perf_counter() - t1) * 1e3 - prefill) / max(1, n_new - 1)
+    _sync(device)
+    t_sel = (time.perf_counter() - t0) * 1e3
+    segs = StreamingSession.segments(prompt, pre)
+    # (2) 비전 타워 + LLM 이 시각 프리픽스를 먹는다
+    t1 = time.perf_counter()
+    pc = PrefixCache(model, prompt, segs, pre["pixel_kwargs"], pre["geometry"], device)
+    _sync(device)
+    t_vis = (time.perf_counter() - t1) * 1e3
+    # (3) 질문 토큰 → 첫 토큰 (시각 프리픽스는 캐시)
+    t2 = time.perf_counter()
+    pc.answer(question, max_new_tokens=1, do_sample=False)
+    _sync(device)
+    t_q = (time.perf_counter() - t2) * 1e3
+    prefill, ttft = t_sel + t_vis, t_sel + t_vis + t_q
+    # (4) TPOT — 캐시에서 이어서 토큰을 하나씩 (프리필을 다시 하지 않는다)
+    t3 = time.perf_counter()
+    _, _ = pc.answer(question, max_new_tokens=max_new_tokens, do_sample=False,
+                     min_new_tokens=max_new_tokens)
+    _sync(device)
+    tpot = ((time.perf_counter() - t3) * 1e3 - t_q) / max(1, max_new_tokens - 1)
+
     gms = g_ms[len(g_ms) // 2]
     # 실시간 추종: 가정 공식이 아니라 실측 평균 (키프레임 때문에 도는 기하까지 포함)
     per_frame_avg = sum(all_ms) / max(1, len(all_ms))
@@ -272,4 +285,5 @@ def benchmark_deferred(
         geom_frame_ms_p50=gms, other_frame_ms_p50=o_ms[len(o_ms) // 2],
         geom_fps_max=1000.0 / max(gms, 1e-6), live_fps_max=1000.0 / max(per_frame_avg, 1e-6),
         prefill_ms=prefill, ttft_ms=ttft, tpot_ms=max(0.0, tpot), visual_tokens=pre["n_visual_tokens"],
+        select_embed_ms=t_sel, vision_llm_prefill_ms=t_vis, question_only_ttft_ms=t_q,
     )

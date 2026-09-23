@@ -1,4 +1,4 @@
-# 서버 다음 진행사항 — 2026-09-23
+# 서버 다음 진행사항 — 2026-09-23 (09-24 M2 실측 반영)
 
 **서버가 마지막으로 확인한 커밋은 `9a48137` 이다. 그 뒤의 변경 전체를 여기 요약한다.**
 이 문서를 0단계부터 순서대로 따르면 된다. 단계마다 "보내줄 것"이 있다.
@@ -44,6 +44,32 @@
 | 2. 일반 | **`videomme`** | Δ ≥ −1.0 | **101 GB** (서버 여유 1TB 확인 → 원래 게이트 유지) |
 | 참고 | `mmstar` | 판정 안 함, 보고만 | 0.1 GB |
 | 3. 지연 | `bench_latency.py` | drift < 1.2, ingest p95 예산 내 | — |
+
+### F. M2 실가중치 실측으로 찾은 것 (2026-09-24 — H100 이 막힌 동안)
+실제 Qwen3.5 0.8B/4B · 실제 CUT3R 체크포인트 · 실제 Sensenova 1k(HF 미리보기)로 로컬에서 돌려 봤다.
+상세 수치는 `docs/M2_LOCAL_20260924.md`.
+
+| # | 발견 | 서버 영향 · 조치 |
+|---|---|---|
+| 1 | **S1 lr 1e-3 이면 주입이 비전 표현을 15~30배로 덮는다** (레이어 0, 10스텝 만에) | **8단계 lr 을 3e-5 로** 바꿨다. `inj` > 3 이면 학습 로그에 경고 |
+| 2 | CUT3R 원본 `load_model()` 이 torch≥2.6 에서 실패 (`weights_only`, omegaconf) | 어댑터가 필요한 클래스만 허용해 안전하게 연다. `pip install omegaconf` 필요 (requirements 반영) |
+| 3 | CUT3R 코드를 임포트하면 **루트 로거가 DEBUG** 가 된다 (accelerate `get_logger`) → PIL 이 이미지마다 DEBUG ~10줄 → 83만 건이면 로그 수 GB | 임포트 직후 레벨 복원 |
+| 4 | `gdown --fuzzy` 가 최신 gdown 에 없다 | 5단계 명령을 파일 ID 형식으로 |
+| 5 | Qwen3.5 템플릿 thinking 기본값이 크기마다 반대 (0.8B·2B off / **4B·9B on**) | 입력은 원래 빈 think 블록을 직접 넣어 무관. 기본값에 기대던 테스트 1개가 **서버의 4B 토크나이저로는 실패했을 것** → 수정 |
+| 6 | `LazyJsonl` 이 한 번 쓰인 뒤 피클링 실패 (spawn 워커) | 수정 (리눅스 fork 에서는 안 터졌을 것) |
+| 7 | **LM 헤드가 전 위치 로짓을 만든다** — 어휘 248k. 2.6k 토큰 샘플에서 순전파 추가 메모리 9.25GB (감독 토큰 61개). **4B · 8k 토큰이면 로짓·CE 만 ~28GB + 기울기** | 감독 위치 로짓만 계산 → 같은 샘플 1.17GB, 손실 동일(Δ 0). **서버 학습 메모리·속도에 직접 영향** — 7단계 `mem` 이 예전 예상보다 훨씬 낮게 나올 것 |
+
+실가중치 결과: 우리 입력 경로 = 공식 경로 (4B bf16 로짓 Δ **0.0**) · zero-init 주입은 베이스와 로짓 Δ 0.0 ·
+**VSI 키프레임 선택 비용 없음** (4B · 영상 60개 1,151문항: halving 49.9 vs 오라클 48.6, Δ 95% [−1.7, +4.9]) ·
+**베이스 4B VSI ≈ 50** (비디오 모드, 부분집합 — 73.3 까지 ~23점) · 4B 지연 모드 TTFT 의 94% 가 시각 프리필
+(질문만 TTFT 는 M2 에서도 0.41초) · **게이트 1 교란 발견** (아래 10-2 의 ⚠️).
+
+**S1 파일럿 (0.8B + 실제 CUT3R · Sensenova 1k 미리보기 905건 · 114스텝)**: 학습은 깨끗하게 돌았다
+(주입 비율 < 1, 손실 1.7 → 0.7). 그런데 절제 판정은 **"기하를 신호로만 쓴다"** — 홀드아웃에서
+none 2.49 → real 0.93 이지만 **shuffled 0.90 ≈ real**. 생성해 보면 프로젝터가 배운 건 Sensenova 의
+**답 형식**(`C. the right`, 짧은 `yes`)과 답 분포였다 (베이스는 `A`, `Let's break this down…`).
+주입 경로가 기하와 무관한 소프트 프롬프트처럼 쓰인 것. 서버 규모에서 내용이 쓰이기 시작할지는
+9단계가 판정한다.
 
 로컬 검증: 테스트 90개(공식 프로세서·실제 Qwen3.5 토크나이저 대조 포함), 가짜 Sensenova 로
 S1 → S2(LoRA+checkpointing) → DDP 2프로세스 end-to-end, 실제 mp4 로 평가 3경로
@@ -97,7 +123,7 @@ huggingface-cli download Qwen/Qwen3.5-4B --local-dir /group-volume/wooyeol/model
 LIVE3R_TOKENIZER=/group-volume/wooyeol/models/Qwen3.5-4B python -m pytest tests -q
 ```
 
-**기대: `78 passed`.** 특히 아래가 통과해야 한다 — 서버의 transformers 판이 우리와 같은 입력
+**기대: 전부 통과 (2026-09-24 기준 `100 passed`).** 특히 아래가 통과해야 한다 — 서버의 transformers 판이 우리와 같은 입력
 형식을 만든다는 증거다:
 - `test_vision_official.py` — 패치 평탄화가 공식과 비트 단위로 같다
 - `test_prompt_builder.py::test_images_match_official_processor` / `test_video_matches_official_processor`
@@ -214,11 +240,16 @@ PYTHONPATH=src torchrun --nproc_per_node 8 -m live3r.train.train \
   --config configs/live3r_4b.yaml --base-model /group-volume/wooyeol/models/Qwen3.5-4B \
   --geometry-checkpoint checkpoints/cut3r_512_dpt_4_64.pth --cut3r-repo third_party/CUT3R \
   --stage align --ann data/sensenova.jsonl --media-root data/sensenova_media \
-  --output outputs/4b_s1 --epochs 1 --lr 1e-3 --grad-accum 16 --log-every 20 --save-every 500 \
+  --output outputs/4b_s1 --epochs 1 --lr 3e-5 --grad-accum 16 --log-every 20 --save-every 500 \
   --grad-checkpointing 2>&1 | tee outputs/4b_s1.log
 ```
 
 유효 배치 = 8 × 16 = 128. S1 은 프로젝터만 학습한다(LLM 동결). S2(LoRA)는 S1 결과를 보고 정한다.
+
+> ⚠️ **lr 은 3e-5** 다 (예전 문서의 1e-3 아님). M2 에서 실데이터로 재보니 lr 1e-3 은 10스텝 만에
+> 레이어 0 의 주입 비율(`inj L0`)이 **15~30** 이 된다 — 기하 신호가 비전 표현을 수십 배로 덮는다.
+> LLaVA 식 프로젝터(비전 토큰을 **대체**)의 lr 관례를 **더하는** 구조에 그대로 쓰면 안 된다.
+> 로그의 `inj` 가 3 을 넘으면 경고가 뜬다 — 그러면 lr 을 더 낮춰라.
 
 ---
 
@@ -239,6 +270,10 @@ PYTHONPATH=src python scripts/eval_geometry_ablation.py \
 - `shuffled − real > 0` (95% 하한이 양수) → 기하의 **내용**을 쓴다 → S2 진행
 - `none − real > 0` 인데 shuffled 와 구분 안 됨 → 기하를 "신호"로만 쓴다 → S2 전에 원인을 본다
 - 둘 다 ≈ 0 → 기하가 무시된다 → 멈추고 보고
+
+> M2 파일럿(0.8B · 905샘플)은 **두 번째 경우**였고, 원인은 **답 형식 학습**이었다 (`docs/M2_LOCAL_20260924.md` 6절).
+> 서버 S1 도 같으면 S2 로 바로 넘어가지 말고 보고해 달라 — 형식을 기하 경로 밖에서 흡수시키는 설계를 같이 정한다.
+> `none − real` 이 크다는 것만으로는 기하 효과가 아니다.
 
 **보내줄 것**: 콘솔 요약 전체 (특히 판정 줄과 "같은 격자 모양 비율")
 
@@ -286,6 +321,10 @@ BASE_MODEL=/group-volume/wooyeol/models/Qwen3.5-4B TASKS=vsibench,videomme,mmsta
 # 스트리밍 (라이브 제약) vs 오프라인 오라클 — 이 둘의 차이가 '키프레임 선택 비용'
 bash scripts/run_streaming_eval.sh configs/live3r_4b.yaml "" outputs/stream_base
 SELECTOR=uniform_oracle bash scripts/run_streaming_eval.sh configs/live3r_4b.yaml "" outputs/stream_oracle
+
+# 같은 오라클을 비디오 모드로 — 게이트 1 기준선을 정할 재료 (10-2 의 ⚠️)
+VISUAL_MODE=video SELECTOR=uniform_oracle \
+  bash scripts/run_streaming_eval.sh configs/live3r_4b.yaml "" outputs/stream_oracle_video
 ```
 
 ### 10-2. 게이트 — S1(또는 S2) 결과가 나오면
@@ -298,6 +337,13 @@ BASE_MODEL=/group-volume/wooyeol/models/Qwen3.5-4B \
 같은 경로에서 베이스(weights 없음)와 학습 결과를 한 번씩 재고 `check_gate.py` 가 판정한다:
 공간(vsibench) Δ ≥ +1.0 · 일반(videomme) Δ ≥ −1.0. MMStar 는 같이 재서 보고만 한다.
 대표 지표: vsibench → `vsibench_overall`, videomme → `videomme_perception_score`, mmstar → `average`.
+
+> ⚠️ **게이트 1 교란 (M2 실측 — 기준선 결정 대기 중)**: 베이스는 키프레임을 **이미지로** 받으면 VSI 답 형식을
+> 자주 어긴다 — 4B 에서 66% (선택형에 `"To determine..."` 으로 시작해 16토큰에서 잘려 0점). 같은 키프레임을
+> 비디오 모드로 주면 25%. 그래서 이미지 모드 베이스 점수가 비디오 모드보다 크게 낮고(4B 스모크 24 vs 41),
+> 학습이 공간 이해 없이 **"짧게 답하는 법"만 배워도** +1.0 을 넘을 수 있다. 기준선을 베이스의
+> **최선 형식**으로 바꿀지 정하는 중이니, 판정 출력과 함께 10-1 의 비디오 모드 오라클 점수를 보내달라.
+> 9단계 절제 평가는 이 교란에 안전하다 (다른 샘플의 기하도 같은 프로젝터를 지나 형식 효과가 양쪽에 똑같이 든다).
 
 **보내줄 것**: 10-1 의 VSI·VideoMME·MMStar 점수와 스트리밍/오라클 VSI, 10-2 의 판정 출력 전체.
 
@@ -315,6 +361,6 @@ BASE_MODEL=/group-volume/wooyeol/models/Qwen3.5-4B \
 [6] smoke B: loss, inj, geom ms
 [7] DDP: sync OK?, samp/s → 1에폭 예상 시간
 [9] (S1 후) 절제: real / shuffled / none 손실, 판정, 같은 격자 비율
-[10-1] 베이스라인: VSI(오프라인) / VideoMME / MMStar / VSI(스트리밍) / VSI(오라클)
+[10-1] 베이스라인: VSI(오프라인) / VideoMME / MMStar / VSI(스트리밍) / VSI(오라클) / VSI(오라클·비디오 모드)
 [10-2] 게이트: check_gate.py 출력
 ```
