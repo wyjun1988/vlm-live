@@ -45,6 +45,23 @@ Qwen3.5-4B 스펙 (HF 모델카드):
 
 → 그래서 코드는 `GeometryStream` 인터페이스로 추상화하고 어댑터를 갈아끼운다.
 
+### CUT3R 내부 (저장소 코드 직접 확인, 2026-09-23)
+```
+enc_embed_dim 1024 / enc_depth 24   dec_embed_dim 768 / dec_depth 12   patch 16
+state_size 324 (또는 256), local_mem_size 256
+_decoder() 가 돌려주는 dec = 길이 dec_depth+1 튜플
+    dec[0]      [B, N, 1024]   투영 전 인코더 출력, 포즈 토큰 없음
+    dec[1..12]  [B, 1+N, 768]  **index 0 이 카메라/포즈 토큰**
+CUT3R 자신의 헤드가 dec[0], dec[6], dec[9], dec[12] 사용 → **우리 탭도 (6,9,12)**
+재귀 상태 = (state_feat, state_pos, init_state_feat, mem, init_mem) — 전부 고정 크기
+```
+
+⚠️ **curope 컴파일 필수.** 포즈 토큰 위치가 `-1` 인데 순수 PyTorch RoPE2D 폴백은
+cos/sin 테이블 `F.embedding` 룩업이라 음수에서 IndexError. CUDA 커널은 `freq = pos*inv_freq`
+직접 계산이라 무사하다. 어디에도 안 적혀 있는 함정 — `src/live3r/geometry/rope_patch.py` 로 우회.
+추가로 croco 는 `models.pos_embed` 와 `croco.models.pos_embed` 두 경로로 동시 로드되므로
+패치는 **둘 다** 잡아야 한다.
+
 ## 3. 융합(fusion) 방식 — VLM-3R vs SpatialStack
 
 ### VLM-3R (CVPR 2026, VITA-Group)

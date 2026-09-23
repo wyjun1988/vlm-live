@@ -35,7 +35,7 @@ drift 1.08 (프레임당 비용이 스트림 길이에 거의 무관)
 - [x] 스케일별 설정 (4B / 2B / 0.8B)
 - [x] 데이터 로더 + 2단계 학습 스크립트 (`src/live3r/data`, `src/live3r/train`)
 - [x] 평가 계획 (`docs/BENCHMARKS.md`) — 채택 게이트 사전 등록
-- [ ] CUT3R 어댑터의 프레임 추론 연결 — **GPU 머신에서 30분 작업** (§막힌 곳)
+- [x] **CUT3R 어댑터 완성** — 실제 저장소 코드로 재귀 루프·탭 토큰·포즈 토큰 검증
 - [ ] lmms-eval 연동 (태스크 어댑터)
 - [ ] 2B / 0.8B 스케일 다운 실측
 
@@ -89,13 +89,24 @@ scripts/      setup_env.sh  smoke_test.py  bench_latency.py  verify_geometry_ada
    `get_rope_index` 가 grid 를 프레임 수만큼 쪼개 소비하는 것과 어긋난다.
    학습 콜레이터와 `LiveSession` 이 같은 형식을 쓴다.
 
-## 막힌 곳 (GPU 머신에서 풀어야 함)
+## CUT3R 연결 — GPU 머신에서 할 일
 
-`src/live3r/geometry/cut3r.py::CUT3RStream.ingest` 가 `NotImplementedError` 다.
-CUT3R 저장소의 프레임 단위 추론 진입점(리비전마다 이름이 다름)을 연결해야 한다.
-탭 토큰 추출은 forward hook 으로 이미 걸려 있으므로, 추론 호출 한 줄과
-`GeomOutput` 조립만 남았다. `scripts/verify_geometry_adapter.py` 가 검증한다.
-그 전까지는 `geometry.name=dummy` 로 전체 파이프라인이 돈다.
+어댑터는 완성됐고 실제 CUT3R 코드로 구조 검증까지 끝났다
+(`scripts/verify_cut3r_adapter.py`, 체크포인트 없이 소형 랜덤 가중치로).
+GPU 머신에서 남은 건 **실가중치 실측** 뿐이다:
+
+```bash
+git clone https://github.com/CUT3R/CUT3R
+cd CUT3R/src/croco/models/curope && python setup.py build_ext --inplace && cd -
+gdown --fuzzy 'https://drive.google.com/file/d/1Asz-ZB3FfpzZYwunhQvNPZEUA8XUNAYD/'
+PYTHONPATH=src python scripts/verify_geometry_adapter.py --name cut3r \
+    --checkpoint cut3r_512_dpt_4_64.pth --tap-layers 6 9 12 --repo-path ./CUT3R
+```
+
+> ⚠️ **curope 컴파일은 선택이 아니다.** CUT3R 은 카메라/포즈 토큰의 2D 위치를 `-1` 로 준다.
+> CUDA 커널은 `freq = pos * inv_freq` 로 직접 계산해 음수도 정상이지만,
+> 순수 PyTorch 폴백은 cos/sin 테이블을 `F.embedding` 으로 **룩업**해서 음수에서 IndexError 가 난다.
+> (`src/live3r/geometry/rope_patch.py` 가 폴백을 고쳐 CPU/MPS 에서도 돌게 해뒀지만, 속도는 컴파일판이 낫다.)
 
 ## 위험 — "특화 역설"
 

@@ -34,6 +34,8 @@ class GeometryConfig:
     freeze: bool = True
     # 카메라/포즈 토큰을 별도 슬롯으로 LLM 에 노출할지 (OVO-S-Bench L4 대응)
     expose_pose_token: bool = True
+    # 어댑터별 추가 옵션 (예: cut3r 의 repo_path). 어댑터가 해석한다.
+    options: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -142,7 +144,7 @@ def _build(klass: type, raw: dict[str, Any] | None):
         raise ValueError(f"{klass.__name__} 에 없는 키: {sorted(unknown)}")
     kwargs = {}
     for k, v in raw.items():
-        # tuple 필드는 YAML 에서 list 로 온다
+        # tuple 필드는 YAML 에서 list 로 온다 (dict 필드는 그대로 둔다)
         if isinstance(v, list):
             v = tuple(v)
         kwargs[k] = v

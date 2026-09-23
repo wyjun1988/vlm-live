@@ -6,12 +6,20 @@ attn_implementation: sdpa
 geometry:
   name: cut3r              # dummy | cut3r | anchor3r | lingbot | vggt_window
   checkpoint: checkpoints/cut3r_512_dpt_4_64.pth
-  tap_layers: [11, 17, 23] # SpatialStack 기본값
-  hidden_size: 768         # CUT3R 디코더 잠재 차원 — 실제 체크포인트로 확인 필요
+  # CUT3R 디코더는 12층이고, CUT3R 자신의 헤드가 dec[0],dec[6],dec[9],dec[12] 를 쓴다.
+  # SpatialStack 의 [11,17,23] 은 VGGT 24층 기준이라 그대로 쓰면 범위를 벗어난다.
+  tap_layers: [6, 9, 12]
+  hidden_size: 768         # = dec_embed_dim (저장소 코드 확인)
   image_size: 512
   stride: 1
   freeze: true
   expose_pose_token: true
+  options:
+    # CUT3R 클론 경로. PYTHONPATH 로 줘도 된다.
+    repo_path: null
+    # ⚠️ GPU 머신에서 반드시: cd <CUT3R>/src/croco/models/curope && python setup.py build_ext --inplace
+    #    CUT3R 포즈 토큰 위치가 -1 인데 순수 PyTorch RoPE2D 폴백은 음수에서 터진다.
+    #    (live3r 이 폴백을 고쳐서 돌긴 하지만, 컴파일판이 훨씬 빠르다)
 
 fusion:
   mode: deepstack

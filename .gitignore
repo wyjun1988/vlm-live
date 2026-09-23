@@ -20,3 +20,4 @@ wandb/
 *.safetensors
 *.mp4
 *.npy
+.refs/
