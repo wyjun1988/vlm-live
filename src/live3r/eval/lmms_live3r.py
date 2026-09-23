@@ -69,7 +69,7 @@ class Live3R(_Qwen3_5Base):
         keyframe_budget: int = 32,
         geom_stride: int = 3,
         stream_mode: str = "deferred",
-        vlm_short_side: int = 224,
+        visual_mode: str = "image",
         enable_thinking: bool = False,
         **kwargs,
     ) -> None:
@@ -89,7 +89,7 @@ class Live3R(_Qwen3_5Base):
         self.keyframe_budget = int(keyframe_budget)
         self.geom_stride = int(geom_stride)
         self.stream_mode = stream_mode
-        self.vlm_short_side = int(vlm_short_side)
+        self.visual_mode = visual_mode
         self.stream_reports: list[dict] = []
 
         # 상위 클래스가 이미 올려둔 베이스 모델을 그대로 감싼다 (두 번 로드하지 않는다)
@@ -133,15 +133,18 @@ class Live3R(_Qwen3_5Base):
 def _streaming_generate(self, requests):
     """스트리밍 제약 하에서 답한다. 프레임은 시간순 1패스, 총 길이는 보지 않는다.
 
-    부모의 generate_until 을 쓰지 않는 유일한 경로다 — 부모는 _probe_video_metadata 로
-    **총 프레임 수를 먼저 조회**해서 균등 샘플링한다. 그게 정확히 우리가 금지한 것이다.
+    부모의 generate_until 을 쓰지 않는 유일한 경로다 — 부모(공식 비디오 프로세서)는
+    `linspace(0, total_frames-1, n)` 으로 **총 프레임 수를 알고** 균등 샘플링한다.
+    그게 정확히 우리가 금지한 것이다.
     """
     import torch
     from tqdm import tqdm
 
+    from ..data.prompt import PromptBuilder
     from .streaming import SELECTORS, CausalVideoFeed, StreamingAudit, StreamingSession
 
-    live, tok = self.live3r, self.tokenizer
+    live = self.live3r
+    prompt = PromptBuilder.from_model(live, tokenizer=self.tokenizer)
     results = []
     for req in tqdm(requests, disable=(self.rank != 0), desc="Streaming"):
         context, gen_kwargs, doc_to_visual, doc_id, task, split = req.args
@@ -150,56 +153,34 @@ def _streaming_generate(self, requests):
         if video is None:
             raise ValueError(f"스트리밍 평가는 영상 태스크 전용이다 (doc {doc_id})")
 
-        sel_cls = SELECTORS[self.selector_name]
-        sel = sel_cls(self.keyframe_budget)
+        sel = SELECTORS[self.selector_name](self.keyframe_budget)
         audit = StreamingAudit()
         sess = StreamingSession(
-            live, sel, geom_stride=self.geom_stride, vlm_short_side=self.vlm_short_side,
-            mode=self.stream_mode, device=live.base.device, audit=audit,
+            live, sel, geom_stride=self.geom_stride, mode=self.stream_mode,
+            visual_mode=self.visual_mode, device=live.base.device, audit=audit,
         )
         sess.consume(CausalVideoFeed(video, audit))
         pre = sess.prefill()
 
-        ids, mm = _build_stream_prompt(self, pre, context.replace("<image>", "").strip())
+        question = context.replace("<image>", "").replace("<video>", "").strip()
+        ids = prompt.build_query(question, StreamingSession.segments(prompt, pre)).to(live.base.device)
+        mm = torch.zeros_like(ids)
+        mm[ids == live.image_token_id] = 1
+        mm[ids == live.video_token_id] = 2
         mask = live.visual_pos_mask(ids)
         gk = self._build_generate_kwargs(gen_kwargs)
         with torch.no_grad(), live.injector.primed(pre["geometry"].embeds, mask):
             out = live.base.generate(
                 input_ids=ids, attention_mask=torch.ones_like(ids), mm_token_type_ids=mm,
-                pixel_values_videos=pre["pixel_values_videos"],
-                video_grid_thw=pre["video_grid_thw"], **gk,
+                **pre["pixel_kwargs"], **gk,
             )
-        ans = tok.decode(out[0, ids.shape[1]:], skip_special_tokens=True)
+        ans = self.tokenizer.decode(out[0, ids.shape[1]:], skip_special_tokens=True)
         for term in gen_kwargs.get("until", []) or []:
             if term:
                 ans = ans.split(term)[0]
         results.append(self._strip_thinking(ans))
         self.stream_reports.append(sess.report(strict=True) | {"doc_id": doc_id})
     return results
-
-
-def _build_stream_prompt(self, pre, question: str):
-    """Qwen3.5 비디오 규약(프레임마다 별도 vision 세그먼트)으로 프롬프트를 만든다."""
-    import torch
-
-    from ..data.collate import Live3RCollator
-
-    tok = self.tokenizer
-    grid = pre["video_grid_thw"]
-    n_patches = int(grid[0, 0])
-    per_patch = pre["n_visual_tokens"] // max(1, n_patches)
-    col = Live3RCollator(self.processor, self.live3r.vision_patch,
-                         self.live3r.temporal_patch, self.live3r.spatial_merge)
-    body = col.build_video_prompt(n_patches, per_patch)
-    prompt = tok.apply_chat_template(
-        [{"role": "user", "content": body + "\n" + question}],
-        tokenize=False, add_generation_prompt=True,
-    )
-    ids = tok(prompt, return_tensors="pt", add_special_tokens=False).input_ids.to(
-        self.live3r.base.device
-    )
-    vid = tok.convert_tokens_to_ids(col.video_token)
-    return ids, (ids == vid).long() * 2
 
 
 def _load_trained(live, path: str) -> None:

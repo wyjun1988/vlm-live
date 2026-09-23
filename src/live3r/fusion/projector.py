@@ -26,6 +26,15 @@ class GeometryProjector(nn.Module):
         mlp_ratio: 은닉 배율
         zero_init: 마지막 Linear 를 0 으로 초기화. True 면 학습 시작 시 주입량이 정확히 0 →
             베이스 VLM 동작 보존. 특화 역설(docs/RESEARCH_NOTES.md §5-1) 방어의 1차 장치.
+
+    ⚠️ 초기화 교착 (2026-09-23 수정):
+        예전엔 fc2=0 **그리고** gate=0 으로 뒀다. 출력이 fc2(h)·gate 라서
+            ∂L/∂gate = Σ fc2(h)·∂L/∂y = 0   (fc2 가 0 이므로)
+            ∂L/∂fc2  = gate·(…)          = 0   (gate 가 0 이므로)
+        → **모든 기울기가 정확히 0 — 프로젝터가 영원히 학습되지 않는다.**
+        지금은 ControlNet zero-conv 방식: fc2 만 0, gate 는 1.0.
+        초기 출력은 여전히 정확히 0 이고, fc2 에는 첫 스텝부터 기울기가 흐른다.
+        (tests/test_projector_learning.py 가 회귀를 막는다)
     """
 
     def __init__(
@@ -49,8 +58,8 @@ class GeometryProjector(nn.Module):
         self.act = nn.GELU()
         self.drop = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
         self.fc2 = nn.Linear(hidden, d_llm)
-        # 주입 세기를 학습으로 조절 — 레이어별로 기하가 얼마나 필요한지 데이터가 정하게 둔다
-        self.gate = nn.Parameter(torch.zeros(1))
+        # 레이어별 주입 세기 스칼라. 1.0 으로 시작한다 — 0 으로 두면 fc2 와 함께 교착된다(위 docstring).
+        self.gate = nn.Parameter(torch.ones(1))
 
         if zero_init:
             nn.init.zeros_(self.fc2.weight)
@@ -111,7 +120,8 @@ class PoseProjector(nn.Module):
             nn.GELU(),
             nn.Linear(d_llm, d_llm),
         )
-        self.gate = nn.Parameter(torch.zeros(1))
+        # GeometryProjector 와 같은 이유로 gate 는 1.0 에서 시작한다 (0 이면 교착)
+        self.gate = nn.Parameter(torch.ones(1))
         if zero_init:
             nn.init.zeros_(self.net[-1].weight)
             nn.init.zeros_(self.net[-1].bias)

@@ -92,7 +92,7 @@ def main() -> int:
 
     geo.reset()
     geom_outs = [geo.ingest(torch.randn(1, 3, 224, 224)) for _ in range(T)]
-    bundle = model.build_geometry_embeds(geom_outs, llm_grid_hw=(gh // m, gw // m))
+    bundle = model.build_geometry_embeds(geom_outs, llm_grids=(gh // m, gw // m))
     check(
         "기하 임베딩 토큰 수 == 비전 토큰 수",
         bundle.embeds[0].shape[0] == n_vis_tokens,
@@ -151,10 +151,14 @@ def main() -> int:
         sess.ingest(frames[i], geom_frames[i])
     s = sess.summary()
     check("블록 수 == 프레임/temporal_patch", s["blocks"] == 24 // tp, str(s["blocks"]))
+    from live3r.data.vision import smart_resize
+
+    rh, rw = smart_resize(H, W, model.spec.factor, model.spec.min_pixels, model.spec.max_pixels)
+    per_block = (rh // (p * m)) * (rw // (p * m))  # 공식처럼 min_pixels 를 적용한 해상도 기준
     check(
         "누적 비전 토큰 == 블록 × 프레임당 토큰",
-        s["visual_tokens"] == s["blocks"] * (gh // m) * (gw // m),
-        f'{s["visual_tokens"]}',
+        s["visual_tokens"] == s["blocks"] * per_block,
+        f'{s["visual_tokens"]} = {s["blocks"]} × {per_block} ({H}x{W} → smart_resize {rh}x{rw})',
     )
     check("기하 상태 상수 유지", s["geometry_state_bytes"] == b0, str(s["geometry_state_bytes"]))
     check("drift < 1.5 (스트리밍 성립)", s["drift"] < 1.5, f'drift={s["drift"]:.3f}')

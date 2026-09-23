@@ -101,15 +101,17 @@ def benchmark_stream(
         torch.cuda.reset_peak_memory_stats()
 
     H, W = frame_hw
-    gH, gW = geom_hw or (model.cfg.geometry.image_size, model.cfg.geometry.image_size)
     sess = LiveSession(model, device=device)
 
+    def frame():
+        return torch.randint(0, 255, (H, W, 3), dtype=torch.uint8)
+
     for i in range(warmup):
-        sess.ingest(torch.randn(3, H, W), torch.randn(3, gH, gW))
+        sess.ingest(frame())
     sess.reset()
 
     for _ in range(n_frames):
-        sess.ingest(torch.randn(3, H, W), torch.randn(3, gH, gW))
+        sess.ingest(frame())
     s = sess.summary()
 
     per_frame = sorted(
@@ -121,7 +123,7 @@ def benchmark_stream(
 
     offline_ttft = None
     if measure_offline:
-        offline_ttft = _measure_offline_ttft(model, n_frames, (H, W), (gH, gW), q, device)
+        offline_ttft = _measure_offline_ttft(model, n_frames, (H, W), q, device)
 
     return LatencyReport(
         label=label,
@@ -140,17 +142,16 @@ def benchmark_stream(
 
 
 @torch.no_grad()
-def _measure_offline_ttft(model, n_frames, frame_hw, geom_hw, question, device) -> float:
+def _measure_offline_ttft(model, n_frames, frame_hw, question, device) -> float:
     """오프라인 방식: 질문이 올 때마다 전 프레임을 처음부터 다시 인코딩한다.
 
     SpatialStack(VGGT) 같은 구성이 실제로 하는 일이고, 우리가 이기려는 기준선이다.
     """
     H, W = frame_hw
-    gH, gW = geom_hw
     sess = LiveSession(model, device=device)
     t0 = time.perf_counter()
     for _ in range(n_frames):
-        sess.ingest(torch.randn(3, H, W), torch.randn(3, gH, gW))
+        sess.ingest(torch.randint(0, 255, (H, W, 3), dtype=torch.uint8))
     sess.ask(question, max_new_tokens=1)
     return (time.perf_counter() - t0) * 1e3
 

@@ -33,6 +33,15 @@ from typing import Iterator
 
 import torch
 
+from ..data.vision import (
+    frame_timestamps,
+    geometry_frame,
+    llm_grid,
+    prepare_image,
+    prepare_video,
+    tokens_per_step,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -100,6 +109,8 @@ class CausalVideoFeed:
         self.path = Path(path)
         self.audit = audit or StreamingAudit()
         self._consumed = False
+        #: 카메라 fps 는 스트림 시작 시점에 아는 메타데이터라 미래 정보가 아니다 (총 길이와 다르다)
+        self.fps: float | None = None
 
     def __len__(self):  # noqa: D105
         self.audit.length_peeks += 1
@@ -129,6 +140,8 @@ class CausalVideoFeed:
             av = None
         if av is not None:
             with av.open(str(self.path)) as c:
+                st = c.streams.video[0]
+                self.fps = float(st.average_rate) if st.average_rate else None
                 for frame in c.decode(video=0):
                     yield torch.from_numpy(frame.to_ndarray(format="rgb24"))
             return
@@ -136,6 +149,7 @@ class CausalVideoFeed:
         import decord  # type: ignore
 
         vr = decord.VideoReader(str(self.path))
+        self.fps = float(vr.get_avg_fps())
         i = 0
         while True:
             try:
@@ -148,11 +162,14 @@ class CausalVideoFeed:
 class TensorFeed(CausalVideoFeed):
     """테스트·합성용 — 미리 만든 텐서 [T,H,W,3] 를 같은 규약으로 흘린다."""
 
-    def __init__(self, frames: torch.Tensor, audit: StreamingAudit | None = None) -> None:
+    def __init__(
+        self, frames: torch.Tensor, audit: StreamingAudit | None = None, fps: float = 30.0
+    ) -> None:
         self.path = Path("<tensor>")
         self.audit = audit or StreamingAudit()
         self._consumed = False
         self._frames = frames
+        self.fps = fps
 
     def _iter_raw(self):
         for t in range(self._frames.shape[0]):
@@ -364,8 +381,8 @@ DEFAULT_SELECTOR = "halving"
 @dataclass
 class _Kept:
     index: int
-    frame: torch.Tensor      # [3,H,W] VLM 해상도, 정규화됨
-    geom: object             # GeomOutput
+    raw: torch.Tensor        # [H,W,3] uint8 — VLM 전처리는 질문 시점에 (모드가 정해진 뒤) 한다
+    geom: object             # GeomOutput — 이 프레임을 먹은 직후의 기하 출력
 
 
 class StreamingSession:
@@ -374,14 +391,19 @@ class StreamingSession:
     핵심 구조 (docs/DIRECTION_20260923.md §3 이중 레이트):
         * 기하 인코더 — `geom_stride` 간격으로 **계속** 돌아 전 구간을 상수 상태에 압축
         * LLM 비전 토큰 — 예산 내 키프레임만. 선택은 인과적
-    기하 상태가 전 구간을 들고 있으므로 LLM 이 모든 프레임을 볼 필요가 없다.
-    이 분리가 오프라인 VGGT 에는 불가능한, 우리 쪽에만 있는 여유다.
 
-    모드:
+    모드 (`mode`):
         deferred(기본)   키프레임을 밖에 모아뒀다가 질문 시점에 프리필.
                          되물림이 가능해 halving/reservoir 를 쓸 수 있다. TTFT 에 프리필 포함.
         incremental      받는 대로 LLM 에 흘려넣는다. TTFT 최소. 되물림 불가라
                          stride 처럼 되물림이 필요 없는 선택기만 쓸 수 있다.
+
+    키프레임을 LLM 에 넣는 형식 (`visual_mode`):
+        image(기본)  키프레임마다 별도 이미지 블록. 기하 토큰이 키프레임과 1:1 로 붙는다.
+                     SenseNova-SI(이미지 시퀀스)로 학습한 프로젝터와 **입력 분포가 같다.**
+        video        Qwen 비디오 형식(2프레임=1블록, 타임스탬프). 토큰은 절반이지만,
+                     띄엄띄엄 뽑힌 키프레임 두 장이 한 블록으로 섞이고 기하도 2장 평균이 된다.
+                     이미지로만 학습한 프로젝터에게는 본 적 없는 분포다.
     """
 
     def __init__(
@@ -389,13 +411,15 @@ class StreamingSession:
         model,
         selector: KeyframeSelector,
         geom_stride: int = 3,
-        vlm_short_side: int = 224,
         mode: str = "deferred",
+        visual_mode: str = "image",
         device: str | torch.device = "cpu",
         audit: StreamingAudit | None = None,
     ) -> None:
         if mode not in ("deferred", "incremental"):
             raise ValueError(f"모르는 모드 {mode}")
+        if visual_mode not in ("image", "video"):
+            raise ValueError(f"모르는 visual_mode {visual_mode}")
         if mode == "incremental" and selector.needs_deferred:
             raise ValueError(
                 f"{type(selector).__name__} 는 되물림이 필요하다(needs_deferred). "
@@ -404,8 +428,8 @@ class StreamingSession:
         self.model = model
         self.selector = selector
         self.geom_stride = max(1, geom_stride)
-        self.vlm_short_side = vlm_short_side
         self.mode = mode
+        self.visual_mode = visual_mode
         self.device = torch.device(device)
         self.audit = audit or StreamingAudit()
         if not selector.is_causal:
@@ -414,12 +438,14 @@ class StreamingSession:
             )
         self._kept: dict[int, _Kept] = {}
         self._last_geom = None
+        self.fps: float = 30.0
 
     # ------------------------------------------------------------------ 인제스트
     @torch.no_grad()
     def consume(self, feed: CausalVideoFeed) -> "StreamingSession":
         """피드를 끝까지 먹는다. 프레임은 시간순 1패스."""
         feed.audit = self.audit
+        self.fps = float(getattr(feed, "fps", None) or 30.0)
         m = self.model
         m.geometry.reset()
         self.selector.reset()
@@ -429,8 +455,7 @@ class StreamingSession:
             keep, evicted = self.selector.offer(i, raw)
             run_geom = (i % self.geom_stride == 0) or keep
             if run_geom:
-                g = self._prep_geom(raw)
-                self._last_geom = m.geometry.ingest(g)
+                self._last_geom = m.geometry.ingest(self._prep_geom(raw))
                 self.audit.geometry_calls += 1
                 self.audit.geometry_state_bytes.append(m.geometry.state_bytes())
 
@@ -439,59 +464,81 @@ class StreamingSession:
                     if self._kept.pop(e, None) is not None:
                         self.audit.keyframes_evicted += 1
             if keep:
-                self._kept[i] = _Kept(i, self._prep_vlm(raw), self._last_geom)
+                self._kept[i] = _Kept(i, raw, self._last_geom)
                 self.audit.keyframes_kept += 1
                 self.audit.buffer_peak_frames = max(
                     self.audit.buffer_peak_frames, len(self._kept)
                 )
         return self
 
-    def _prep_vlm(self, raw: torch.Tensor) -> torch.Tensor:
-        # ⚠️ patch 배수로는 부족하다. spatial_merge 가 2 이므로 **patch*merge(=32) 배수**여야
-        #    격자가 짝수로 떨어진다. 홀수면 비전 타워의 patch merger 가 reshape 에서 터진다.
-        unit = self.model.vision_patch * self.model.spatial_merge
-        return _resize_norm(raw, self.vlm_short_side, unit).to(self.device)
-
     def _prep_geom(self, raw: torch.Tensor) -> torch.Tensor:
-        gp = getattr(self.model.geometry, "patch_size", 16)
+        unit = getattr(self.model.geometry, "patch_size", 16)
         size = self.model.cfg.geometry.image_size
-        return _resize_norm(raw, size, gp).unsqueeze(0).to(self.device)
+        return geometry_frame(raw, size, unit).unsqueeze(0).to(self.device)
 
     # ---------------------------------------------------------------------- 질의
     @torch.no_grad()
-    def prefill(self):
-        """버퍼에 모인 키프레임을 LLM 입력 형태로 만든다. (deferred 모드)"""
-        from ..data.collate import pack_video_patches
+    def prefill(self) -> dict:
+        """버퍼의 키프레임을 LLM 입력 재료로 만든다 (deferred 모드).
 
-        if not self._kept:
-            raise StreamingViolation("키프레임이 하나도 안 남았다 — 예산·선택기 설정을 봐라")
+        Returns dict:
+            pixel_kwargs   모델에 그대로 넘길 픽셀 인자 (pixel_values/image_grid_thw 또는 비디오판)
+            geometry       GeometryBundle (주입용)
+            step_tokens    스텝(이미지 또는 temporal patch)별 LLM 토큰 수
+            timestamps     비디오 모드의 temporal patch 별 시각(초). 이미지 모드는 None
+            frame_indices  실제로 넣은 키프레임 인덱스
+        """
         chosen = [i for i in self.selector.final_selection() if i in self._kept]
+        if not chosen:
+            raise StreamingViolation("키프레임이 하나도 안 남았다 — 예산·선택기 설정을 봐라")
         items = [self._kept[i] for i in chosen]
-        if not items:
-            raise StreamingViolation("final_selection 이 버퍼와 안 맞는다")
-        frames = torch.stack([it.frame for it in items], 0)
-        pv, grid, (gh, gw) = pack_video_patches(
-            frames, self.model.vision_patch, self.model.temporal_patch
-        )
+        m, spec = self.model, self.model.spec
         self.audit.vision_encoder_calls += 1
-        sm = self.model.spatial_merge
-        llm_grid = (gh // sm, gw // sm)
-        n_vis = int(grid[0, 0]) * llm_grid[0] * llm_grid[1]
-        self.audit.llm_visual_tokens = n_vis
 
-        geoms = [it.geom for it in items]
-        # 프레임 수가 홀수면 pack 이 마지막 프레임을 복제한다 → 기하도 맞춰준다
-        while len(geoms) < int(grid[0, 0]) * self.model.temporal_patch:
-            geoms.append(geoms[-1])
-        bundle = self.model.build_geometry_embeds(geoms, llm_grid, pool_temporal=True)
+        if self.visual_mode == "image":
+            vlm = [prepare_image(it.raw, spec) for it in items]
+            grids = torch.cat([g for _, g in vlm], 0)
+            pixel_kwargs = {
+                "pixel_values": torch.cat([pv for pv, _ in vlm], 0).to(self.device),
+                "image_grid_thw": grids.to(self.device),
+            }
+            llm_grids = [llm_grid(g, spec) for g in grids]
+            step_tokens = [tokens_per_step(g, spec) for g in grids]
+            bundle = m.build_geometry_embeds([it.geom for it in items], llm_grids, pool_temporal=False)
+            timestamps = None
+        else:
+            frames = torch.stack([it.raw for it in items], 0)
+            pv, grid = prepare_video(frames, spec)
+            pixel_kwargs = {
+                "pixel_values_videos": pv.to(self.device),
+                "video_grid_thw": grid.to(self.device),
+            }
+            geoms = [it.geom for it in items]
+            while len(geoms) % spec.temporal_patch:
+                geoms.append(geoms[-1])  # patchify 가 마지막 프레임을 복제하는 것과 맞춘다
+            bundle = m.build_geometry_embeds(geoms, llm_grid(grid[0], spec), pool_temporal=True)
+            step_tokens = [tokens_per_step(grid[0], spec)] * int(grid[0, 0])
+            timestamps = frame_timestamps(chosen, self.fps, spec.temporal_patch)
+
+        n_vis = sum(step_tokens)
+        self.audit.llm_visual_tokens = n_vis
         return {
-            "pixel_values_videos": pv.to(self.device),
-            "video_grid_thw": grid.to(self.device),
-            "n_visual_tokens": n_vis,
+            "pixel_kwargs": pixel_kwargs,
             "geometry": bundle,
+            "step_tokens": step_tokens,
+            "timestamps": timestamps,
+            "n_visual_tokens": n_vis,
             "n_keyframes": len(items),
-            "frame_indices": [it.index for it in items],
+            "frame_indices": chosen,
+            "visual_mode": self.visual_mode,
         }
+
+    @staticmethod
+    def segments(prompt, pre: dict) -> list[str]:
+        """prefill 결과 → 프롬프트 세그먼트 문자열 (PromptBuilder 필요)."""
+        if pre["visual_mode"] == "image":
+            return [prompt.image_segment(n) for n in pre["step_tokens"]]
+        return [prompt.video_segment(pre["step_tokens"][0], pre["timestamps"])]
 
     def report(self, token_budget: int | None = None, strict: bool = True) -> dict:
         if strict:
@@ -501,24 +548,7 @@ class StreamingSession:
             selector=type(self.selector).__name__,
             causal=self.selector.is_causal,
             mode=self.mode,
+            visual_mode=self.visual_mode,
             geom_stride=self.geom_stride,
         )
         return d
-
-
-def _resize_norm(raw: torch.Tensor, short_side: int, unit: int) -> torch.Tensor:
-    """[H,W,3] uint8 → [3,H',W'] float, **unit 배수**, mean/std 0.5.
-
-    unit 은 VLM 이면 patch*spatial_merge, 기하 인코더면 그 인코더의 patch.
-
-    CUT3R 과 Qwen3.5 가 같은 정규화(0.5/0.5)를 쓴다 — 한 함수로 둘 다 커버된다.
-    """
-    import torch.nn.functional as F
-
-    x = raw.permute(2, 0, 1).float().unsqueeze(0) / 255.0
-    _, _, h, w = x.shape
-    scale = short_side / min(h, w)
-    nh, nw = max(unit, int(round(h * scale))), max(unit, int(round(w * scale)))
-    nh, nw = nh - nh % unit, nw - nw % unit
-    x = F.interpolate(x, size=(nh, nw), mode="bilinear", align_corners=False)
-    return (x[0] - 0.5) / 0.5

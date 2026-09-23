@@ -10,12 +10,15 @@ dist/
 .pytest_cache/
 .ipynb_checkpoints/
 
-# 데이터·가중치는 절대 커밋하지 않는다
-data/
-checkpoints/
-outputs/
-runs/
-wandb/
+# 데이터·가중치는 절대 커밋하지 않는다.
+# ⚠️ 반드시 루트 고정('/')으로 쓴다. 'data/' 로 쓰면 src/live3r/data/ 까지 무시돼서
+#    패키지가 통째로 커밋에서 빠진다 (2026-09-23 실제로 당함 — 로컬 테스트는 전부 통과했다).
+/data/
+/checkpoints/
+/outputs/
+/runs/
+/wandb/
+/third_party/
 *.pth
 *.safetensors
 *.mp4

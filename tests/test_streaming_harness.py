@@ -5,7 +5,7 @@
 
 import pytest
 import torch
-from tiny_model import tiny_model
+from live3r.testing import SMALL_IDS, tiny_model
 
 from live3r.config import FusionConfig, GeometryConfig, Live3RConfig, LoRAConfig
 from live3r.eval.streaming import (
@@ -25,7 +25,7 @@ from live3r.model.live3r import Live3RModel
 def make_model():
     cfg = Live3RConfig(
         base_model="tiny", dtype="fp32",
-        geometry=GeometryConfig(name="dummy", tap_layers=(0, 1), hidden_size=64, image_size=64),
+        geometry=GeometryConfig(name="dummy", tap_layers=(0, 1), hidden_size=64, image_size=112),
         fusion=FusionConfig(inject_layers=(0, 1), merge_size=2, zero_init=False),
         lora=LoRAConfig(enabled=False),
     )
@@ -57,7 +57,7 @@ def test_feed_is_single_pass():
 def test_non_causal_selector_is_flagged():
     m = make_model()
     f, a = feed(200)
-    s = StreamingSession(m, UniformOracleSelector(8, 200), vlm_short_side=64, audit=a)
+    s = StreamingSession(m, UniformOracleSelector(8, 200), audit=a)
     s.consume(f)
     s.prefill()
     with pytest.raises(StreamingViolation, match="인과적이지 않다"):
@@ -74,7 +74,7 @@ def test_incremental_mode_rejects_selectors_needing_eviction():
 def test_token_budget_enforced():
     m = make_model()
     f, a = feed(200)
-    s = StreamingSession(m, HalvingSelector(16), vlm_short_side=64, audit=a)
+    s = StreamingSession(m, HalvingSelector(16), audit=a)
     s.consume(f)
     s.prefill()
     with pytest.raises(StreamingViolation, match="예산"):
@@ -117,50 +117,57 @@ def test_registry_default_is_causal():
 
 
 # ------------------------------------------------------------------ 세션 동작
-def test_session_geometry_runs_on_whole_stream_but_llm_sees_only_keyframes():
+@pytest.mark.parametrize("visual_mode", ["image", "video"])
+def test_session_geometry_runs_on_whole_stream_but_llm_sees_only_keyframes(visual_mode):
     """이중 레이트의 핵심 — 기하는 전 구간, LLM 은 예산만."""
     m = make_model()
     f, a = feed(600)
-    s = StreamingSession(m, HalvingSelector(16), geom_stride=3, vlm_short_side=64, audit=a)
+    s = StreamingSession(m, HalvingSelector(16), geom_stride=3, visual_mode=visual_mode, audit=a)
     s.consume(f)
     pre = s.prefill()
-    r = s.report(token_budget=4096)
+    r = s.report(token_budget=100_000)
 
     assert r["frames_seen"] == 600
     assert r["geometry_calls"] > 150, "기하가 전 구간을 안 먹었다"
     assert pre["n_keyframes"] == 16
     assert len(set(a.geometry_state_bytes)) == 1, "기하 상태가 상수가 아니다"
     assert r["vision_encoder_calls"] == 1, "비전 타워는 질문 시점 1회만 돌아야 한다"
+    steps = 16 if visual_mode == "image" else 8   # 이미지: 키프레임당 1블록 / 비디오: 2장당 1블록
+    assert len(pre["step_tokens"]) == steps
+    assert pre["geometry"].embeds[0].shape[0] == pre["n_visual_tokens"], "기하 임베딩 수 != 비전 토큰 수"
 
 
-def test_generation_through_primed_injector():
-    """프리필에서만 주입되고 디코딩 스텝은 건너뛰는지."""
+@pytest.mark.parametrize("visual_mode", ["image", "video"])
+def test_generation_through_primed_injector(visual_mode):
+    """프리필에서만 주입되고 디코딩 스텝은 건너뛰는지 (두 모드 모두)."""
     m = make_model()
     f, a = feed(200)
-    s = StreamingSession(m, HalvingSelector(8), geom_stride=3, vlm_short_side=64, audit=a)
+    s = StreamingSession(m, HalvingSelector(8), geom_stride=3, visual_mode=visual_mode, audit=a)
     s.consume(f)
     pre = s.prefill()
 
-    from tiny_model import VIDEO_TOKEN_ID, VISION_END_ID, VISION_START_ID
-
-    n_patches = int(pre["video_grid_thw"][0, 0])
-    per = pre["n_visual_tokens"] // n_patches
+    pad = SMALL_IDS["image"] if visual_mode == "image" else SMALL_IDS["video"]
     segs = [torch.randint(0, 900, (1, 3))]
-    for _ in range(n_patches):
-        segs += [torch.tensor([[VISION_START_ID]]),
-                 torch.full((1, per), VIDEO_TOKEN_ID),
-                 torch.tensor([[VISION_END_ID]])]
+    for n in pre["step_tokens"]:
+        segs += [torch.tensor([[SMALL_IDS["vision_start"]]]), torch.full((1, n), pad),
+                 torch.tensor([[SMALL_IDS["vision_end"]]])]
     ids = torch.cat(segs, 1)
-    mm = (ids == VIDEO_TOKEN_ID).long() * 2
+    mm = (ids == SMALL_IDS["image"]).long() + 2 * (ids == SMALL_IDS["video"]).long()
 
     m.injector.hit_count = m.injector.skip_count = 0
     with torch.no_grad(), m.injector.primed(pre["geometry"].embeds, m.visual_pos_mask(ids)):
         out = m.base.generate(
             input_ids=ids, attention_mask=torch.ones_like(ids), mm_token_type_ids=mm,
-            pixel_values_videos=pre["pixel_values_videos"],
-            video_grid_thw=pre["video_grid_thw"],
-            max_new_tokens=5, do_sample=False,
+            max_new_tokens=5, do_sample=False, **pre["pixel_kwargs"],
         )
     assert out.shape[1] > ids.shape[1]
     assert m.injector.hit_count == 2, f"프리필 주입이 안 됐다: {m.injector.hit_count}"
     assert m.injector.skip_count > 0, "디코딩 스텝 건너뛰기가 계측되지 않았다"
+
+
+def test_geometry_input_uses_long_side():
+    """CUT3R 512 판본은 긴 변 512 로 학습됐다. 짧은 변으로 맞추면 1.8배 큰 입력이 들어간다."""
+    m = make_model()
+    s = StreamingSession(m, HalvingSelector(4))
+    g = s._prep_geom(torch.randint(0, 255, (480, 640, 3), dtype=torch.uint8))
+    assert max(g.shape[-2:]) == m.cfg.geometry.image_size

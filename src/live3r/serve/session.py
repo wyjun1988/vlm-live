@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 
 import torch
 
+from ..data.vision import geometry_frame, prepare_video, to_float01
 from ..model.live3r import Live3RModel
 
 logger = logging.getLogger(__name__)
@@ -98,12 +99,15 @@ class LiveSession:
         """프레임 1장을 먹인다.
 
         Args:
-            frame: [3, H, W] — Qwen 비전 타워용 전처리(patch 16 배수, mean/std 0.5)
-            geom_frame: [3, Hg, Wg] — 기하 인코더용 전처리(해상도/정규화가 다르다).
-                None 이면 frame 을 재사용 (해상도가 맞을 때만).
+            frame: 원본 프레임 — uint8 [H,W,3] 또는 float [3,H,W] ∈ [0,1].
+                VLM 전처리(smart_resize·patchify)와 기하 전처리(긴 변 기준)는 여기서 따로 한다.
+            geom_frame: 이미 전처리된 기하 입력 [3,Hg,Wg] (정규화됨). 주면 그대로 쓴다.
         """
         t0 = time.perf_counter()
-        gf = (geom_frame if geom_frame is not None else frame).unsqueeze(0).to(self.device)
+        if geom_frame is None:
+            unit = getattr(self.model.geometry, "patch_size", 16)
+            geom_frame = geometry_frame(frame, self.cfg.geometry.image_size, unit)
+        gf = geom_frame.unsqueeze(0).to(self.device)
 
         do_geom = (self.state.frames_seen % max(1, self.cfg.geometry.stride)) == 0
         if do_geom:
@@ -115,7 +119,7 @@ class LiveSession:
             geometry_ms = 0.0
             gout = self._last_geom  # 보간: 직전 상태를 재사용 (0.8B 비용 절감 축)
 
-        self._frame_buf.append(frame.to(self.device))
+        self._frame_buf.append(to_float01(frame)[0])
         self._geom_buf.append(gout)
         self.state.frames_seen += 1
 
@@ -161,18 +165,14 @@ class LiveSession:
     def _prepare_block(self):
         """버퍼에 찬 temporal_patch 장의 프레임을 비전 토큰 + 기하 임베딩으로 만든다."""
         m = self.model
-        frames = torch.stack(self._frame_buf, 0)  # [tp, 3, H, W]
-        _, _, H, W = frames.shape
-        p, sm = m.vision_patch, m.spatial_merge
-        gh, gw = H // p, W // p
+        sm = m.spatial_merge
+        # 공식 프로세서와 같은 레이아웃 (2×2 merge 블록 단위 평탄화). 예전의 래스터 순서
+        # 평탄화는 실가중치에서 이미지를 뒤섞었다 — data/vision.py 참고.
+        x, grid_thw = prepare_video(torch.stack(self._frame_buf, 0), m.spec)
+        x, grid_thw = x.to(self.device), grid_thw.to(self.device)
+        _, gh, gw = (int(v) for v in grid_thw[0])
         llm_grid = (gh // sm, gw // sm)
         n_vis = llm_grid[0] * llm_grid[1]
-
-        # Qwen 비디오 전처리 형식으로 평탄화: [t*gh*gw, 3*tp*p*p]
-        tp = m.temporal_patch
-        x = frames.reshape(1, tp, 3, gh, p, gw, p)
-        x = x.permute(0, 3, 5, 2, 1, 4, 6).reshape(gh * gw, 3 * tp * p * p)
-        grid_thw = torch.tensor([[1, gh, gw]], device=self.device)
 
         bundle = m.build_geometry_embeds(self._geom_buf, llm_grid, pool_temporal=True)
 

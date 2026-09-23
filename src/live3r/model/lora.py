@@ -32,13 +32,16 @@ def apply_lora(model: nn.Module, cfg: LoRAConfig, verbose: bool = True) -> nn.Mo
         raise ImportError("LoRA 를 쓰려면 peft 가 필요하다: pip install peft") from exc
 
     targets = _resolve_targets(model, cfg)
-    if not targets:
+    per_name = {n: sum(1 for t in targets if t.rsplit(".", 1)[-1] == n) for n in cfg.target_modules}
+    missing = [n for n, c in per_name.items() if c == 0]
+    if missing:
         raise RuntimeError(
-            f"LoRA 타깃을 하나도 못 찾았다. target_modules={cfg.target_modules} 를 실제 모듈명과 맞춰라. "
-            "Qwen3.5 는 하이브리드라 GatedDeltaNet 쪽 이름(in_proj_qkvz/in_proj_ba/out_proj)이 따로 있다."
+            f"LoRA 타깃 이름 {missing} 가 모델에 없다. 일부만 붙은 채 조용히 학습되는 걸 막으려고 멈춘다. "
+            "Qwen3.5 GatedDeltaNet 은 in_proj_qkv / in_proj_z / in_proj_b / in_proj_a / out_proj 다 "
+            "(Qwen3-Next 의 in_proj_qkvz / in_proj_ba 가 아니다)."
         )
     if verbose:
-        logger.info("LoRA 타깃 %d개 (예: %s)", len(targets), targets[:4])
+        logger.info("LoRA 타깃 %d개: %s", len(targets), per_name)
 
     lora_cfg = LoraConfig(
         r=cfg.r,
