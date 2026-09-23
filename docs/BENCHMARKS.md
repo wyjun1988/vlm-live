@@ -11,9 +11,21 @@ pip install -e .            # entry point 로 live3r 모델이 등록된다
 bash scripts/run_eval.sh configs/live3r_4b.yaml outputs/4b_s2/final.pt outputs/eval_4b
 ```
 
-어댑터 설계: lmms-eval 의 `qwen3_5` 모델을 상속해 **로딩만** 바꾼다. 생성 경로는 손대지 않는다 —
-`Live3RModel.enable_auto_geometry()` 가 `base.forward` 를 감싸 기하 인코딩·주입을 자동으로 하므로
-상위 코드는 평범한 Qwen3.5 를 돌린다고 믿으면 된다. 업스트림이 바뀌어도 잘 안 깨진다.
+### 평가 경로 — 학습과 같은 입력 (2026-09-23 변경)
+
+어댑터는 lmms-eval `qwen3_5` 의 **모델 로딩·태스크 연동만** 쓰고, 입력 구성과 생성은
+학습과 같은 경로(`eval_path=live3r`, `src/live3r/eval/consistent.py`)로 한다.
+부모 경로는 학습(Sensenova) 분포와 세 군데가 달라서 게이트를 오염시킨다:
+
+| | 부모 lmms 경로 | `eval_path=live3r` (기본) |
+|---|---|---|
+| 시스템 프롬프트 | "You are a helpful assistant." | **없음** (학습과 같다) |
+| 영상 | 비디오 모드 (2프레임=1블록, 기하 2장 평균) | **균등 키프레임 N장을 이미지로** |
+| 해상도 | 총 픽셀 예산 ÷ 프레임 수 (최대 768프레임) | 이미지당 고정 범위 (VisionSpec) |
+| 생성 | qwen3_5 기본 temperature 0.7 (태스크가 안 정하면 샘플링) | **greedy** (태스크가 양의 온도를 명시할 때만 따른다) |
+
+게이트 비교는 반드시 같은 경로에서 가중치만 바꿔서 한다 (`scripts/run_gate.sh` 가 자동으로 한다).
+lmms-eval 공식 수치(문헌 비교용)가 필요하면 `--model qwen3_5` 를 직접 쓴다.
 
 | 태스크 | 역할 | 기준선 |
 |---|---|---|
@@ -24,7 +36,9 @@ bash scripts/run_eval.sh configs/live3r_4b.yaml outputs/4b_s2/final.pt outputs/e
 | `vsisuper`, `revsi` | 장시간·반복 공간 | — |
 | `cv_bench` | 2D/3D 일반 공간 | SpatialStack 85.5 (3D 92.2) |
 | `blink`, `sparbench` | 보조 | — |
-| **`videomme`** | **회귀 게이트** — 일반 비디오 능력 | 베이스 Qwen3.5-4B 자체 |
+| **`videomme`** | **회귀 게이트** — 일반 비디오 능력. 101GB (+압축 해제 ≈ 200GB) | 같은 경로의 베이스 |
+| `mmstar` | 참고(판정 안 함) — 일반 이미지 능력. 0.1GB, 규칙 채점 | 같은 경로의 베이스 |
+| `mvbench` | 참고 — 일반 비디오 능력. 17GB | 같은 경로의 베이스 |
 
 ## 2. 스트리밍 공간지능 — OVO-S-Bench
 

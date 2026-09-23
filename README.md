@@ -39,7 +39,8 @@ drift 1.08 (프레임당 비용이 스트림 길이에 거의 무관)
 - [x] **lmms-eval 연동** — `--model live3r` 등록, 타깃 태스크 9종 존재 확인
 - [x] **스트리밍 VSI 평가 하니스** — 제약을 기계가 강제, 인과적 키프레임 선택기 4종
 - [x] **Sensenova(이미지 시퀀스) 어댑터 + torchrun DDP 학습** — 가짜 데이터로 S1→S2→DDP end-to-end 검증
-- [ ] 서버 스모크 → S1 본 학습 (`docs/NEXT_STEPS_SERVER.md`)
+- [x] **평가 입력 경로를 학습과 통일** (`eval_path=live3r`: 시스템 프롬프트 없음·키프레임 이미지 모드·greedy) + 게이트 자동 판정 (`run_gate.sh`: VSI +1.0 · VideoMME −1.0, MMStar 참고)
+- [ ] 서버 스모크 → S1 본 학습 → 절제 평가 → 게이트 (`docs/NEXT_STEPS_SERVER.md`)
 - [ ] 기하 인코더 베이크오프
 - [ ] 2B / 0.8B 스케일 다운 실측
 

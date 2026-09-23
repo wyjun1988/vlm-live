@@ -1,8 +1,18 @@
-# 서버 다음 진행사항 — 2026-09-23 (커밋 9edc999 이후)
+# 서버 다음 진행사항 — 2026-09-23
 
-서버 피드백 두 건(`live3r.data` 누락 · Sensenova 이미지 시퀀스 어댑터 없음)은 해결했다.
-그 과정에서 Qwen3.5 공식 구현과 직접 대조해 **에러 없이 조용히 틀리던 버그 6건**을 찾아 고쳤다.
-**이전 커밋으로 학습을 돌렸다면 결과를 버려야 한다** (아래 표 1·2번 때문에 무엇도 학습되지 않았다).
+**서버가 마지막으로 확인한 커밋은 `9a48137` 이다. 그 뒤의 변경 전체를 여기 요약한다.**
+이 문서를 0단계부터 순서대로 따르면 된다. 단계마다 "보내줄 것"이 있다.
+
+## 변경 요약 (9a48137 → 현재)
+
+### A. 서버가 보고한 블로커 2건 — 해결
+- **`live3r.data` 누락**: `.gitignore` 의 `data/` 가 `src/live3r/data/` 까지 무시했다
+  (로컬엔 파일이 있어 테스트는 통과했다). 루트 고정 `/data/` 로 수정. 이제 깨끗한 클론에서 검증 후 푸시한다.
+- **Sensenova 어댑터**: 이미지 1~28장 시퀀스를 이미지마다 별도 비전 블록으로. 문자열 `conversations`,
+  멀티턴, 크기 제각각 이미지, placeholder 불일치·누락 파일 처리. 83만 건 지연 로딩(JSONL+오프셋 인덱스).
+
+### B. 에러 없이 조용히 틀리던 버그 6건 — 수정
+**이전 커밋으로 학습을 돌렸다면 결과를 버려야 한다** (1·2번 때문에 무엇도 학습되지 않았다).
 
 | # | 버그 | 영향 |
 |---|---|---|
@@ -13,9 +23,31 @@
 | 5 | CUT3R 입력을 짧은 변 512 로 (공식은 긴 변) | 학습 해상도의 1.8배 입력 |
 | 6 | gradient checkpointing 재계산 때 주입 훅 상태가 비어 있음 | 기울기 오류 또는 CheckpointError |
 
-로컬 검증: 테스트 78개(공식 프로세서·실제 Qwen3.5 토크나이저 대조 포함), 가짜 Sensenova 로
-S1 → S2(LoRA+checkpointing) → DDP 2프로세스까지 end-to-end, 랭크 간 파라미터 동일 확인,
-깨끗한 클론에서 재현.
+### C. 학습
+- **torchrun DDP** (8 GPU): `no_sync` 누적, 로그마다 **랭크 간 파라미터 동기화 검사**(`sync OK`)
+- 로그의 `inj` = 레이어별 ‖주입‖/‖비전 히든‖ — 프로젝터가 실제로 학습되는지의 직접 지표
+- `--dump-samples N`: 학습 전에 프롬프트·라벨을 눈으로 확인
+
+### D. 평가
+- **홀드아웃**: `prepare_annotations.py` 가 무작위 2,000건을 학습에서 뺀다
+- **기하 절제 평가** (`eval_geometry_ablation.py`): 진짜 기하 / 다른 샘플의 기하 / 기하 없음 손실 비교
+  → "기하의 내용을 쓰나" 판정. S2 진행 여부를 정하는 관문
+- **평가 입력을 학습과 통일** (`eval_path=live3r`, 기본값): lmms-eval 부모 경로는 학습과 세 군데가 달랐다
+  (시스템 프롬프트 · 영상 비디오 모드 · 해상도 규칙). 생성은 **greedy** (qwen3_5 기본 temperature 0.7 이
+  온도를 안 정한 태스크를 샘플링으로 돌리고 있었다)
+- **게이트 자동 판정** (`run_gate.sh` + `check_gate.py`)
+
+### E. 게이트 (사전 등록 — 사용자 결정)
+| | 태스크 | 기준 | 용량 |
+|---|---|---|---|
+| 1. 공간 | `vsibench` | Δ ≥ +1.0 | 5.7 GB |
+| 2. 일반 | **`videomme`** | Δ ≥ −1.0 | **101 GB** (서버 여유 1TB 확인 → 원래 게이트 유지) |
+| 참고 | `mmstar` | 판정 안 함, 보고만 | 0.1 GB |
+| 3. 지연 | `bench_latency.py` | drift < 1.2, ingest p95 예산 내 | — |
+
+로컬 검증: 테스트 90개(공식 프로세서·실제 Qwen3.5 토크나이저 대조 포함), 가짜 Sensenova 로
+S1 → S2(LoRA+checkpointing) → DDP 2프로세스 end-to-end, 실제 mp4 로 평가 3경로
+(오프라인 키프레임·스트리밍·오라클), 깨끗한 클론에서 재현.
 
 ---
 
@@ -28,8 +60,10 @@ cd /group-volume/wooyeol/vlm-live
 git diff > /group-volume/wooyeol/server_changes_0923.patch
 tar czf /group-volume/wooyeol/server_src_0923.tgz src scripts tests configs
 git stash -u
-git pull
-git log --oneline -1          # 9edc999 이후여야 한다
+git fetch origin
+git reset --hard origin/main  # pull 대신 — 마지막 커밋을 덮어써서(amend) 올렸기 때문에
+                              # 이미 받은 서버에서는 pull 이 '갈라진 이력'으로 멈출 수 있다
+git log --oneline -1          # 가장 최근 커밋이어야 한다
 ls src/live3r/data/           # __init__ collate datasets prompt vision
 ```
 
@@ -44,6 +78,7 @@ ls src/live3r/data/           # __init__ collate datasets prompt vision
 
 ```bash
 pip install -r requirements.txt        # peft·scipy·roma·accelerate 가 새로 필요하다
+pip install -e .                       # lmms-eval 에 --model live3r 등록 (평가 단계에서 필요)
 python -c "import torch, transformers, peft; print(torch.__version__, transformers.__version__, peft.__version__)"
 python -c "import transformers.models.qwen3_5; print('qwen3_5 OK')"
 
@@ -201,16 +236,62 @@ PYTHONPATH=src python scripts/eval_geometry_ablation.py \
 
 ---
 
-## 병행 — VSI-Bench 확보 (가능하면)
+## 10. 평가 — 베이스라인(학습 전)과 게이트(S1 후)
 
-주지표가 VSI-Bench 다. **학습 전 베이스라인 숫자**(스트리밍 vs 오프라인 오라클)가 있어야 이후
-변화가 해석된다. 평가셋은 수 GB 수준이다 — 공간이 되면:
+### 평가 데이터 용량 (HF 실측)
 
+| 벤치 | 용량 | 용도 |
+|---|---|---|
+| **VSI-Bench** | **5.7 GB** | 주지표 · 게이트 1 |
+| **VideoMME** | **101 GB** | 일반 능력 · 게이트 2 (서버 여유 1TB) |
+| MMStar | 0.1 GB | 이미지 일반 능력 — 참고(판정 안 함). 규칙 채점, API 불필요 |
+| MVBench | 17 GB | 영상 일반 능력 — 선택 |
+
+lmms-eval 이 태스크 실행 때 HF 에서 받는다. 캐시 위치를 group-volume 으로:
 ```bash
-huggingface-cli download nyu-visionx/VSI-Bench --repo-type dataset --local-dir data/eval/vsibench
+export HF_HOME=/group-volume/wooyeol/hf_cache
 ```
 
-공간이 안 되면 알려달라. 부분집합(예: ScanNet 유래만)으로 시작하는 방법을 정리하겠다.
+### 평가 경로가 바뀌었다 (중요)
+
+`--model live3r` 는 이제 **학습과 같은 입력**으로 평가한다 (`eval_path=live3r`, 기본값).
+lmms-eval 부모 경로는 학습 분포와 세 군데가 달랐다 — 시스템 프롬프트("You are a helpful
+assistant."), 영상 비디오 모드, 해상도 규칙. 그리고 qwen3_5 기본 temperature 0.7 때문에 온도를
+안 정한 태스크(cv_bench)는 샘플링으로 돌았다 → 이제 **greedy**.
+
+### 10-1. 베이스라인 — 학습 전에 지금 바로
+
+VideoMME 는 zip 101GB 를 받고(`$HF_HOME/hub`) 다시 `$HF_HOME/videomme` 에 **압축을 푼다 → 약 200GB**.
+첫 실행 때 오래 걸리니 학습(4~8단계)과 **병행해서** 먼저 받아두면 좋다.
+저장소 ID 는 **태스크와 같아야** lmms-eval 이 캐시를 재사용한다 (다르면 101GB 를 두 번 받는다):
+```bash
+export HF_HOME=/group-volume/wooyeol/hf_cache      # 1단계와 같은 값
+huggingface-cli download lmms-eval/Video-MME --repo-type dataset   # videomme.yaml 의 dataset_path
+huggingface-cli download nyu-visionx/VSI-Bench --repo-type dataset
+```
+
+```bash
+# 오프라인 (균등 키프레임 32장, 이미지 모드) — weights 없음 = 베이스 VLM 과 같은 출력
+BASE_MODEL=/group-volume/wooyeol/models/Qwen3.5-4B TASKS=vsibench,videomme,mmstar \
+  bash scripts/run_eval.sh configs/live3r_4b.yaml "" outputs/eval_base
+
+# 스트리밍 (라이브 제약) vs 오프라인 오라클 — 이 둘의 차이가 '키프레임 선택 비용'
+bash scripts/run_streaming_eval.sh configs/live3r_4b.yaml "" outputs/stream_base
+SELECTOR=uniform_oracle bash scripts/run_streaming_eval.sh configs/live3r_4b.yaml "" outputs/stream_oracle
+```
+
+### 10-2. 게이트 — S1(또는 S2) 결과가 나오면
+
+```bash
+BASE_MODEL=/group-volume/wooyeol/models/Qwen3.5-4B \
+  bash scripts/run_gate.sh configs/live3r_4b.yaml outputs/4b_s1/final.pt outputs/gate_s1
+```
+
+같은 경로에서 베이스(weights 없음)와 학습 결과를 한 번씩 재고 `check_gate.py` 가 판정한다:
+공간(vsibench) Δ ≥ +1.0 · 일반(videomme) Δ ≥ −1.0. MMStar 는 같이 재서 보고만 한다.
+대표 지표: vsibench → `vsibench_overall`, videomme → `videomme_perception_score`, mmstar → `average`.
+
+**보내줄 것**: 10-1 의 VSI·VideoMME·MMStar 점수와 스트리밍/오라클 VSI, 10-2 의 판정 출력 전체.
 
 ---
 
@@ -226,4 +307,6 @@ huggingface-cli download nyu-visionx/VSI-Bench --repo-type dataset --local-dir d
 [6] smoke B: loss, inj, geom ms
 [7] DDP: sync OK?, samp/s → 1에폭 예상 시간
 [9] (S1 후) 절제: real / shuffled / none 손실, 판정, 같은 격자 비율
+[10-1] 베이스라인: VSI(오프라인) / VideoMME / MMStar / VSI(스트리밍) / VSI(오라클)
+[10-2] 게이트: check_gate.py 출력
 ```
