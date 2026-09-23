@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "live3r"
+version = "0.0.1"
+description = "Streaming 3D-aware VLM: CUT3R-lineage geometry tokens injected into Qwen3.5 small models"
+requires-python = ">=3.10"
+dependencies = ["torch", "transformers>=5.16", "pyyaml", "numpy"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src", "scripts"]
+timeout = 300
+
+[tool.ruff]
+line-length = 110
+target-version = "py310"

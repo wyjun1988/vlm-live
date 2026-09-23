@@ -1,0 +1,19 @@
+# 코어 — GPU 머신 기준
+torch>=2.6
+transformers>=5.16.0      # Qwen3.5(qwen3_5) 지원 필요
+accelerate>=1.0
+peft>=0.14
+datasets>=3.0
+huggingface_hub>=0.30
+pyyaml
+numpy
+pillow
+decord               # 비디오 프레임 디코딩 (av 로 대체 가능)
+einops
+
+# 평가
+lmms-eval            # vsibench / mmsibench / videomme 등
+
+# 선택
+flash-attn           # CUDA 전용. 맥에서는 설치하지 마라
+wandb

@@ -1,0 +1,32 @@
+# Live3R 2B — 중간 판본. Qwen3.5-2B (hidden 2048, 24층, linear18/full6)
+base_model: Qwen/Qwen3.5-2B
+dtype: bf16
+attn_implementation: sdpa
+
+geometry:
+  name: cut3r              # dummy | cut3r | anchor3r | lingbot | vggt_window
+  checkpoint: checkpoints/cut3r_512_dpt_4_64.pth
+  tap_layers: [11, 17, 23] # SpatialStack 기본값
+  hidden_size: 768         # CUT3R 디코더 잠재 차원 — 실제 체크포인트로 확인 필요
+  image_size: 512
+  stride: 1
+  freeze: true
+  expose_pose_token: true
+
+fusion:
+  mode: deepstack
+  inject_layers: [0, 1, 2]
+  merge_size: 2
+  mlp_ratio: 2.0
+  zero_init: true
+
+lora:
+  enabled: true
+  r: 16
+  alpha: 32
+  dropout: 0.05
+
+stream:
+  max_visual_tokens: 16384
+  budget_policy: evict
+  target_fps: 30.0

@@ -1,0 +1,32 @@
+# Live3R dummy — 가중치 없이 형상만 검증 (맥/CI)
+base_model: Qwen/Qwen3.5-0.8B
+dtype: bf16
+attn_implementation: sdpa
+
+geometry:
+  name: dummy              # dummy | cut3r | anchor3r | lingbot | vggt_window
+  checkpoint: null
+  tap_layers: [11, 17, 23] # SpatialStack 기본값
+  hidden_size: 256         # CUT3R 디코더 잠재 차원 — 실제 체크포인트로 확인 필요
+  image_size: 512
+  stride: 1
+  freeze: true
+  expose_pose_token: true
+
+fusion:
+  mode: deepstack
+  inject_layers: [0, 1, 2]
+  merge_size: 2
+  mlp_ratio: 2.0
+  zero_init: true
+
+lora:
+  enabled: false
+  r: 32
+  alpha: 64
+  dropout: 0.05
+
+stream:
+  max_visual_tokens: 16384
+  budget_policy: evict
+  target_fps: 30.0

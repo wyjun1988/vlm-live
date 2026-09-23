@@ -1,0 +1,22 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+*.egg-info/
+build/
+dist/
+.DS_Store
+.pytest_cache/
+.ipynb_checkpoints/
+
+# 데이터·가중치는 절대 커밋하지 않는다
+data/
+checkpoints/
+outputs/
+runs/
+wandb/
+*.pth
+*.safetensors
+*.mp4
+*.npy
