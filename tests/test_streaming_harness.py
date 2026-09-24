@@ -240,3 +240,27 @@ def test_scene_map_needs_point_producing_geometry():
 
     with pytest.raises(ValueError, match="CUT3R"):
         StreamingSession(make_model(), HalvingSelector(8), scene_map=SceneMap())
+
+
+def test_scene_facts_only_adds_text_without_image():
+    """map_image=False: measured facts as text only — no extra image, no extra visual tokens."""
+    from live3r.serve.scene_map import SceneMap
+
+    m = _with_fake_points(make_model())
+    f, a = feed(120)
+    s = StreamingSession(m, HalvingSelector(8), geom_stride=3, visual_mode="image", audit=a,
+                         scene_map=SceneMap(stride=1), map_image=False)
+    s.consume(f)
+    pre = s.prefill()
+    assert pre["map_tokens"] == 0 and "square meters" in pre["map_text"] and "image" not in pre["map_text"]
+    assert pre["pixel_kwargs"]["image_grid_thw"].shape[0] == 8          # keyframes only
+    segs = StreamingSession.segments(_NoPrompt(), pre)
+    assert segs[-1] == pre["map_text"] and len(segs) == 9
+
+
+class _NoPrompt:
+    """segments() only needs image_segment for keyframes here."""
+
+    @staticmethod
+    def image_segment(n):
+        return f"<img:{n}>"

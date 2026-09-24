@@ -418,6 +418,7 @@ class StreamingSession:
         scene_map=None,
         map_size: int = 512,
         map_max_pixels: int = 512 * 512,
+        map_image: bool = True,
     ) -> None:
         if mode not in ("deferred", "incremental"):
             raise ValueError(f"모르는 모드 {mode}")
@@ -446,6 +447,7 @@ class StreamingSession:
         # 측정값 텍스트를 키프레임 **뒤**에 붙인다 (지도만 바뀌면 프리픽스 꼬리만 다시 계산하면 되는 자리).
         self.scene_map = scene_map
         self.map_size = map_size
+        self.map_image = map_image  # False: measured facts as text only, no map image
         self.map_spec = None
         if scene_map is not None:
             if not hasattr(model.geometry, "decode_points"):
@@ -554,7 +556,9 @@ class StreamingSession:
             timestamps = frame_timestamps(chosen, self.fps, spec.temporal_patch)
 
         map_tokens, map_text = 0, ""
-        if self.scene_map is not None and self.scene_map.n_frames:
+        if self.scene_map is not None and self.scene_map.n_frames and not self.map_image:
+            map_text = self.scene_map.text(image=False)
+        elif self.scene_map is not None and self.scene_map.n_frames:
             from ..serve.scene_map import keyframe_labels, zeros_like_embeds
 
             img = self.scene_map.render(self.map_size, labels=keyframe_labels(chosen))
@@ -594,7 +598,9 @@ class StreamingSession:
         else:
             segs = [prompt.video_segment(pre["step_tokens"][0], pre["timestamps"])]
         if pre.get("map_tokens"):
-            segs += [prompt.image_segment(pre["map_tokens"]), pre["map_text"]]
+            segs.append(prompt.image_segment(pre["map_tokens"]))
+        if pre.get("map_text"):
+            segs.append(pre["map_text"])
         return segs
 
     def report(self, token_budget: int | None = None, strict: bool = True) -> dict:

@@ -119,6 +119,15 @@ class SceneMap:
         p = self._pts @ R.T
         return p[:, :2], p[:, 2], R
 
+    def to_map(self, xyz: np.ndarray) -> np.ndarray:
+        """World points [N,3] -> floor-plan coordinates [N,3] (x, y wall-aligned metres; z above the floor)."""
+        if self.n_points < 100 or not self._cams:
+            return np.asarray(xyz, dtype=np.float64)
+        _, z, R = self._frame()
+        p = np.asarray(xyz, dtype=np.float64) @ R.T
+        p[:, 2] -= np.percentile(z, 2)
+        return p
+
     def facts(self) -> dict:
         """측정값 — 방 크기(바닥 bbox 2~98 백분위), 천장 높이, 카메라 이동 거리."""
         if self.n_points < 100 or not self._cams:
@@ -131,10 +140,21 @@ class SceneMap:
         path = float(np.linalg.norm(np.diff(cams, axis=0), axis=1).sum()) if len(cams) > 1 else 0.0
         return {"width_m": w, "length_m": l, "area_m2": w * l, "height_m": float(zh - zl), "path_m": path}
 
-    def text(self) -> str:
+    def text(self, image: bool = True) -> str:
+        """Prompt text. image=False: measured facts only (no map image in the prompt)."""
         f = self.facts()
         if not f:
             return ""
+        if not image:
+            # Zero-shot M2 run (2026-09-24): the map *image* hurt appearance-order / relative-direction questions
+            # (-7..-10) while the measured area helped room size (+13..+19) -> try the facts alone.
+            return (
+                "Measured from a 3D reconstruction of the video: "
+                f"the room is about {f['width_m']:.1f} m by {f['length_m']:.1f} m "
+                f"(about {f['area_m2']:.0f} square meters), about {f['height_m']:.1f} m high, "
+                f"and the camera moved about {f['path_m']:.1f} m. "
+                "Answer directly in the requested format without explanation.\n"
+            )
         return (
             "The image after the video frames is a top-down map of the scene reconstructed from the video "
             "(grid lines every 1 meter; numbered dots are the camera positions at the video frames, numbered in time order; "

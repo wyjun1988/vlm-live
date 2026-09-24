@@ -83,6 +83,60 @@ def pick_videos(docs, k: int, seed: int) -> list[tuple[str, str]]:
     return chosen
 
 
+_VOCAB_PATTERNS = [
+    r"How many (.+?)\(s\) are in this room",
+    r"dimension \(length, width, or height\) of the (.+?), measured",
+    r"distance between the (.+?) and the (.+?) \(in meters\)",
+    r"which of these objects \((.+?)\) is the closest to the (.+?)\?",
+    r"standing by the (.+?) and facing the (.+?), is the (.+?) (?:to|in) ",
+    r"categories in the video: (.+?)\?",
+    r"beginning at the (.+?) facing the (.+?)\. You want to navigate to the (.+?)\.",
+]
+
+
+def vsi_vocab(questions: list[str]) -> list[str]:
+    """Object names mentioned in a video's VSI questions (ORACLE vocabulary — a live system would have to
+    detect open-vocabulary objects without knowing the questions; results using this are an optimistic probe)."""
+    import re
+
+    names: list[str] = []
+    for q in questions:
+        for pat in _VOCAB_PATTERNS:
+            for m in re.finditer(pat, q):
+                for g in m.groups():
+                    names += [n.strip() for n in g.split(",")]
+    # some VSI questions are malformed ("beginning at the standing by the window and facing ...") -> drop phrases
+    bad = {"standing", "facing", "by", "and", "the"}
+    return sorted({n for n in names if n and len(n) < 40 and not (set(n.split()) & bad)})
+
+
+def detect_objects(live, pb, frame, vocab, device, max_new_tokens: int = 256):
+    """The VLM's own grounding on one frame (no geometry injection) -> parsed detections."""
+    from dataclasses import replace
+
+    from live3r.data.vision import prepare_image, tokens_per_step
+    from live3r.serve.object_map import detection_prompt, parse_detections
+
+    spec = replace(live.spec, max_pixels=640 * 480)          # native VSI resolution — small objects matter
+    pv, grid = prepare_image(frame, spec)
+    ids = pb.build_query("<image>" + detection_prompt(vocab), [pb.image_segment(tokens_per_step(grid[0], spec))])
+    ids = ids.to(device)
+    with torch.no_grad():
+        out = live.base.generate(input_ids=ids, attention_mask=torch.ones_like(ids),
+                                 mm_token_type_ids=(ids == live.image_token_id).long(),
+                                 pixel_values=pv.to(device), image_grid_thw=grid.to(device),
+                                 max_new_tokens=max_new_tokens, do_sample=False)
+    return parse_detections(live.tokenizer.decode(out[0, ids.shape[1]:], skip_special_tokens=True))
+
+
+COGMAP_PROMPT = (
+    "You are watching a video of an indoor scene. Write a brief cognitive map of the scene: list the main objects "
+    "and give each one's approximate position on a 10 by 10 top-down grid of the whole scene, as JSON like "
+    '{"sofa": [[2, 3]], "tv": [[7, 3]]} (one [x, y] per instance). After the JSON, estimate the room\'s width '
+    "and length in meters in one short sentence."
+)
+
+
 def count_frames(path: Path) -> int:
     import av
 
@@ -110,6 +164,23 @@ def main() -> int:
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--scene-map", action="store_true",
                     help="CUT3R 장면 지도 프롬프트 (지도 이미지 + 측정값 텍스트, 키프레임 뒤) — 실제 기하 필요 (--config)")
+    ap.add_argument("--map-image", action=argparse.BooleanOptionalAction, default=True,
+                    help="with --scene-map: include the map image (--no-map-image = measured facts as text only)")
+    ap.add_argument("--object-map", action="store_true",
+                    help="with --scene-map: object-level cognitive map as text (VLM grounding on keyframes, "
+                         "lifted to 3D with CUT3R). Uses the ORACLE vocabulary from the video's questions")
+    ap.add_argument("--detect-every", type=int, default=2, help="--object-map: ground every N-th keyframe")
+    ap.add_argument("--detector", choices=["vlm", "owlv2"], default="vlm",
+                    help="--object-map: the VLM's own grounding, or OWLv2 (open vocabulary, fixed indoor list)")
+    ap.add_argument("--oracle-vocab", action=argparse.BooleanOptionalAction, default=None,
+                    help="object names from the video's questions (upper-bound probe only). "
+                         "Default: on for --detector vlm, off for owlv2 (fixed indoor vocabulary)")
+    ap.add_argument("--first-videos", type=int, default=0,
+                    help="evaluate only the first N videos of the --videos selection (quick probes that stay "
+                         "comparable with full runs)")
+    ap.add_argument("--self-map", action="store_true",
+                    help="background thinking (I-20): the VLM first writes a cognitive map of the scene from the "
+                         "keyframes (question-agnostic); the text goes into the prompt for every question")
     ap.add_argument("--format-hint", action="store_true",
                     help="지도 없이 형식 지시 한 줄만 (지도 프롬프트의 대조군 — 지시 효과와 지도 효과를 가른다)")
     ap.add_argument("--geom-stride", type=int, default=10**9,
@@ -146,6 +217,8 @@ def main() -> int:
     root = Path(args.vsi_root)
     docs = [json.loads(line) for line in open(root / "test.jsonl")]
     vids = pick_videos(docs, args.videos, args.seed)
+    if args.first_videos:
+        vids = vids[: args.first_videos]
     todo = [d for d in docs if (d["dataset"], d["scene_name"]) in set(vids)]
     modes = [m for m in args.modes.split(",") if m]
     print(f"영상 {len(vids)} · 문항 {len(todo)} · 모드 {modes} · 키프레임 {args.budget}")
@@ -186,6 +259,14 @@ def main() -> int:
 
     scored = {m: [] for m in modes}
     maps: dict[str, dict] = {}
+    oracle_vocab = args.oracle_vocab if args.oracle_vocab is not None else (args.detector == "vlm")
+    owl = None
+    if args.object_map and args.detector == "owlv2":
+        from live3r.serve.detector import OWLv2Detector
+
+        owl = OWLv2Detector(device=dev)
+    objects: dict[str, dict] = {}
+    self_maps: dict[str, str] = {}
     timing = collections.defaultdict(float)
     for vi, (ds, scene) in enumerate(vids):
         path = root / ds / f"{scene}.mp4"
@@ -198,7 +279,8 @@ def main() -> int:
             # 기하는 키프레임에서만 돌린다 (dummy·zero-init 이라 출력과 무관 — 속도만 아낀다)
             sessions[m] = StreamingSession(live, sel, geom_stride=args.geom_stride, visual_mode=vmode,
                                            device=dev, audit=StreamingAudit(),
-                                           scene_map=SceneMap() if args.scene_map else None)
+                                           scene_map=SceneMap() if args.scene_map else None,
+                                           map_image=args.map_image)
 
         t1 = time.time()
         with av.open(str(path)) as c:
@@ -215,13 +297,44 @@ def main() -> int:
         for m, s in sessions.items():
             t2 = time.time()
             pre = s.prefill()
-            if pre.get("map_tokens"):
+            if s.scene_map is not None and s.scene_map.n_frames:
                 maps[f"{ds}/{scene}"] = s.scene_map.facts()
-                if len(maps) <= args.save_maps and args.out:
+                if pre.get("map_tokens") and len(maps) <= args.save_maps and args.out:
                     mdir = Path(args.out).with_suffix("").parent / (Path(args.out).stem + "_maps")
                     mdir.mkdir(parents=True, exist_ok=True)
                     s.last_map_image.save(mdir / f"{ds}_{scene}.png")
             segs = StreamingSession.segments(pb, pre)
+            if args.object_map and s.scene_map is not None:
+                from live3r.serve.object_map import ObjectMap
+
+                t_det = time.time()
+                vocab = vsi_vocab([d["question"] for d in qs]) if oracle_vocab else None
+                om = ObjectMap()
+                n_det = 0
+                for rank, fi in enumerate(pre["frame_indices"]):
+                    if rank % args.detect_every:
+                        continue
+                    frame = s._kept[fi].raw.numpy()
+                    if args.detector == "owlv2":
+                        dets = owl(frame, vocab)   # vocab None -> fixed indoor list (question-agnostic)
+                    else:
+                        dets = detect_objects(live, pb, frame, vocab or [], dev)
+                    n_det += om.add(rank + 1, dets, s._kept[fi].geom)
+                obj_text = om.text(to_map=s.scene_map.to_map, n_frames=len(pre["frame_indices"]))
+                timing["detect"] += time.time() - t_det
+                objects[f"{ds}/{scene}"] = {"vocab": vocab, "lifted": n_det, "text": obj_text}
+                if obj_text:
+                    segs = (segs[:-1] + [obj_text, segs[-1]]) if pre.get("map_text") else segs + [obj_text]
+            if args.self_map:  # I-20: "look at the geometry first", done before any question arrives
+                t_sm = time.time()
+                pc0 = PrefixCache(live, pb, segs, pre["pixel_kwargs"], pre["geometry"], dev)
+                cm, _ = pc0.answer(COGMAP_PROMPT, max_new_tokens=400, do_sample=False)
+                del pc0
+                cm = cm.strip()
+                segs = segs + ["Notes written after watching the video (a top-down cognitive map of the scene):\n"
+                               + cm + "\nAnswer directly in the requested format without explanation.\n"]
+                self_maps[f"{ds}/{scene}"] = cm
+                timing["selfmap"] += time.time() - t_sm
             if args.format_hint:  # 지도 텍스트 끝의 지시문과 같은 자리·같은 문장 (지도·측정값만 없다)
                 segs = segs + ["Answer directly in the requested format without explanation.\n"]
             s.report(strict=not m.startswith("oracle"))
@@ -286,7 +399,10 @@ def main() -> int:
             "predictions": {m: [{"id": r["id"], "type": r["question_type"], "pred": r["prediction"],
                                  "gt": r["ground_truth"]} for r in scored[m]] for m in modes},
             "config": args.config, "weights": args.weights, "scene_map": args.scene_map, "maps": maps,
-            "format_hint": args.format_hint,
+            "format_hint": args.format_hint, "map_image": args.map_image,
+            "object_map": args.object_map, "detector": args.detector if args.object_map else None,
+            "oracle_vocab": bool(args.object_map and oracle_vocab), "objects": objects,
+            "self_map": args.self_map, "self_maps": self_maps,
         }, indent=2, ensure_ascii=False))
         print(f"저장: {args.out}")
     return 0
