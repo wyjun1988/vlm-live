@@ -140,6 +140,14 @@ class SceneMap:
         path = float(np.linalg.norm(np.diff(cams, axis=0), axis=1).sum()) if len(cams) > 1 else 0.0
         return {"width_m": w, "length_m": l, "area_m2": w * l, "height_m": float(zh - zl), "path_m": path}
 
+    def room_facts(self) -> str:
+        """Room measurements only, one sentence — for question-time routing (I-27: attach to room questions)."""
+        f = self.facts()
+        if not f:
+            return ""
+        return (f"Measured from a 3D reconstruction of the video: the room is about {f['width_m']:.1f} m by "
+                f"{f['length_m']:.1f} m (about {f['area_m2']:.0f} square meters) and about {f['height_m']:.1f} m high.\n")
+
     def text(self, image: bool = True) -> str:
         """Prompt text. image=False: measured facts only (no map image in the prompt)."""
         f = self.facts()

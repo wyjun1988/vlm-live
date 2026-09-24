@@ -49,3 +49,37 @@ def test_lift_merge_and_text():
 def test_detection_prompt_lists_vocab():
     p = detection_prompt(["chair", "tv"])
     assert "chair, tv" in p and "bbox_2d" in p
+
+
+def _pts_obs(om, label, frame, center, spread=0.1, n=50, seed=0):
+    rng = np.random.default_rng(seed)
+    pts = np.asarray(center, np.float32) + rng.uniform(-spread, spread, (n, 3)).astype(np.float32)
+    om._observe(label, np.median(pts, axis=0), frame, pts)
+
+
+def test_lookup_synonyms_plural_and_min_frames():
+    from live3r.serve.object_map import canon
+
+    assert canon("Trash Can") == "trash bin" and canon("chairs") == "chair" and canon("glass") == "glass"
+    om = ObjectMap()
+    _pts_obs(om, canon("couch"), 1, (0, 0, 2))
+    _pts_obs(om, canon("sofa"), 4, (0.1, 0, 2.1), seed=1)       # same sofa from another keyframe
+    _pts_obs(om, "lamp", 2, (3, 0, 2))                          # seen once -> not trusted
+    assert len(om.lookup("sofas")) == 1 and om.lookup("lamp") == [] and len(om.lookup("lamp", min_frames=1)) == 1
+
+
+def test_closest_point_distance_and_absent_objects():
+    om = ObjectMap()
+    for f in (1, 2):
+        _pts_obs(om, "table", f, (0, 0, 2), spread=0.5, seed=f)     # a 1 m wide table centred at x=0
+        _pts_obs(om, "chair", f, (1.5, 0, 2), spread=0.2, seed=f + 5)
+    d = om.pair_distance("table", "chair")
+    assert 0.6 < d < 1.0, d          # closest points ~0.8 m apart (centres are 1.5 m apart)
+    assert om.pair_distance("table", "piano") is None
+
+
+def test_size_aware_merge_keeps_a_big_object_as_one_instance():
+    om = ObjectMap(merge_dist=0.8)
+    _pts_obs(om, "bed", 1, (0, 0, 2), spread=1.0, seed=1)      # 2 m wide bed seen whole
+    _pts_obs(om, "bed", 2, (1.1, 0, 2), spread=0.3, seed=2)    # later a partial view, centroid 1.1 m away
+    assert len(om.lookup("bed")) == 1

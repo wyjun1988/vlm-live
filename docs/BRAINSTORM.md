@@ -80,7 +80,8 @@ rebuild is fast enough); relevant for an on-device demo.
 Room width × length (area), height, camera path length from CUT3R point maps + poses (upright, wall-aligned).
 Image mode, 60 videos: facts-only 53.3 vs instruction-only 53.7 (−0.4 [−2.5, +1.5]). Per type vs
 instruction-only: **room size +12.6**, counting +3.5, but appearance order −6.1, relative direction −6.5,
-relative distance −3.5. So the cost seen with the map image (I-08) is not about the picture: geometric text in
+relative distance −3.5. Video mode: 51.7 vs 51.0 (+0.8 [−1.5, +3.1]); room size +19.0, relative direction −7.4,
+route planning −5.4. So the cost seen with the map image (I-08) is not about the picture: geometric text in
 front of the question costs on order / direction questions. Known error: one ARKit room measured 34 m² vs 21.3 m²
 true (points seen through doors).
 → I-27 (select facts at question time).
@@ -95,9 +96,17 @@ Detect objects on keyframes, lift each box to 3D with the CUT3R point map, merge
 object: count, floor-plan position, first-seen frame, plus distances between objects. Targets counting,
 distances, direction, appearance order — "Thinking in Space": a correct cognitive map gives +20..32% on relative
 distance.
-- Prototype (queued): the VLM's own grounding with the **oracle** vocabulary (object names from the questions) —
-  an optimistic upper bound, not a live-valid result.
-- Next: OWLv2 (open-vocabulary detector, downloaded) with a fixed indoor vocabulary — question-agnostic.
+- Prototype: the VLM's own grounding with the **oracle** vocabulary (object names from the questions) —
+  **tested: negative.** Same 20 videos, image mode: 41.0 vs instruction-only 54.7 (**−13.7**); counting
+  63.5 → 38.6, absolute distance 37.9 → 23.9, relative distance 64.5 → 40.3. Why (example scene0435_02):
+  (1) asked for a list of names, the VLM "finds" most of them — 3 chairs, 3 doors, 3 lamps, mostly "first seen
+  in frame 1"; (2) one bed became 7 instances (partial-view centroids > 0.8 m apart); (3) the model **trusts the
+  text** — it copies wrong counts and distances just as it copied the correct room area. Lesson: a wrong
+  measurement is worse than none; text memory must be precise or absent.
+- OWLv2 (open-vocabulary, fixed indoor vocabulary — question-agnostic): **tested: negative.** 44.8 vs 54.7
+  (**−9.9**) on the same 20 videos. Fewer hallucinations than VLM grounding (relative distance 51.6 vs 40.3),
+  but counting 63.5 → 38.9 and absolute distance 37.9 → 28.4 — wrong counts/distances still get copied.
+- What a v2 would need → I-28.
 
 ### I-10 (U#3) Object-aware extraction from CUT3R — **proposed**
 Let object recognition shape *what* is extracted from CUT3R, not just be merged afterwards: pool CUT3R point maps
@@ -121,11 +130,60 @@ Video-3D LLM / C²RoPE style. Needs training; conflicts with the pretrained (t, 
 
 ---
 
-### I-27 Select which facts to show when the question arrives — **proposed**
+### I-27 Select which facts to show when the question arrives — **tested: positive (adopted)**
 Everything is still computed in the background, but only the facts relevant to the question are attached to it
 (e.g. room measurements for a room-size question, object distances for a distance question). Costs a few dozen
 question-time tokens (milliseconds), avoids the −6 on order / direction from always-on text (I-07), and is
 live-valid (the question is known at that moment). Rule-based routing first; could be learned later.
+- Simulated from the facts-only and instruction-only runs (room facts only on room-size questions; the facts
+  text already sat right before the question, where routing would put it): **image 55.3 vs 53.7, +1.6
+  [+0.4, +2.8]; video 53.3 vs 51.0, +2.4 [+1.0, +3.8].** First significant zero-shot gain from CUT3R geometry.
+  vs the best-format base (48.6): image +6.6 [+2.9, +10.4].
+- **Real run (image mode, 60 videos): 55.4 — +1.7 [+0.6, +2.8] over instruction-only, +6.8 [+3.0, +10.5] over
+  the best-format base.** Prefix = keyframes + format instruction; the measured room facts are attached only to
+  room-size questions when they arrive (a keyword rule hits exactly the 288 room-size questions). Every other
+  type is identical to instruction-only, as designed; room size 53.2 → 67.0. Current best live-valid zero-shot
+  configuration.
+- Next: object facts through the same routing (I-28).
+
+### I-28 Object facts v2 — precise or absent — **tested: null**
+From I-09's failures: (a) no counts in the text (the model counts better from the images: 63.5 vs 38.9 with
+our counts); (b) at question time, look up only the objects the question names (fuzzy match to the background
+map's labels) and attach just their positions and a **closest-point** distance computed from the lifted point
+sets (VSI measures closest points; centroid distances overestimate); (c) only instances seen in >= 2 keyframes;
+(d) merge per label with size-aware radii (a bed or sofa spans > 1 m) or 3D box overlap, not a 0.8 m centroid
+threshold; (e) attach nothing when unsure. Needs I-27's routing.
+- Result (image mode, 60 videos; OWLv2 fixed vocabulary on CPU, every 2nd keyframe; on top of I-27): 55.2 vs
+  I-27 55.4 (−0.2 [−0.7, +0.4]). Absolute distance +1.7 (37.6 → 39.3), relative distance −3.0 (64.0 → 61.0);
+  other types untouched.
+- Diagnosis (15 videos, attached text logged per question):
+  - Absolute distance: a measurement was attached to only **18%** (9/49) of the questions — most named objects
+    were missing from the fixed vocabulary or seen in < 2 keyframes. Where attached, the measurement's own MRA was
+    **0.50** (the model alone: ~0.38; measured/true median 0.84) and the model copied it **100%**. → the gain is
+    capped by coverage, not by the model.
+  - Relative distance: attached to 47% (28/59), but the closest object implied by the measurements was right only
+    **12/28 (43%)** — worse than the model's own ~64% — and the model followed it (11/28). → our measurements are
+    not fine enough to rank objects by distance.
+- Next (I-29): raise coverage for absolute distance; stop attaching relative-distance rankings (or only with a
+  clear margin).
+
+### I-29 Measure what the question names, at question time — **proposed**
+I-28's absolute-distance measurements were better than the model's own guesses (MRA 0.50 vs 0.38) but attached to
+only 18% of questions. Detect the question's object names on the stored keyframes when the question arrives
+(OWLv2 on 16 frames in one batch: ~0.1 s on H100; slow on M2), lift and measure, attach if both are seen in >= 2
+keyframes. Keeps TTFT near the budget on H100; trade-off to measure. Drop relative-distance rankings unless the
+margin between options is large (> 30%).
+
+### Lessons so far (zero-shot, 4B)
+- **L1 The model copies numbers from the prompt.** Correct → big gains (room size +13..+19); wrong → big losses
+  (counts −25). Any text memory must be precise, or absent.
+- **L2 Always-on geometric context costs other question types** (order / direction −6..−10). Show facts only to
+  the questions that need them (I-27: +1.6 / +2.4 simulated).
+- **L3 A 4B model's self-generated map does not help** (I-20: −4.8). Measurements must come from geometry, not
+  from the same model looking at the same frames.
+- **L4 Coverage and precision are separate problems.** Absolute distances measured from CUT3R beat the model's
+  guesses where we had them (MRA 0.50 vs 0.38) but covered 18% of questions; rankings by distance were worse than
+  the model (43% vs ~64%). Attach a measurement only for question types where it is known to beat the model.
 
 ---
 
@@ -166,12 +224,16 @@ model to first lay out the geometry, then answer, may raise accuracy. Evidence: 
 chain-of-thought did not help, but generating a cognitive map first did (+10% relative distance).
 - Tension: thinking at question time costs seconds of tokens (live TTFT).
 
-### I-20 Background thinking — the VLM writes the cognitive map before the question — **testing**
+### I-20 Background thinking — the VLM writes the cognitive map before the question — **tested: negative**
 Combine I-01 + I-02 + I-19: in the background the VLM looks at the keyframes and writes a cognitive map /
 scene summary (objects, grid positions); it becomes part of the cached situation prompt. The "thinking first"
 happens before the question, so question time does not change.
 - Zero-shot test (no CUT3R): one generation per video, then the map text in the prompt for every question.
 - Compare with I-09 (CUT3R-measured object map): self-estimated vs measured geometry.
+- Result (20 videos, image mode): 49.9 vs instruction-only 54.7 (**−4.8**); relative distance −14.5, route
+  −8.3, room size −7.5. The 4B's own map adds no new information, only its own errors. "Thinking in Space"
+  saw +10% with Gemini-1.5 Pro — a much stronger model; at 4B, thinking-first does not help without training
+  (keeps I-19's training variant open, closes the zero-shot one).
 
 ### I-21 Thinking on at question time (4B) — **parked**
 Latency cost; only if I-20 shows thinking itself is what helps.
@@ -210,10 +272,12 @@ timestamps (I-04), recency weighting / decay, possibly state windows (I-05).
 
 | # | Test | Ideas | Status |
 |---|---|---|---|
-| 1 | Measured facts as text, no map image (image + video mode, 60 videos) | I-07 | image done (null overall, room size +12.6); video running |
-| 2 | Object map, VLM grounding + **oracle** vocabulary (image mode, first 20 videos) | I-09 | queued |
-| 3 | Object map, **OWLv2 + fixed indoor vocabulary** (question-agnostic) | I-09, I-10, I-24 | next |
-| 4 | Background cognitive map written by the VLM itself (zero-shot, no CUT3R) | I-20, I-19 | next |
+| 1 | Measured facts as text, no map image (image + video mode, 60 videos) | I-07, I-27 | done: null always-on; **+1.6 / +2.4 routed (simulated)** |
+| 2 | Object map, VLM grounding + **oracle** vocabulary (image mode, first 20 videos) | I-09 | done: **−13.7** (hallucinated / over-split objects) |
+| 3 | Object map, **OWLv2 + fixed indoor vocabulary** (question-agnostic) | I-09, I-10, I-24 | done: **−9.9** |
+| 4 | Background cognitive map written by the VLM itself (zero-shot, no CUT3R) | I-20, I-19 | done: **−4.8** |
+| 4b | I-27 routed room facts, real run (image, 60 videos) | I-27 | done: **55.4, +1.7 [+0.6, +2.8]** |
 | 5 | Same prompts on 0.8B | I-22 | after 3 |
 | 6 | CUT3R drift vs stream length (needs ScanNet GT poses — data not local yet) | I-05, I-11 | proposed |
-| 7 | Question-time fact selection (room facts only for room-size questions, etc.) | I-27 | after 1–4 |
+| 7 | Object facts v2: question-time lookup of the named objects, closest-point distances, no counts | I-28 | done: null (−0.2) — abs distance good but 18% coverage; rel distance misleading |
+| 8 | Question-time detection of the named objects (coverage), abs distance only | I-29 | proposed |

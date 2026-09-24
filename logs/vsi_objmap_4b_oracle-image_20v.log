@@ -1,0 +1,44 @@
+영상 20 · 문항 333 · 모드 ['oracle-image'] · 키프레임 32
+Loading weights:   0%|          | 0/723 [00:00<?, ?it/s]Loading weights:  76%|███████▌  | 550/723 [00:00<00:00, 5492.32it/s]Loading weights: 100%|██████████| 723/723 [00:00<00:00, 6827.47it/s]
+Warning, cannot find cuda-compiled version of RoPE2D, using a slow pytorch version instead
+Warning, cannot find cuda-compiled version of RoPE2D, using a slow pytorch version instead
+학습 설정 configs/m2_zeroshot_4b.yaml · 기하 cut3r · LoRA False · 가중치 None
+모델 로드 12.3s (checkpoints/qwen3.5-4b, mps bf16)
+  [1/20] scannet/scene0153_00 (582프레임, 6문항) · 누적 6문항 · oracle-image 105s
+  [2/20] arkitscenes/42444950 (2494프레임, 14문항) · 누적 20문항 · oracle-image 187s
+  [3/20] scannet/scene0435_02 (1617프레임, 34문항) · 누적 54문항 · oracle-image 402s
+  [4/20] scannet/scene0699_00 (2197프레임, 42문항) · 누적 96문항 · oracle-image 541s
+  [5/20] arkitscenes/47334372 (2617프레임, 5문항) · 누적 101문항 · oracle-image 606s
+  [6/20] scannetpp/5ee7c22ba0 (3808프레임, 16문항) · 누적 117문항 · oracle-image 696s
+  [7/20] scannetpp/38d58a7a31 (6566프레임, 31문항) · 누적 148문항 · oracle-image 935s
+  [8/20] scannetpp/31a2c91c43 (3826프레임, 14문항) · 누적 162문항 · oracle-image 1023s
+  [9/20] scannet/scene0086_02 (1268프레임, 12문항) · 누적 174문항 · oracle-image 1149s
+  [10/20] arkitscenes/45663105 (1680프레임, 4문항) · 누적 178문항 · oracle-image 1232s
+  [11/20] scannet/scene0196_00 (1920프레임, 9문항) · 누적 187문항 · oracle-image 1488s
+  [12/20] scannetpp/13c3e046d7 (4608프레임, 5문항) · 누적 192문항 · oracle-image 1571s
+  [13/20] scannetpp/5f99900f09 (4131프레임, 47문항) · 누적 239문항 · oracle-image 1810s
+  [14/20] scannetpp/0d2ee665be (2700프레임, 42문항) · 누적 281문항 · oracle-image 1965s
+  [15/20] arkitscenes/47331262 (2072프레임, 6문항) · 누적 287문항 · oracle-image 2100s
+  [16/20] scannetpp/e398684d27 (2933프레임, 16문항) · 누적 303문항 · oracle-image 2209s
+  [17/20] scannet/scene0616_01 (3329프레임, 12문항) · 누적 315문항 · oracle-image 2352s
+  [18/20] scannet/scene0496_00 (1336프레임, 8문항) · 누적 323문항 · oracle-image 2580s
+  [19/20] scannet/scene0494_00 (741프레임, 8문항) · 누적 331문항 · oracle-image 2741s
+  [20/20] arkitscenes/41159530 (2662프레임, 2문항) · 누적 333문항 · oracle-image 2868s
+
+유형                                    oracle-image
+--------------------------------------------------
+obj_appearance_order_accuracy                 54.3
+object_abs_distance_MRA:.5:.95:.05            23.9
+object_counting_MRA:.5:.95:.05                38.6
+object_rel_distance_accuracy                  40.3
+object_size_estimation_MRA:.5:.95:.05            44.1
+room_size_estimation_MRA:.5:.95:.05            57.5
+route_planning_accuracy                       16.7
+object_rel_direction_accuracy                 52.7
+overall                                       41.0
+
+답 형식 실패율 (선택형: 첫 단어가 A~D 아님 / 수치형: 숫자 추출 실패):
+  oracle-image       7.2%
+
+문항 333 · 디코딩 542s · oracle-image 8.61s/문항
+저장: outputs/vsi_local/objmap_4b_oracle-image_20v.json

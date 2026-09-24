@@ -55,14 +55,34 @@ def detection_prompt(vocab: list[str]) -> str:
     )
 
 
-class ObjectMap:
-    """Accumulates lifted detections into object instances and renders them as prompt text."""
+SYNONYMS = {
+    "trash can": "trash bin", "garbage can": "trash bin", "recycling bin": "trash bin", "couch": "sofa",
+    "television": "tv", "monitor": "tv", "bookcase": "bookshelf", "fridge": "refrigerator", "potted plant": "plant",
+    "office chair": "chair", "armchair": "chair", "dining table": "table", "coffee table": "table", "carpet": "rug",
+}
 
-    def __init__(self, merge_dist: float = 0.8, inner: float = 0.5, min_points: int = 15) -> None:
+
+def canon(name: str) -> str:
+    n = name.strip().lower()
+    n = SYNONYMS.get(n, n)
+    return n[:-1] if n.endswith("s") and not n.endswith("ss") and len(n) > 3 else n
+
+
+class ObjectMap:
+    """Accumulates lifted detections into object instances and renders them as prompt text.
+
+    v2 (I-28): each observation keeps a small sample of its 3D points, so closest-point distances can be
+    measured (VSI measures from the closest points); `merge_dist` grows with the object's own extent so a bed
+    seen from different sides stays one instance.
+    """
+
+    def __init__(self, merge_dist: float = 0.8, inner: float = 0.5, min_points: int = 15,
+                 keep_points: int = 200) -> None:
         self.merge_dist = merge_dist
         self.inner = inner
         self.min_points = min_points
-        self._inst: list[dict] = []   # {"label", "obs": [xyz...], "first": frame_no}
+        self.keep_points = keep_points
+        self._inst: list[dict] = []   # {"label", "obs": [xyz...], "first": frame_no, "pts": [N,3], "frames": set}
 
     def add(self, frame_no: int, dets: list[dict], geom) -> int:
         """Lift one keyframe's detections with its CUT3R output (pointmap [1,3,H,W], conf [1,1,H,W]).
@@ -88,23 +108,58 @@ class ObjectMap:
             ok = (cf[r0:r1, c0:c1].reshape(-1) >= thr) & np.isfinite(pts).all(1)
             if ok.sum() < self.min_points:
                 continue
-            self._observe(d["label"], np.median(pts[ok], axis=0), frame_no)
+            good = pts[ok]
+            if len(good) > self.keep_points:
+                good = good[np.linspace(0, len(good) - 1, self.keep_points).astype(int)]
+            self._observe(canon(d["label"]), np.median(good, axis=0), frame_no, good)
             lifted += 1
         return lifted
 
-    def _observe(self, label: str, xyz: np.ndarray, frame_no: int) -> None:
-        best, best_d = None, self.merge_dist
+    def _observe(self, label: str, xyz: np.ndarray, frame_no: int, pts: np.ndarray | None = None) -> None:
+        best, best_d = None, None
         for inst in self._inst:
             if inst["label"] != label:
                 continue
             dist = float(np.linalg.norm(np.median(inst["obs"], axis=0) - xyz))
-            if dist < best_d:
+            # size-aware: ~half the instance's own extent (with slack), at least merge_dist (a bed spans > 1 m;
+            # a partial view's centroid can sit near the object's edge)
+            ext = float(np.max(np.ptp(inst["pts"], axis=0))) if len(inst["pts"]) else 0.0
+            radius = max(self.merge_dist, 0.6 * ext)
+            if dist < radius and (best_d is None or dist < best_d):
                 best, best_d = inst, dist
+        pts = np.zeros((0, 3), np.float32) if pts is None else pts.astype(np.float32)
         if best is None:
-            self._inst.append({"label": label, "obs": [xyz], "first": frame_no})
+            self._inst.append({"label": label, "obs": [xyz], "first": frame_no, "pts": pts, "frames": {frame_no}})
         else:
             best["obs"].append(xyz)
             best["first"] = min(best["first"], frame_no)
+            best["frames"].add(frame_no)
+            allp = np.concatenate([best["pts"], pts])
+            if len(allp) > 4 * self.keep_points:
+                allp = allp[np.linspace(0, len(allp) - 1, 4 * self.keep_points).astype(int)]
+            best["pts"] = allp
+
+    def lookup(self, name: str, min_frames: int = 2) -> list[dict]:
+        """Instances whose label matches `name` (synonyms, plural) and that were seen in >= min_frames keyframes."""
+        want = canon(name)
+        return [i for i in self._inst if i["label"] == want and len(i["frames"]) >= min_frames]
+
+    @staticmethod
+    def closest_distance(a: dict, b: dict) -> float | None:
+        """Closest-point distance between two instances: each point's nearest neighbour in the other set, then
+        the 5th percentile — close to the true minimum, robust to a few stray background points in the boxes."""
+        if not len(a["pts"]) or not len(b["pts"]):
+            return None
+        d = np.linalg.norm(a["pts"][:, None, :] - b["pts"][None, :, :], axis=-1)
+        return float(np.percentile(np.concatenate([d.min(1), d.min(0)]), 5))
+
+    def pair_distance(self, name_a: str, name_b: str, min_frames: int = 2) -> float | None:
+        """Closest-point distance between the nearest instances of two named objects, or None if either is
+        missing / seen in fewer than min_frames keyframes (then nothing should be attached — I-28)."""
+        A, B = self.lookup(name_a, min_frames), self.lookup(name_b, min_frames)
+        ds = [self.closest_distance(a, b) for a in A for b in B]
+        ds = [d for d in ds if d is not None]
+        return min(ds) if ds else None
 
     def instances(self) -> list[dict]:
         return [{"label": i["label"], "xyz": np.median(i["obs"], axis=0), "n_obs": len(i["obs"]),

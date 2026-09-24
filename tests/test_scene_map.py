@@ -87,3 +87,10 @@ def test_empty_map_is_harmless():
 
 def test_keyframe_labels_are_time_ordered():
     assert keyframe_labels([30, 5, 12]) == {5: 1, 12: 2, 30: 3}
+
+
+def test_room_facts_sentence_for_question_time_routing():
+    """I-27: one sentence of room measurements, no format instruction (the prefix already has it)."""
+    t = _map().room_facts()
+    assert "square meters" in t and "m high" in t and "Answer" not in t and t.endswith("\n")
+    assert SceneMap().room_facts() == ""

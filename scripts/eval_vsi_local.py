@@ -137,6 +137,38 @@ COGMAP_PROMPT = (
 )
 
 
+def wants_room_facts(question: str) -> bool:
+    """I-27 routing rule: attach the measured room facts only to questions about the room's size."""
+    q = question.lower()
+    return "room" in q and any(k in q for k in ("size", "square meter", "area"))
+
+
+def object_facts_for(question: str, om) -> str:
+    """I-28: at question time, look up only the objects the question names and attach measured closest-point
+    distances — or nothing if an object is missing / seen in fewer than 2 keyframes. No counts (the model counts
+    better from the images). NOTE: the names are read with VSI's question templates (benchmark-specific); a
+    general system would have the LLM extract them."""
+    import re
+
+    m = re.search(r"distance between the (.+?) and the (.+?) \(in meters\)", question)
+    if m:
+        d = om.pair_distance(m.group(1), m.group(2))
+        if d is None:
+            return ""
+        return (f"Measured from a 3D reconstruction of the video: the closest points of the {m.group(1)} and the "
+                f"{m.group(2)} are about {d:.1f} m apart.\n")
+    m = re.search(r"which of these objects \((.+?)\) is the closest to the (.+?)\?", question)
+    if m:
+        target = m.group(2)
+        opts = [o.strip() for o in m.group(1).split(",") if o.strip() and o.strip() != target]
+        meas = [(o, om.pair_distance(o, target)) for o in opts]
+        meas = [(o, d) for o, d in meas if d is not None]
+        if len(meas) >= 2:
+            return ("Measured from a 3D reconstruction of the video, closest-point distances to the " + target
+                    + ": " + ", ".join(f"{o} {d:.1f} m" for o, d in meas) + ".\n")
+    return ""
+
+
 def count_frames(path: Path) -> int:
     import av
 
@@ -178,6 +210,14 @@ def main() -> int:
     ap.add_argument("--first-videos", type=int, default=0,
                     help="evaluate only the first N videos of the --videos selection (quick probes that stay "
                          "comparable with full runs)")
+    ap.add_argument("--route-facts", action="store_true",
+                    help="I-27: keep the prefix = keyframes + format instruction; attach the measured room facts "
+                         "(CUT3R) only to room-size questions when they arrive. Needs --scene-map --no-map-image")
+    ap.add_argument("--route-objects", action="store_true",
+                    help="I-28: build the object map in the background (needs --object-map) but attach only "
+                         "measured distances for the objects a distance question names, at question time")
+    ap.add_argument("--detector-device", default="cpu",
+                    help="device for OWLv2 (cpu keeps the GPU for the VLM — MPS contention made T3 slow)")
     ap.add_argument("--self-map", action="store_true",
                     help="background thinking (I-20): the VLM first writes a cognitive map of the scene from the "
                          "keyframes (question-agnostic); the text goes into the prompt for every question")
@@ -264,7 +304,7 @@ def main() -> int:
     if args.object_map and args.detector == "owlv2":
         from live3r.serve.detector import OWLv2Detector
 
-        owl = OWLv2Detector(device=dev)
+        owl = OWLv2Detector(device=args.detector_device)
     objects: dict[str, dict] = {}
     self_maps: dict[str, str] = {}
     timing = collections.defaultdict(float)
@@ -304,6 +344,7 @@ def main() -> int:
                     mdir.mkdir(parents=True, exist_ok=True)
                     s.last_map_image.save(mdir / f"{ds}_{scene}.png")
             segs = StreamingSession.segments(pb, pre)
+            om = None
             if args.object_map and s.scene_map is not None:
                 from live3r.serve.object_map import ObjectMap
 
@@ -323,7 +364,7 @@ def main() -> int:
                 obj_text = om.text(to_map=s.scene_map.to_map, n_frames=len(pre["frame_indices"]))
                 timing["detect"] += time.time() - t_det
                 objects[f"{ds}/{scene}"] = {"vocab": vocab, "lifted": n_det, "text": obj_text}
-                if obj_text:
+                if obj_text and not args.route_objects:
                     segs = (segs[:-1] + [obj_text, segs[-1]]) if pre.get("map_text") else segs + [obj_text]
             if args.self_map:  # I-20: "look at the geometry first", done before any question arrives
                 t_sm = time.time()
@@ -335,12 +376,24 @@ def main() -> int:
                                + cm + "\nAnswer directly in the requested format without explanation.\n"]
                 self_maps[f"{ds}/{scene}"] = cm
                 timing["selfmap"] += time.time() - t_sm
+            room_facts = ""
+            if (args.route_facts or args.route_objects) and s.scene_map is not None:
+                room_facts = s.scene_map.room_facts() if args.route_facts else ""
+                if pre.get("map_text") and segs and segs[-1] == pre["map_text"]:
+                    segs = segs[:-1]          # no always-on facts in the cached prefix
+                segs = segs + ["Answer directly in the requested format without explanation.\n"]
             if args.format_hint:  # 지도 텍스트 끝의 지시문과 같은 자리·같은 문장 (지도·측정값만 없다)
                 segs = segs + ["Answer directly in the requested format without explanation.\n"]
             s.report(strict=not m.startswith("oracle"))
             pc = PrefixCache(live, pb, segs, pre["pixel_kwargs"], pre["geometry"], dev) if args.prefix_cache else None
             for d in qs:
                 text = vsibench_doc_to_text(dict(d), LMMS_KWARGS)
+                attached = ""
+                if room_facts and wants_room_facts(d["question"]):
+                    attached += room_facts        # question-time routing: a few tokens after the cached prefix
+                if args.route_objects and om is not None:
+                    attached = object_facts_for(d["question"], om) + attached
+                text = attached + text
                 if pc is not None:
                     ans, _ = pc.answer(text, max_new_tokens=16, do_sample=False)
                 else:
@@ -355,6 +408,7 @@ def main() -> int:
                     ans = live.tokenizer.decode(out[0, ids.shape[1]:], skip_special_tokens=True)
                 ans = ans.strip()
                 r = vsibench_process_results(dict(d), [ans])["vsibench_overall"]
+                r["attached"] = attached        # what was routed to this question (for diagnosis)
                 scored[m].append(r)
             timing[m] += time.time() - t2
         done = sum(len(v) for v in scored.values()) // max(1, len(modes))
@@ -397,12 +451,14 @@ def main() -> int:
             "n_questions": n, "scores": {m: {k: float(v) for k, v in table[m].items()} for m in modes},
             "format_fail": {m: sum(format_fail(r) for r in scored[m]) / max(1, len(scored[m])) for m in modes},
             "predictions": {m: [{"id": r["id"], "type": r["question_type"], "pred": r["prediction"],
-                                 "gt": r["ground_truth"]} for r in scored[m]] for m in modes},
+                                 "gt": r["ground_truth"], "attached": r.get("attached", "")}
+                                for r in scored[m]] for m in modes},
             "config": args.config, "weights": args.weights, "scene_map": args.scene_map, "maps": maps,
             "format_hint": args.format_hint, "map_image": args.map_image,
             "object_map": args.object_map, "detector": args.detector if args.object_map else None,
             "oracle_vocab": bool(args.object_map and oracle_vocab), "objects": objects,
-            "self_map": args.self_map, "self_maps": self_maps,
+            "self_map": args.self_map, "self_maps": self_maps, "route_facts": args.route_facts,
+            "route_objects": args.route_objects,
         }, indent=2, ensure_ascii=False))
         print(f"저장: {args.out}")
     return 0

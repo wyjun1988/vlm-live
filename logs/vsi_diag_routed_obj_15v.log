@@ -1,0 +1,40 @@
+영상 15 · 문항 287 · 모드 ['oracle-image'] · 키프레임 32
+Loading weights:   0%|          | 0/723 [00:00<?, ?it/s]Loading weights:  72%|███████▏  | 521/723 [00:00<00:00, 5208.90it/s]Loading weights: 100%|██████████| 723/723 [00:00<00:00, 6795.11it/s]
+Warning, cannot find cuda-compiled version of RoPE2D, using a slow pytorch version instead
+Warning, cannot find cuda-compiled version of RoPE2D, using a slow pytorch version instead
+학습 설정 configs/m2_zeroshot_4b.yaml · 기하 cut3r · LoRA False · 가중치 None
+모델 로드 11.4s (checkpoints/qwen3.5-4b, mps bf16)
+Loading weights:   0%|          | 0/418 [00:00<?, ?it/s]Loading weights: 100%|██████████| 418/418 [00:00<00:00, 7324.46it/s]
+  [1/15] scannet/scene0153_00 (582프레임, 6문항) · 누적 6문항 · oracle-image 34s
+  [2/15] arkitscenes/42444950 (2494프레임, 14문항) · 누적 20문항 · oracle-image 72s
+  [3/15] scannet/scene0435_02 (1617프레임, 34문항) · 누적 54문항 · oracle-image 117s
+  [4/15] scannet/scene0699_00 (2197프레임, 42문항) · 누적 96문항 · oracle-image 166s
+  [5/15] arkitscenes/47334372 (2617프레임, 5문항) · 누적 101문항 · oracle-image 200s
+  [6/15] scannetpp/5ee7c22ba0 (3808프레임, 16문항) · 누적 117문항 · oracle-image 238s
+  [7/15] scannetpp/38d58a7a31 (6566프레임, 31문항) · 누적 148문항 · oracle-image 283s
+  [8/15] scannetpp/31a2c91c43 (3826프레임, 14문항) · 누적 162문항 · oracle-image 321s
+  [9/15] scannet/scene0086_02 (1268프레임, 12문항) · 누적 174문항 · oracle-image 358s
+  [10/15] arkitscenes/45663105 (1680프레임, 4문항) · 누적 178문항 · oracle-image 391s
+  [11/15] scannet/scene0196_00 (1920프레임, 9문항) · 누적 187문항 · oracle-image 427s
+  [12/15] scannetpp/13c3e046d7 (4608프레임, 5문항) · 누적 192문항 · oracle-image 461s
+  [13/15] scannetpp/5f99900f09 (4131프레임, 47문항) · 누적 239문항 · oracle-image 513s
+  [14/15] scannetpp/0d2ee665be (2700프레임, 42문항) · 누적 281문항 · oracle-image 562s
+  [15/15] arkitscenes/47331262 (2072프레임, 6문항) · 누적 287문항 · oracle-image 596s
+
+유형                                    oracle-image
+--------------------------------------------------
+obj_appearance_order_accuracy                 68.6
+object_abs_distance_MRA:.5:.95:.05            43.5
+object_counting_MRA:.5:.95:.05                61.4
+object_rel_distance_accuracy                  59.3
+object_size_estimation_MRA:.5:.95:.05            67.7
+room_size_estimation_MRA:.5:.95:.05            56.0
+route_planning_accuracy                       27.3
+object_rel_direction_accuracy                 64.3
+overall                                       56.0
+
+답 형식 실패율 (선택형: 첫 단어가 A~D 아님 / 수치형: 숫자 추출 실패):
+  oracle-image       0.0%
+
+문항 287 · 디코딩 270s · oracle-image 2.08s/문항
+저장: outputs/vsi_local/diag_routed_obj_15v.json
