@@ -1,0 +1,29 @@
+# M2 제로샷 장면 지도 — 베이스 4B (학습 없음) + 실제 CUT3R 로 지도 프롬프트만 붙인다 (2026-09-24).
+#   프로젝터는 zero-init (가중치 없음) → 기하 주입량 0 = 베이스와 같은 출력. CUT3R 은 점·포즈(지도)용으로만 돈다.
+#   scripts/eval_vsi_local.py --config configs/m2_zeroshot_4b.yaml --scene-map --modes oracle-video
+# 체크포인트 경로는 이 머신 기준 (gitignore 된 checkpoints/).
+base_model: checkpoints/qwen3.5-4b
+dtype: bf16
+
+geometry:
+  name: cut3r
+  checkpoint: checkpoints/cut3r_512_dpt_4_64.pth
+  tap_layers: [6, 9, 12]
+  hidden_size: 768
+  image_size: 512
+  options:
+    repo_path: .refs/CUT3R
+
+fusion:
+  mode: deepstack
+  inject_layers: [0, 1, 2]
+  merge_size: 2
+  zero_init: true
+
+lora:
+  enabled: false
+
+data:
+  max_pixels: 131072     # 128×32×32 → 이미지당 LLM 토큰 ≤128
+  max_images: 32
+  max_length: 8192

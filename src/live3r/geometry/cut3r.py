@@ -89,6 +89,9 @@ class CUT3RStream(GeometryStream):
                 "cut3r_512_dpt_4_64.pth 같은 pose_head 가 있는 판본을 써라."
             )
         self._state = None  # (state_feat, state_pos, init_state_feat, mem, init_mem)
+        # True 면 ingest 가 CUT3R 헤드까지 돌려 점맵(첫 프레임 좌표계 = 월드)·신뢰도·카메라 포즈를 붙인다.
+        # 장면 지도 프롬프트(serve/scene_map.py)용. 헤드(DPT)는 토큰만 쓸 때는 필요 없어서 기본은 끔.
+        self.decode_points = False
         self.reset()
 
     # ------------------------------------------------------------------ 상태 관리
@@ -167,8 +170,28 @@ class CUT3RStream(GeometryStream):
             pose_token=out_pose_feat,
             frame_index=self._frame_index,
         )
+        if self.decode_points:
+            self._decode(out, dec, shape, img_pos)
         self._frame_index += 1
         return out
+
+    def _decode(self, out: GeomOutput, dec: list, true_shape: torch.Tensor, img_pos) -> None:
+        """CUT3R 헤드 — `forward_recurrent` 와 같은 입력 구성 (dec[0], 1/2·3/4 깊이, 마지막 깊이).
+
+        pointmap: [B,3,H,W] 첫 프레임 카메라 좌표계(= 이 스트림의 월드)의 3D 점 (CUT3R 은 미터 단위로 학습)
+        conf:     [B,1,H,W]
+        extra["c2w"]: [B,4,4] 카메라→월드 (absT_quaR 인코딩을 행렬로)
+        """
+        from dust3r.utils.camera import pose_encoding_to_camera  # type: ignore
+
+        d = self.dec_depth
+        head_input = [dec[0].float(), dec[d * 2 // 4][:, 1:].float(), dec[d * 3 // 4][:, 1:].float(),
+                      dec[d].float()]
+        # 헤드는 CUT3R 의 transpose_to_landscape 래퍼로 감싸져 있어 [B,2] true_shape 텐서를 받는다 (튜플 아님)
+        res = self.net._downstream_head(head_input, true_shape, pos=img_pos)
+        out.pointmap = res["pts3d_in_other_view"].permute(0, 3, 1, 2)
+        out.conf = res["conf"].unsqueeze(1)
+        out.extra["c2w"] = pose_encoding_to_camera(res["camera_pose"])
 
 
 # CUT3R 체크포인트 = {"args": omegaconf 학습 설정, "model": state_dict}.

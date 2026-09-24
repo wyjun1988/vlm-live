@@ -415,6 +415,9 @@ class StreamingSession:
         visual_mode: str = "image",
         device: str | torch.device = "cpu",
         audit: StreamingAudit | None = None,
+        scene_map=None,
+        map_size: int = 512,
+        map_max_pixels: int = 512 * 512,
     ) -> None:
         if mode not in ("deferred", "incremental"):
             raise ValueError(f"모르는 모드 {mode}")
@@ -439,6 +442,17 @@ class StreamingSession:
         self._kept: dict[int, _Kept] = {}
         self._last_geom = None
         self.fps: float = 30.0
+        # 장면 지도 프롬프트 (serve/scene_map.py): 기하가 도는 프레임마다 점·포즈를 쌓고, prefill 때 지도 이미지 +
+        # 측정값 텍스트를 키프레임 **뒤**에 붙인다 (지도만 바뀌면 프리픽스 꼬리만 다시 계산하면 되는 자리).
+        self.scene_map = scene_map
+        self.map_size = map_size
+        self.map_spec = None
+        if scene_map is not None:
+            if not hasattr(model.geometry, "decode_points"):
+                raise ValueError("장면 지도는 점·포즈를 내는 기하 인코더(CUT3R)가 필요하다 — dummy 는 안 된다")
+            from dataclasses import replace
+
+            self.map_spec = replace(model.spec, max_pixels=map_max_pixels)
 
     # ------------------------------------------------------------------ 인제스트
     @torch.no_grad()
@@ -457,6 +471,9 @@ class StreamingSession:
         self.selector.reset()
         self._kept.clear()
         self._last_geom = None
+        if self.scene_map is not None:
+            self.scene_map.reset()
+            self.model.geometry.decode_points = True
         return self
 
     @torch.no_grad()
@@ -475,6 +492,8 @@ class StreamingSession:
             self._last_geom = m.geometry.ingest(self._prep_geom(raw))
             self.audit.geometry_calls += 1
             self.audit.geometry_state_bytes.append(m.geometry.state_bytes())
+            if self.scene_map is not None and self._last_geom.pointmap is not None:
+                self.scene_map.add(self._last_geom, frame_index=i)
 
         if evicted is not None:
             for e in (evicted if isinstance(evicted, (list, tuple, set)) else [evicted]):
@@ -534,7 +553,25 @@ class StreamingSession:
             step_tokens = [tokens_per_step(grid[0], spec)] * int(grid[0, 0])
             timestamps = frame_timestamps(chosen, self.fps, spec.temporal_patch)
 
-        n_vis = sum(step_tokens)
+        map_tokens, map_text = 0, ""
+        if self.scene_map is not None and self.scene_map.n_frames:
+            from ..serve.scene_map import keyframe_labels, zeros_like_embeds
+
+            img = self.scene_map.render(self.map_size, labels=keyframe_labels(chosen))
+            self.last_map_image = img  # 확인·저장용
+            pv_m, grid_m = prepare_image(img, self.map_spec)
+            if "pixel_values" in pixel_kwargs:
+                pixel_kwargs["pixel_values"] = torch.cat([pixel_kwargs["pixel_values"], pv_m.to(self.device)], 0)
+                pixel_kwargs["image_grid_thw"] = torch.cat([pixel_kwargs["image_grid_thw"], grid_m.to(self.device)], 0)
+            else:
+                pixel_kwargs["pixel_values"] = pv_m.to(self.device)
+                pixel_kwargs["image_grid_thw"] = grid_m.to(self.device)
+            map_tokens = tokens_per_step(grid_m[0], self.map_spec)
+            bundle.embeds = [torch.cat([e, z], 0) for e, z in
+                             zip(bundle.embeds, zeros_like_embeds(bundle.embeds, map_tokens))]  # 지도엔 주입 없음
+            map_text = self.scene_map.text()
+
+        n_vis = sum(step_tokens) + map_tokens
         self.audit.llm_visual_tokens = n_vis
         return {
             "pixel_kwargs": pixel_kwargs,
@@ -545,14 +582,20 @@ class StreamingSession:
             "n_keyframes": len(items),
             "frame_indices": chosen,
             "visual_mode": self.visual_mode,
+            "map_tokens": map_tokens,
+            "map_text": map_text,
         }
 
     @staticmethod
     def segments(prompt, pre: dict) -> list[str]:
         """prefill 결과 → 프롬프트 세그먼트 문자열 (PromptBuilder 필요)."""
         if pre["visual_mode"] == "image":
-            return [prompt.image_segment(n) for n in pre["step_tokens"]]
-        return [prompt.video_segment(pre["step_tokens"][0], pre["timestamps"])]
+            segs = [prompt.image_segment(n) for n in pre["step_tokens"]]
+        else:
+            segs = [prompt.video_segment(pre["step_tokens"][0], pre["timestamps"])]
+        if pre.get("map_tokens"):
+            segs += [prompt.image_segment(pre["map_tokens"]), pre["map_text"]]
+        return segs
 
     def report(self, token_budget: int | None = None, strict: bool = True) -> dict:
         if strict:

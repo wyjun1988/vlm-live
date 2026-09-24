@@ -67,6 +67,7 @@ class Live3RModel(nn.Module):
         self.video_token_id: int = base.config.video_token_id
         self.vision_start_id: int = base.config.vision_start_token_id
         self.vision_end_id: int = base.config.vision_end_token_id
+        self._stop_at_im_end()
 
         # ---- 기하 인코더 (동결·바닐라) ----
         self.geometry = build_geometry_stream(cfg.geometry)
@@ -153,6 +154,29 @@ class Live3RModel(nn.Module):
         if self.processor is None:
             return None
         return getattr(self.processor, "tokenizer", self.processor)
+
+    def _stop_at_im_end(self) -> None:
+        """생성이 `<|im_end|>` 에서 멈추게 한다.
+
+        Qwen3.5 로컬 체크포인트에는 generation_config.json 이 없고 config 의 eos 는 `<|endoftext|>`(248044) 뿐이다.
+        그러면 generate 가 답 끝(`<|im_end|>`, 248046)에서 안 멈춘다. 베이스는 `<|im_end|>` 뒤에 대개
+        `<|endoftext|>` 를 내서 티가 안 났지만, LoRA 학습 후에는 다음 턴(`\n<|im_start|>assistant…`)을 이어
+        쓴다 (M2 S2 파일럿: 18%). 채점은 첫 단어라 점수엔 안 보이지만 라이브 답에 쓰레기가 붙고 디코딩 시간을 버린다.
+        (lmms-eval 경로는 generate 인자로 eos=<|im_end|> 를 따로 넘겨서 원래 괜찮았다.)
+        """
+        tok = self.tokenizer
+        gc = getattr(self.base, "generation_config", None)
+        if tok is None or gc is None:
+            return
+        im_end = tok.convert_tokens_to_ids("<|im_end|>")
+        if im_end is None or im_end == getattr(tok, "unk_token_id", None):
+            return
+        eos = gc.eos_token_id
+        eos = [] if eos is None else ([eos] if isinstance(eos, int) else list(eos))
+        if im_end not in eos:
+            gc.eos_token_id = [im_end] + eos
+        if gc.pad_token_id is None:
+            gc.pad_token_id = tok.pad_token_id if tok.pad_token_id is not None else im_end
 
     # -------------------------------------------------------------- 내부 접근자
     def _decoder_layers(self) -> nn.ModuleList:

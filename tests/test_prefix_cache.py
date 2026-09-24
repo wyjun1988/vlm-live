@@ -103,3 +103,27 @@ def test_cached_first_step_scores_equal_full_prefill(setup, mode):
         got = live.base.generate(input_ids=full, attention_mask=torch.ones_like(full),
                                  past_key_values=copy.deepcopy(pc.cache), **kw).scores[0][0]
     assert torch.allclose(ref, got, atol=1e-4), f"[{mode}] max|Δ| {(ref - got).abs().max():.2e}"
+
+
+def test_generation_stops_at_im_end(setup):
+    """생성은 답 끝 `<|im_end|>` 에서 멈춰야 한다 — 체크포인트 config 의 eos 는 `<|endoftext|>` 뿐이라
+    그대로 두면 LoRA 학습 후 모델이 다음 턴을 이어 쓴다 (M2 S2 파일럿 18%)."""
+    live, pb, _ = setup
+    im_end = pb.tok.convert_tokens_to_ids("<|im_end|>")
+    eos = live.base.generation_config.eos_token_id
+    assert im_end in ([] if eos is None else [eos] if isinstance(eos, int) else list(eos))
+
+    # 실제로 멈추는지: 첫 토큰으로 <|im_end|> 를 강제하면 1토큰에서 끝나야 한다
+    ids = pb.build_query("Hi", [])
+    bias = torch.full((live.base.config.text_config.vocab_size,), -1e4)
+    bias[im_end] = 1e4
+
+    class Force(torch.nn.Module):
+        def __call__(self, input_ids, scores):
+            return scores + bias.to(scores.device)
+
+    from transformers import LogitsProcessorList
+
+    out = live.base.generate(input_ids=ids, attention_mask=torch.ones_like(ids), max_new_tokens=8,
+                             do_sample=False, logits_processor=LogitsProcessorList([Force()]))
+    assert out.shape[1] == ids.shape[1] + 1, "‹|im_end|› 뒤에도 생성이 이어졌다"

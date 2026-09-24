@@ -1,0 +1,26 @@
+Loading weights:   0%|          | 0/723 [00:00<?, ?it/s]Loading weights: 100%|██████████| 723/723 [00:00<00:00, 7258.02it/s]
+Warning, cannot find cuda-compiled version of RoPE2D, using a slow pytorch version instead
+Warning, cannot find cuda-compiled version of RoPE2D, using a slow pytorch version instead
+2026-09-24 16:13:05,395 [r0] INFO RoPE2D 폴백 2개를 음수 위치 지원 판본으로 교체했다
+2026-09-24 16:13:05,720 [r0] INFO LoRA 타깃 200개: {'q_proj': 8, 'k_proj': 8, 'v_proj': 8, 'o_proj': 8, 'gate_proj': 32, 'up_proj': 32, 'down_proj': 32, 'in_proj_qkv': 24, 'in_proj_z': 24, 'out_proj': 24}
+2026-09-24 16:13:06,065 [r0] WARNING S2(sft) 를 S1 정렬 없이 시작한다 — LLM 이 기하를 무시하는 지름길을 배울 수 있다. --init-from 으로 S1 결과를 넣는 걸 권장.
+2026-09-24 16:13:12,343 [r0] INFO 파라미터: 전체 5.49B / 학습 156.0M (프로젝터 95.1M, LoRA 60.9M)
+2026-09-24 16:13:12,349 [r0] INFO data/sensenova_1k/sn1k.jsonl: 905 레코드 (LazyJsonl)
+2026-09-24 16:13:13,626 [r0] INFO 스텝 114 (워밍업 3) · GPU 1 × 누적 8 = 유효 배치 8 · 샘플 905
+2026-09-24 16:13:13,626 [r0] INFO ⚠️ 대조 프로젝터 모드 — 각 샘플에 **다른 샘플의 기하**를 준다 (--geom-control shuffled)
+[transformers] `use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`.
+2026-09-24 16:24:00,135 [r0] INFO ep 0 step 10/114 loss 1.4920 lr 3.0e-05/9.9e-05 | inj L0:0.355 L1:0.266 L2:0.276 | gate +1.00 +1.00 +1.00 | 0.1 samp/s | data 121 geom 1545 fb 6410 ms/샘플 | mem 14.7/18.3GB | skip 0 | sync -
+2026-09-24 16:34:48,544 [r0] INFO ep 0 step 20/114 loss 0.8697 lr 2.8e-05/9.4e-05 | inj L0:0.488 L1:0.301 L2:0.240 | gate +1.00 +1.00 +1.00 | 0.1 samp/s | data 115 geom 1382 fb 6608 ms/샘플 | mem 14.4/19.6GB | skip 0 | sync -
+2026-09-24 16:47:12,687 [r0] INFO ep 0 step 30/114 loss 0.5074 lr 2.6e-05/8.6e-05 | inj L0:0.395 L1:0.260 L2:0.185 | gate +1.00 +1.00 +1.00 | 0.1 samp/s | data 116 geom 1768 fb 7417 ms/샘플 | mem 14.9/20.4GB | skip 0 | sync -
+2026-09-24 17:00:08,821 [r0] INFO ep 0 step 40/114 loss 0.6723 lr 2.3e-05/7.5e-05 | inj L0:0.442 L1:0.258 L2:0.189 | gate +1.00 +1.00 +1.00 | 0.1 samp/s | data 118 geom 1738 fb 7802 ms/샘플 | mem 15.9/21.6GB | skip 0 | sync -
+2026-09-24 17:10:44,671 [r0] INFO ep 0 step 50/114 loss 0.5499 lr 1.9e-05/6.2e-05 | inj L0:0.397 L1:0.204 L2:0.175 | gate +1.00 +1.00 +1.00 | 0.1 samp/s | data 155 geom 1542 fb 6297 ms/샘플 | mem 14.5/20.6GB | skip 0 | sync -
+2026-09-24 17:21:20,021 [r0] INFO ep 0 step 60/114 loss 0.5189 lr 1.4e-05/4.8e-05 | inj L0:0.423 L1:0.226 L2:0.191 | gate +1.00 +1.00 +1.00 | 0.1 samp/s | data 109 geom 1469 fb 6363 ms/샘플 | mem 14.3/20.6GB | skip 0 | sync -
+2026-09-24 17:32:51,755 [r0] INFO ep 0 step 70/114 loss 0.5645 lr 1.0e-05/3.4e-05 | inj L0:0.402 L1:0.198 L2:0.226 | gate +1.00 +1.00 +1.00 | 0.1 samp/s | data 114 geom 1494 fb 7039 ms/샘플 | mem 14.4/19.4GB | skip 0 | sync -
+2026-09-24 17:43:14,025 [r0] INFO ep 0 step 80/114 loss 0.5813 lr 6.4e-06/2.1e-05 | inj L0:0.390 L1:0.208 L2:0.178 | gate +1.00 +1.00 +1.00 | 0.1 samp/s | data 107 geom 1238 fb 6482 ms/샘플 | mem 14.4/21.7GB | skip 0 | sync -
+2026-09-24 17:53:22,060 [r0] INFO ep 0 step 90/114 loss 0.6386 lr 3.3e-06/1.1e-05 | inj L0:0.378 L1:0.196 L2:0.157 | gate +1.00 +1.00 +1.00 | 0.1 samp/s | data 114 geom 1196 fb 6266 ms/샘플 | mem 14.4/19.5GB | skip 0 | sync -
+2026-09-24 18:07:00,506 [r0] INFO ep 0 step 100/114 loss 0.4834 lr 1.2e-06/3.9e-06 | inj L0:0.407 L1:0.232 L2:0.167 | gate +1.00 +1.00 +1.00 | 0.1 samp/s | data 132 geom 1816 fb 8283 ms/샘플 | mem 14.4/19.5GB | skip 0 | sync -
+2026-09-24 18:14:16,764 [r0] WARNING 샘플 282 건너뜀 — 시퀀스 6897 토큰 > max_length 6144
+2026-09-24 18:19:48,598 [r0] INFO ep 0 step 110/114 loss 0.6152 lr 9.6e-08/3.2e-07 | inj L0:0.404 L1:0.199 L2:0.151 | gate +1.00 +1.00 +1.00 | 0.1 samp/s | data 121 geom 1656 fb 7823 ms/샘플 | mem 14.5/19.4GB | skip 1 | sync -
+2026-09-24 18:24:13,835 [r0] INFO 저장 outputs/m2_s2_4b_control/final.pt (428 텐서, 624.1 MB)
+2026-09-24 18:24:13,843 [r0] INFO 대조(shuffled) 기하: 905샘플 · 같은 격자 기증자 63% · 기증자 없어 주입 없이 0
+2026-09-24 18:24:13,843 [r0] INFO 완료. 건너뛴 샘플 1 (랭크0 기준, 사유는 워커 로그의 '건너뜀' 경고 참고)

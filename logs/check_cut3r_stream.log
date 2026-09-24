@@ -1,0 +1,32 @@
+Warning, cannot find cuda-compiled version of RoPE2D, using a slow pytorch version instead
+Warning, cannot find cuda-compiled version of RoPE2D, using a slow pytorch version instead
+프레임 6장 (인덱스 [0, 253, 507, 760, 1014, 1267]) · 입력 512x384 · mps
+/Users/wooyeol/work/3d-vlm-live/.refs/CUT3R/src/dust3r/heads/dpt_head.py:217: FutureWarning: `torch.cuda.amp.autocast(args...)` is deprecated. Please use `torch.amp.autocast('cuda', args...)` instead.
+  with torch.cuda.amp.autocast(enabled=False):
+/Users/wooyeol/work/3d-vlm-live/.refs/CUT3R/src/dust3r/heads/dpt_head.py:226: FutureWarning: `torch.cuda.amp.autocast(args...)` is deprecated. Please use `torch.amp.autocast('cuda', args...)` instead.
+  with torch.cuda.amp.autocast(enabled=False):
+Traceback (most recent call last):
+  File "/Users/wooyeol/work/3d-vlm-live/scripts/check_cut3r_stream.py", line 80, in <module>
+    raise SystemExit(main())
+                     ^^^^^^
+  File "/Users/wooyeol/work/3d-vlm-live/scripts/check_cut3r_stream.py", line 61, in main
+    ours = [stream.ingest(xi) for xi in x]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wooyeol/work/3d-vlm-live/scripts/check_cut3r_stream.py", line 61, in <listcomp>
+    ours = [stream.ingest(xi) for xi in x]
+            ^^^^^^^^^^^^^^^^^
+  File "/Users/wooyeol/miniforge3/envs/live3r/lib/python3.11/site-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wooyeol/work/3d-vlm-live/src/live3r/geometry/cut3r.py", line 174, in ingest
+    self._decode(out, dec, (h, w), img_pos)
+  File "/Users/wooyeol/work/3d-vlm-live/src/live3r/geometry/cut3r.py", line 190, in _decode
+    res = self.net._downstream_head(head_input, hw, pos=img_pos)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wooyeol/work/3d-vlm-live/.refs/CUT3R/src/dust3r/model.py", line 703, in _downstream_head
+    return head(decout, img_shape, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wooyeol/work/3d-vlm-live/.refs/CUT3R/src/dust3r/utils/misc.py", line 63, in wrapper_no
+    assert true_shape[0:1].allclose(true_shape), "true_shape must be all identical"
+           ^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'tuple' object has no attribute 'allclose'

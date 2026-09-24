@@ -1,0 +1,33 @@
+Loading weights:   0%|          | 0/723 [00:00<?, ?it/s]Loading weights:  80%|████████  | 581/723 [00:00<00:00, 5806.10it/s]Loading weights: 100%|██████████| 723/723 [00:00<00:00, 6965.52it/s]
+Warning, cannot find cuda-compiled version of RoPE2D, using a slow pytorch version instead
+Warning, cannot find cuda-compiled version of RoPE2D, using a slow pytorch version instead
+2026-09-24 10:24:20,068 [r0] INFO RoPE2D 폴백 2개를 음수 위치 지원 판본으로 교체했다
+2026-09-24 10:24:20,355 [r0] INFO LoRA 타깃 200개: {'q_proj': 8, 'k_proj': 8, 'v_proj': 8, 'o_proj': 8, 'gate_proj': 32, 'up_proj': 32, 'down_proj': 32, 'in_proj_qkv': 24, 'in_proj_z': 24, 'out_proj': 24}
+2026-09-24 10:24:20,694 [r0] WARNING S2(sft) 를 S1 정렬 없이 시작한다 — LLM 이 기하를 무시하는 지름길을 배울 수 있다. --init-from 으로 S1 결과를 넣는 걸 권장.
+2026-09-24 10:24:26,921 [r0] INFO 파라미터: 전체 5.49B / 학습 156.0M (프로젝터 95.1M, LoRA 60.9M)
+2026-09-24 10:24:26,926 [r0] INFO data/sensenova_1k/sn1k.jsonl: 905 레코드 (LazyJsonl)
+2026-09-24 10:24:26,930 [r0] INFO 스텝 3 (워밍업 1) · GPU 1 × 누적 4 = 유효 배치 4 · 샘플 905
+[transformers] `use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`.
+2026-09-24 10:24:48,894 [r0] INFO ep 0 step 1/3 loss 5.4528 lr 1.00e-04 | inj L0:0.000 L1:0.000 L2:0.000 | gate +1.00 +1.00 +1.00 | 0.2 samp/s | data 45 geom 904 fb 4419 ms/샘플 | mem 14.2/16.1GB | skip 0 | sync -
+2026-09-24 10:25:04,148 [r0] INFO ep 0 step 2/3 loss 1.7170 lr 5.00e-05 | inj L0:0.308 L1:0.210 L2:0.284 | gate +1.00 +1.00 +1.00 | 0.3 samp/s | data 156 geom 628 fb 3042 ms/샘플 | mem 14.2/16.2GB | skip 0 | sync -
+2026-09-24 10:25:21,012 [r0] INFO ep 0 step 3/3 loss 0.5372 lr 0.00e+00 | inj L0:0.550 L1:0.361 L2:0.398 | gate +1.00 +1.00 +1.00 | 0.2 samp/s | data 157 geom 693 fb 3362 ms/샘플 | mem 14.2/16.2GB | skip 0 | sync -
+2026-09-24 10:25:21,860 [r0] INFO 저장 /private/tmp/claude-501/-Users-wooyeol-work-3d-vlm-live/3bbd12e6-df68-4d95-b12c-34a163a572ac/scratchpad/s2_smoke_4b/final.pt (428 텐서, 624.1 MB)
+2026-09-24 10:25:21,867 [r0] INFO 완료. 건너뛴 샘플 0 (랭크0 기준, 사유는 워커 로그의 '건너뜀' 경고 참고)
+       68.25 real        21.36 user        14.11 sys
+          6926630912  maximum resident set size
+                   0  average shared memory size
+                   0  average unshared data size
+                   0  average unshared stack size
+              123081  page reclaims
+              467672  page faults
+                   0  swaps
+                   0  block input operations
+                   0  block output operations
+                   0  messages sent
+                   0  messages received
+                   0  signals received
+                 510  voluntary context switches
+              139652  involuntary context switches
+        291137059957  instructions retired
+        105111120498  cycles elapsed
+         19179982424  peak memory footprint

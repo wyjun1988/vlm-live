@@ -171,3 +171,72 @@ def test_geometry_input_uses_long_side():
     s = StreamingSession(m, HalvingSelector(4))
     g = s._prep_geom(torch.randint(0, 255, (480, 640, 3), dtype=torch.uint8))
     assert max(g.shape[-2:]) == m.cfg.geometry.image_size
+
+
+def _with_fake_points(m):
+    """dummy 기하에 CUT3R 처럼 점맵·포즈를 붙인다 (가짜 방: 가로 5m × 세로 4m, 카메라가 앞으로 걷는다)."""
+    orig = m.geometry.ingest
+    m.geometry.decode_points = False
+    state = {"n": 0}
+
+    def ingest(frames):
+        out = orig(frames)
+        if m.geometry.decode_points:
+            g = torch.Generator().manual_seed(state["n"])
+            h, w = 24, 32
+            pts = torch.rand(3, h, w, generator=g)
+            pts[0] = pts[0] * 5 - 2.5                      # x
+            pts[1] = torch.where(pts[1] > 0.5, torch.tensor(1.5), -1.1 + 2.6 * pts[1])  # 바닥·벽 높이
+            pts[2] = pts[2] * 4                            # z
+            out.pointmap = pts.unsqueeze(0)
+            out.conf = torch.ones(1, 1, h, w)
+            c2w = torch.eye(4)
+            c2w[2, 3] = 0.01 * state["n"]
+            out.extra["c2w"] = c2w.unsqueeze(0)
+        state["n"] += 1
+        return out
+
+    m.geometry.ingest = ingest
+    return m
+
+
+@pytest.mark.parametrize("visual_mode", ["image", "video"])
+def test_scene_map_prompt_goes_after_keyframes_without_injection(visual_mode):
+    """장면 지도: 기하가 도는 프레임마다 점이 쌓이고, prefill 이 지도 이미지·텍스트를 키프레임 뒤에 붙인다.
+    지도 토큰에는 기하를 주입하지 않는다 (0) — 주입 수 == 시각 토큰 수가 유지돼야 생성이 된다."""
+    from live3r.serve.scene_map import SceneMap
+
+    m = _with_fake_points(make_model())
+    f, a = feed(120)
+    s = StreamingSession(m, HalvingSelector(8), geom_stride=3, visual_mode=visual_mode, audit=a,
+                         scene_map=SceneMap(stride=1), map_size=128, map_max_pixels=128 * 128)
+    s.consume(f)
+    assert s.scene_map.n_frames == a.geometry_calls > 8      # 키프레임만이 아니라 기하가 돈 프레임 전부
+    pre = s.prefill()
+    n_map = pre["map_tokens"]
+    assert n_map > 0 and "square meters" in pre["map_text"]
+    assert pre["n_visual_tokens"] == sum(pre["step_tokens"]) + n_map
+    assert all(e.shape[0] == pre["n_visual_tokens"] for e in pre["geometry"].embeds)
+    assert all(float(e[-n_map:].abs().sum()) == 0.0 for e in pre["geometry"].embeds), "지도 토큰에 주입이 있다"
+    assert pre["pixel_kwargs"]["image_grid_thw"].shape[0] == (9 if visual_mode == "image" else 1)
+
+    pad = SMALL_IDS["image"] if visual_mode == "image" else SMALL_IDS["video"]
+    segs = [torch.randint(0, 900, (1, 3))]
+    for n in pre["step_tokens"]:
+        segs += [torch.tensor([[SMALL_IDS["vision_start"]]]), torch.full((1, n), pad),
+                 torch.tensor([[SMALL_IDS["vision_end"]]])]
+    segs += [torch.tensor([[SMALL_IDS["vision_start"]]]), torch.full((1, n_map), SMALL_IDS["image"]),
+             torch.tensor([[SMALL_IDS["vision_end"]]]), torch.randint(0, 900, (1, 4))]
+    ids = torch.cat(segs, 1)
+    mm = (ids == SMALL_IDS["image"]).long() + 2 * (ids == SMALL_IDS["video"]).long()
+    with torch.no_grad(), m.injector.primed(pre["geometry"].embeds, m.visual_pos_mask(ids)):
+        out = m.base.generate(input_ids=ids, attention_mask=torch.ones_like(ids), mm_token_type_ids=mm,
+                              max_new_tokens=3, do_sample=False, **pre["pixel_kwargs"])
+    assert out.shape[1] > ids.shape[1]
+
+
+def test_scene_map_needs_point_producing_geometry():
+    from live3r.serve.scene_map import SceneMap
+
+    with pytest.raises(ValueError, match="CUT3R"):
+        StreamingSession(make_model(), HalvingSelector(8), scene_map=SceneMap())

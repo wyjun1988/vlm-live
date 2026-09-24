@@ -232,6 +232,8 @@ def train(args) -> int:
         cfg.geometry.options = dict(cfg.geometry.options, repo_path=args.cut3r_repo)
     if args.max_pixels:
         cfg.data.max_pixels = args.max_pixels
+    if args.max_length:
+        cfg.data.max_length = args.max_length
 
     model = build_model(args, cfg, is_main)
     model.to(device)
@@ -294,8 +296,16 @@ def train(args) -> int:
             broadcast_buffers=False,
         )
 
-    params = [p for p in live.parameters() if p.requires_grad]
-    opt = torch.optim.AdamW(params, lr=args.lr, weight_decay=args.weight_decay, betas=(0.9, 0.98))
+    named = [(n, p) for n, p in live.named_parameters() if p.requires_grad]
+    params = [p for _, p in named]
+    # LoRA 와 프로젝터는 lr 을 따로 준다: 프로젝터는 1e-3 이면 주입이 비전 표현을 수십 배로 덮는다
+    # (M2 실측 — 3e-5 권장), LoRA 는 보통 1e-4 대. --lora-lr 을 안 주면 둘 다 --lr.
+    lora_p = [p for n, p in named if "lora_" in n]
+    other_p = [p for n, p in named if "lora_" not in n]
+    groups = [{"params": other_p, "lr": args.lr}]
+    if lora_p:
+        groups.append({"params": lora_p, "lr": args.lora_lr or args.lr})
+    opt = torch.optim.AdamW(groups, weight_decay=args.weight_decay, betas=(0.9, 0.98))
     total_steps = args.max_steps or max(1, math.ceil(len(dl) * args.epochs / args.grad_accum))
     warmup = max(1, int(total_steps * args.warmup_ratio))
     sched = torch.optim.lr_scheduler.LambdaLR(
@@ -429,9 +439,10 @@ def train(args) -> int:
                         mem = "-"
                     n = max(1, run_n)
                     logger.info(
-                        "ep %d step %d/%d loss %.4f lr %.2e | inj %s | gate %s | %.1f samp/s | "
+                        "ep %d step %d/%d loss %.4f lr %s | inj %s | gate %s | %.1f samp/s | "
                         "data %.0f geom %.0f fb %.0f ms/샘플 | mem %s | skip %d | sync %s",
-                        epoch, step, total_steps, loss_avg, sched.get_last_lr()[0], ratios or "-",
+                        epoch, step, total_steps, loss_avg, "/".join(f"{x:.1e}" for x in sched.get_last_lr()),
+                        ratios or "-",
                         gates, sps, 1e3 * t_data / n, 1e3 * t_geom / n, 1e3 * t_fb / n, mem, skipped,
                         "-" if world == 1 else ("OK" if drift <= 1e-6 else f"DIFF {drift:.1e}"),
                     )
@@ -482,12 +493,17 @@ def main() -> int:
     ap.add_argument("--geometry-checkpoint", default=None)
     ap.add_argument("--cut3r-repo", default=None)
     ap.add_argument("--max-pixels", type=int, default=None, help="이미지당 픽셀 상한 (토큰 수 조절)")
+    ap.add_argument("--max-length", type=int, default=None,
+                    help="샘플 최대 토큰 (넘으면 버리고 다른 샘플). M2 4B 는 답이 4,860토큰인 샘플 하나에서 "
+                         "로짓만 4.5GB → OOM 이었다 (1k 미리보기 중 6,144 초과는 그 1건)")
     # 최적화
     ap.add_argument("--epochs", type=int, default=1)
     ap.add_argument("--max-steps", type=int, default=0)
     ap.add_argument("--max-samples", type=int, default=None)
     ap.add_argument("--lr", type=float, default=3e-5,
                     help="프로젝터 lr. 1e-3 은 주입이 비전 표현을 수십 배로 압도한다 (M2 실측) — 3e-5 권장")
+    ap.add_argument("--lora-lr", type=float, default=None,
+                    help="LoRA lr (S2). 안 주면 --lr 과 같다. 보통 1e-4 대")
     ap.add_argument("--inj-warn", type=float, default=3.0,
                     help="레이어별 ‖주입‖/‖비전 히든‖ 이 이 값을 넘으면 경고")
     ap.add_argument("--geom-control", choices=["none", "shuffled"], default="none",

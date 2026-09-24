@@ -1,0 +1,33 @@
+Loading weights:   0%|          | 0/473 [00:00<?, ?it/s]Loading weights: 100%|██████████| 473/473 [00:00<00:00, 6667.49it/s]
+Warning, cannot find cuda-compiled version of RoPE2D, using a slow pytorch version instead
+Warning, cannot find cuda-compiled version of RoPE2D, using a slow pytorch version instead
+2026-09-24 10:23:32,661 [r0] INFO RoPE2D 폴백 2개를 음수 위치 지원 판본으로 교체했다
+2026-09-24 10:23:32,859 [r0] INFO LoRA 타깃 150개: {'q_proj': 6, 'k_proj': 6, 'v_proj': 6, 'o_proj': 6, 'gate_proj': 24, 'up_proj': 24, 'down_proj': 24, 'in_proj_qkv': 18, 'in_proj_z': 18, 'out_proj': 18}
+2026-09-24 10:23:33,039 [r0] INFO S1 결과 로드: 28/28 텐서 (outputs/m2_s1_pilot/final.pt)
+2026-09-24 10:23:34,427 [r0] INFO 파라미터: 전체 1.69B / 학습 47.5M (프로젝터 27.0M, LoRA 20.4M)
+2026-09-24 10:23:34,433 [r0] INFO data/sensenova_1k/sn1k.jsonl: 905 레코드 (LazyJsonl)
+2026-09-24 10:23:34,437 [r0] INFO 스텝 3 (워밍업 1) · GPU 1 × 누적 4 = 유효 배치 4 · 샘플 905
+[transformers] `use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`.
+2026-09-24 10:23:43,922 [r0] INFO ep 0 step 1/3 loss 1.8996 lr 1.00e-04 | inj L0:0.457 L1:0.283 L2:0.243 | gate +1.00 +1.00 +1.00 | 0.4 samp/s | data 44 geom 850 fb 1431 ms/샘플 | mem 5.5/6.4GB | skip 0 | sync -
+2026-09-24 10:23:50,748 [r0] INFO ep 0 step 2/3 loss 0.8667 lr 5.00e-05 | inj L0:0.469 L1:0.307 L2:0.288 | gate +1.00 +1.00 +1.00 | 0.6 samp/s | data 77 geom 578 fb 1054 ms/샘플 | mem 5.5/6.5GB | skip 0 | sync -
+2026-09-24 10:23:58,095 [r0] INFO ep 0 step 3/3 loss 1.1627 lr 0.00e+00 | inj L0:0.516 L1:0.360 L2:0.341 | gate +1.00 +1.00 +1.00 | 0.5 samp/s | data 83 geom 671 fb 1084 ms/샘플 | mem 5.5/6.5GB | skip 0 | sync -
+2026-09-24 10:23:58,375 [r0] INFO 저장 /private/tmp/claude-501/-Users-wooyeol-work-3d-vlm-live/3bbd12e6-df68-4d95-b12c-34a163a572ac/scratchpad/s2_smoke_08b/final.pt (328 텐서, 189.9 MB)
+2026-09-24 10:23:58,377 [r0] INFO 완료. 건너뛴 샘플 0 (랭크0 기준, 사유는 워커 로그의 '건너뜀' 경고 참고)
+       32.38 real        16.28 user         6.72 sys
+          6922092544  maximum resident set size
+                   0  average shared memory size
+                   0  average unshared data size
+                   0  average unshared stack size
+              405698  page reclaims
+              105079  page faults
+                   0  swaps
+                   0  block input operations
+                   0  block output operations
+                   0  messages sent
+                   0  messages received
+                   0  signals received
+                2851  voluntary context switches
+               90530  involuntary context switches
+        207891970171  instructions retired
+         74229288001  cycles elapsed
+          7168380312  peak memory footprint

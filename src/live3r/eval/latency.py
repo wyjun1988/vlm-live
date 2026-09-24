@@ -189,6 +189,8 @@ class DeferredReport:
     select_embed_ms: float = 0.0   # 키프레임 확정 + 픽셀 준비 + 기하 임베딩 (prefill() 호출)
     vision_llm_prefill_ms: float = 0.0  # 비전 타워 + LLM 이 시각 프리픽스를 먹는 시간
     question_only_ttft_ms: float = 0.0  # 시각 프리픽스가 미리 캐시돼 있을 때 질문 → 첫 토큰
+    map_tokens: int = 0            # 장면 지도 이미지 토큰 (프리픽스에 포함, 0 = 지도 없음)
+    map_render_ms: float = 0.0     # 지도 렌더링 (점 누적은 기하 프레임 비용에 포함 — CUT3R 헤드 디코딩)
 
     def pretty(self) -> str:
         ok_ttft = "OK " if self.ttft_ms < 1000 else "MISS"
@@ -204,7 +206,9 @@ class DeferredReport:
             f"  [{'OK ' if self.question_only_ttft_ms < 1000 else 'MISS'}] 질문만 TTFT "
             f"{self.question_only_ttft_ms:6.0f} ms  (시각 프리픽스를 스트림 중에 미리 만들어 뒀을 때)",
             f"  TPOT            {self.tpot_ms:8.1f} ms · 비전 토큰 {self.visual_tokens}",
-        ])
+        ] + ([f"  장면 지도       토큰 {self.map_tokens} · 렌더 {self.map_render_ms:.0f} ms "
+              f"(백그라운드 갱신 비용 = 렌더 + 시각 프리필. 질문만 TTFT 에는 안 들어간다)"]
+             if self.map_tokens else []))
 
 
 @torch.no_grad()
@@ -220,6 +224,7 @@ def benchmark_deferred(
     question: str = "How many chairs are in this room?",
     max_new_tokens: int = 16,
     label: str = "live3r-deferred",
+    scene_map: bool = False,
 ) -> DeferredReport:
     """우리 실제 설계(halving 지연 모드)의 지연을 잰다.
 
@@ -230,8 +235,13 @@ def benchmark_deferred(
 
     device = torch.device(device)
     model = model.to(device).eval()
+    smap = None
+    if scene_map:
+        from ..serve.scene_map import SceneMap
+
+        smap = SceneMap()
     sess = StreamingSession(model, HalvingSelector(budget), geom_stride=geom_stride,
-                            visual_mode=visual_mode, device=device)
+                            visual_mode=visual_mode, device=device, scene_map=smap)
     sess.begin(fps=30.0)
     h, w = frame_hw
     g_ms, o_ms, all_ms = [], [], []
@@ -277,6 +287,12 @@ def benchmark_deferred(
     _sync(device)
     tpot = ((time.perf_counter() - t3) * 1e3 - t_q) / max(1, max_new_tokens - 1)
 
+    t_map = 0.0
+    if smap is not None:  # 지도 렌더링만 따로 (prefill 안에서도 한 번 돈다)
+        t4 = time.perf_counter()
+        smap.render(sess.map_size)
+        t_map = (time.perf_counter() - t4) * 1e3
+
     gms = g_ms[len(g_ms) // 2]
     # 실시간 추종: 가정 공식이 아니라 실측 평균 (키프레임 때문에 도는 기하까지 포함)
     per_frame_avg = sum(all_ms) / max(1, len(all_ms))
@@ -286,4 +302,5 @@ def benchmark_deferred(
         geom_fps_max=1000.0 / max(gms, 1e-6), live_fps_max=1000.0 / max(per_frame_avg, 1e-6),
         prefill_ms=prefill, ttft_ms=ttft, tpot_ms=max(0.0, tpot), visual_tokens=pre["n_visual_tokens"],
         select_embed_ms=t_sel, vision_llm_prefill_ms=t_vis, question_only_ttft_ms=t_q,
+        map_tokens=pre.get("map_tokens", 0), map_render_ms=t_map,
     )

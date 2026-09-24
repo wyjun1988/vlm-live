@@ -38,6 +38,8 @@ def main() -> int:
     ap.add_argument("--base-model", default=None, help="로컬 경로로 덮어쓰기")
     ap.add_argument("--geometry-checkpoint", default=None)
     ap.add_argument("--cut3r-repo", default=None)
+    ap.add_argument("--scene-map", action="store_true",
+                    help="(deferred) CUT3R 장면 지도 프롬프트 포함 — 헤드 디코딩·렌더·지도 토큰 비용을 잰다")
     ap.add_argument("--out", default=None)
     args = ap.parse_args()
 
@@ -71,7 +73,8 @@ def main() -> int:
 
         rep = benchmark_deferred(model, PromptBuilder.from_model(model), n_frames=args.frames,
                                  frame_hw=(args.height, args.width), budget=args.budget,
-                                 geom_stride=args.geom_stride, device=device, label=label)
+                                 geom_stride=args.geom_stride, device=device, label=label,
+                                 scene_map=args.scene_map)
         print()
         print(rep.pretty())
         return 0
