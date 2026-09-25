@@ -303,12 +303,29 @@ and consider using the full box for the extent while keeping the centre for posi
 
 ## 3. Training objectives and data
 
-### I-14 (U#4) Questions that can only be answered with geometry — **proposed (strong)**
+### I-14 (U#4) Questions that can only be answered with geometry — **built, under test**
 Generate new training questions whose answers come from geometry, e.g. "how did the camera move between frame 1
 and frame 5", "how far is the point marked here", "which of these two frames was taken closer to the door".
 Answers computed from CUT3R's own outputs — no human labels, no teacher model. The format shortcut becomes
 impossible (a content-free signal cannot answer them). Directly fixes why S1 learned only format.
 - Data: multi-image Sensenova records (153 in the 1k preview have 16–28 images) or any unlabelled video.
+- **Built** (`src/live3r/data/geometry_qa.py`, `scripts/make_geometry_qa.py`). Five question kinds, all computed
+  from the encoder's own poses / point maps: camera displacement between two named images, turn direction
+  (left / right / same), which image was taken closest to another, total path length, room area/height.
+  Reads videos or existing image-sequence records (the server's Sensenova corpus), writes the SenseNova record
+  format the trainer already consumes. ~5 s per sequence on M2.
+- Two design rules carried over from the prompting experiments:
+  * **balanced answers** — frame pairs are sampled so the answers cover the range evenly, or the model learns the
+    mode instead of reading (the 905-sample S2 collapsed absolute distance onto "1.1");
+  * **explicit reject bands** — a turn between 15 and 40 degrees, a displacement under 0.30 m, or a
+    multiple-choice pair within 0.50 m is dropped rather than guessed; a room height outside 2–5 m is dropped
+    because hand-held scans rarely see the ceiling (real ScanNet scans gave 1.7 m).
+- **Label quality, validated against VSI ground truth** (room area, 60 scenes): MRA 65.8, median measured/true
+  1.07, 92% within 50%. The tail is over-estimates where the reconstruction sees through a doorway. Pose-derived
+  labels cannot be checked against the world here (no ground-truth poses locally) but are self-consistent with
+  the geometry input, which is what alignment needs.
+- Decisive test in progress: S1 on this data, then the geometry ablation. If the shortcut is really gone,
+  `shuffled − real` should be large and positive, instead of the −0.03 it was on Sensenova.
 
 ### I-15 Geometry captioning alignment (LLaVA stage-1 analogue) — **proposed**
 Frozen LLM, train only the projector to make CUT3R tokens *describable* ("the camera moved 1.2 m forward",
@@ -437,3 +454,4 @@ timestamps (I-04), recency weighting / decay, possibly state windows (I-05).
 | 10 | The whole routed configuration on 0.8B | I-22 | done: +5.4 (bigger gain) but 24.8 below 4B |
 | 11 | Repeat the format instruction after the question (0.8B and 4B) | I-31 | done: **negative both** (0.8B 22.4, 4B 53.0) |
 | 12 | The whole routed configuration on 2B | I-22 | done: 40.3 → **42.7** (+2.4); still 11.0 below 4B+prompt |
+| 13 | Geometry-only training questions: generate, then S1 + ablation | I-14 | generating |
