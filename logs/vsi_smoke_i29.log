@@ -1,0 +1,27 @@
+영상 2 · 문항 20 · 모드 ['oracle-image'] · 키프레임 32
+Loading weights:   0%|          | 0/723 [00:00<?, ?it/s]Loading weights:  80%|███████▉  | 577/723 [00:00<00:00, 5759.13it/s]Loading weights: 100%|██████████| 723/723 [00:00<00:00, 6743.91it/s]
+Warning, cannot find cuda-compiled version of RoPE2D, using a slow pytorch version instead
+Warning, cannot find cuda-compiled version of RoPE2D, using a slow pytorch version instead
+학습 설정 configs/m2_zeroshot_4b.yaml · 기하 cut3r · LoRA False · 가중치 None
+모델 로드 11.6s (checkpoints/qwen3.5-4b, mps bf16)
+Loading weights:   0%|          | 0/418 [00:00<?, ?it/s]Loading weights: 100%|██████████| 418/418 [00:00<00:00, 7309.40it/s]
+  [1/2] scannet/scene0153_00 (582프레임, 6문항) · 누적 6문항 · oracle-image 53s
+  [2/2] arkitscenes/42444950 (2494프레임, 14문항) · 누적 20문항 · oracle-image 110s
+
+⚠️ 일부 문항 유형이 없어 lmms-eval 집계를 못 했다 ('object_rel_direction_easy_accuracy') — 유형별 평균으로 대신한다. 공식 수치와 비교하지 마라 (영상 수를 늘려라).
+
+유형                                    oracle-image
+--------------------------------------------------
+object_size_estimation_partial                70.0
+room_size_estimation_partial                  35.0
+object_counting_partial                       40.0
+object_abs_distance_partial                   36.7
+route_planning_partial                        50.0
+object_rel_direction_partial                  66.7
+overall                                       49.7
+
+답 형식 실패율 (선택형: 첫 단어가 A~D 아님 / 수치형: 숫자 추출 실패):
+  oracle-image       0.0%
+
+문항 20 · 디코딩 32s · oracle-image 5.49s/문항
+저장: outputs/vsi_local/smoke_i29.json

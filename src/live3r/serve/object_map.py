@@ -59,7 +59,14 @@ SYNONYMS = {
     "trash can": "trash bin", "garbage can": "trash bin", "recycling bin": "trash bin", "couch": "sofa",
     "television": "tv", "monitor": "tv", "bookcase": "bookshelf", "fridge": "refrigerator", "potted plant": "plant",
     "office chair": "chair", "armchair": "chair", "dining table": "table", "coffee table": "table", "carpet": "rug",
+    "washer": "washing machine", "mouse": "computer mouse", "wardrobe": "closet", "bin": "trash bin",
 }
+
+
+def _thin(pts: np.ndarray, n: int) -> np.ndarray:
+    """Evenly subsample to at most n points (deterministic)."""
+    pts = np.asarray(pts, np.float32)
+    return pts if len(pts) <= n else pts[np.linspace(0, len(pts) - 1, n).astype(int)]
 
 
 def canon(name: str) -> str:
@@ -108,14 +115,19 @@ class ObjectMap:
             ok = (cf[r0:r1, c0:c1].reshape(-1) >= thr) & np.isfinite(pts).all(1)
             if ok.sum() < self.min_points:
                 continue
-            good = pts[ok]
-            if len(good) > self.keep_points:
-                good = good[np.linspace(0, len(good) - 1, self.keep_points).astype(int)]
-            self._observe(canon(d["label"]), np.median(good, axis=0), frame_no, good)
+            good = _thin(pts[ok], self.keep_points)
+            # full box too: the inner region is right for position/distance but clips the object's extent (I-30).
+            # Background inside the box is rejected later by a percentile extent, not here.
+            fc0, fc1 = int(x1 * w), int(np.ceil(x2 * w))
+            fr0, fr1 = int(y1 * h), int(np.ceil(y2 * h))
+            fpts = pm[:, fr0:fr1, fc0:fc1].reshape(3, -1).T
+            fok = (cf[fr0:fr1, fc0:fc1].reshape(-1) >= thr) & np.isfinite(fpts).all(1)
+            self._observe(canon(d["label"]), np.median(good, axis=0), frame_no, good, _thin(fpts[fok], self.keep_points))
             lifted += 1
         return lifted
 
-    def _observe(self, label: str, xyz: np.ndarray, frame_no: int, pts: np.ndarray | None = None) -> None:
+    def _observe(self, label: str, xyz: np.ndarray, frame_no: int, pts: np.ndarray | None = None,
+                 box_pts: np.ndarray | None = None) -> None:
         best, best_d = None, None
         for inst in self._inst:
             if inst["label"] != label:
@@ -128,16 +140,16 @@ class ObjectMap:
             if dist < radius and (best_d is None or dist < best_d):
                 best, best_d = inst, dist
         pts = np.zeros((0, 3), np.float32) if pts is None else pts.astype(np.float32)
+        box_pts = pts if box_pts is None else box_pts.astype(np.float32)
         if best is None:
-            self._inst.append({"label": label, "obs": [xyz], "first": frame_no, "pts": pts, "frames": {frame_no}})
+            self._inst.append({"label": label, "obs": [xyz], "first": frame_no, "pts": pts,
+                               "box_pts": box_pts, "frames": {frame_no}})
         else:
             best["obs"].append(xyz)
             best["first"] = min(best["first"], frame_no)
             best["frames"].add(frame_no)
-            allp = np.concatenate([best["pts"], pts])
-            if len(allp) > 4 * self.keep_points:
-                allp = allp[np.linspace(0, len(allp) - 1, 4 * self.keep_points).astype(int)]
-            best["pts"] = allp
+            for key, new_pts in (("pts", pts), ("box_pts", box_pts)):
+                best[key] = _thin(np.concatenate([best[key], new_pts]), 4 * self.keep_points)
 
     def lookup(self, name: str, min_frames: int = 2) -> list[dict]:
         """Instances whose label matches `name` (synonyms, plural) and that were seen in >= min_frames keyframes."""
@@ -152,6 +164,22 @@ class ObjectMap:
             return None
         d = np.linalg.norm(a["pts"][:, None, :] - b["pts"][None, :, :], axis=-1)
         return float(np.percentile(np.concatenate([d.min(1), d.min(0)]), 5))
+
+    def size_m(self, name: str, min_frames: int = 3, lo: float = 2.0, hi: float = 98.0) -> float | None:
+        """Longest dimension of the named object, in metres (I-30).
+
+        Extent of the full-box point cloud along each axis, taken between the `lo`/`hi` percentiles so that
+        background pixels inside the box do not stretch it. Returns the largest instance's value (VSI asks about
+        the object, and a partial view can only under-estimate), or None when nothing is well enough observed.
+        """
+        out = []
+        for i in self.lookup(name, min_frames):
+            p = i["box_pts"] if len(i["box_pts"]) >= 8 else i["pts"]
+            if len(p) < 8:
+                continue
+            ext = np.percentile(p, hi, axis=0) - np.percentile(p, lo, axis=0)
+            out.append(float(np.max(ext)))
+        return max(out) if out else None
 
     def pair_distance(self, name_a: str, name_b: str, min_frames: int = 2) -> float | None:
         """Closest-point distance between the nearest instances of two named objects, or None if either is

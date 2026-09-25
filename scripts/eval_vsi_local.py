@@ -143,7 +143,8 @@ def wants_room_facts(question: str) -> bool:
     return "room" in q and any(k in q for k in ("size", "square meter", "area"))
 
 
-def object_facts_for(question: str, om) -> str:
+def object_facts_for(question: str, om, min_frames: int = 2, rel_distance: bool = False,
+                     size_facts: bool = False, log: list | None = None) -> str:
     """I-28: at question time, look up only the objects the question names and attach measured closest-point
     distances — or nothing if an object is missing / seen in fewer than 2 keyframes. No counts (the model counts
     better from the images). NOTE: the names are read with VSI's question templates (benchmark-specific); a
@@ -152,16 +153,34 @@ def object_facts_for(question: str, om) -> str:
 
     m = re.search(r"distance between the (.+?) and the (.+?) \(in meters\)", question)
     if m:
-        d = om.pair_distance(m.group(1), m.group(2))
+        a, b = m.group(1), m.group(2)
+        d = om.pair_distance(a, b, min_frames=min_frames)
+        if log is not None:  # record what each filter setting would have produced, from one run
+            log.append({"kind": "abs", "a": a, "b": b,
+                        "views": [max((len(i["frames"]) for i in om.lookup(n, 1)), default=0) for n in (a, b)],
+                        **{f"d{k}": om.pair_distance(a, b, min_frames=k) for k in (1, 2, 3, 4, 5, 6)}})
         if d is None:
             return ""
-        return (f"Measured from a 3D reconstruction of the video: the closest points of the {m.group(1)} and the "
-                f"{m.group(2)} are about {d:.1f} m apart.\n")
-    m = re.search(r"which of these objects \((.+?)\) is the closest to the (.+?)\?", question)
+        return (f"Measured from a 3D reconstruction of the video: the closest points of the {a} and the "
+                f"{b} are about {d:.1f} m apart.\n")
+    m = re.search(r"dimension \(length, width, or height\) of the (.+?), measured in centimeters", question)
+    if m and size_facts:
+        name = m.group(1)
+        sz = om.size_m(name, min_frames=min_frames)
+        if log is not None:
+            log.append({"kind": "size", "a": name,
+                        "views": max((len(i["frames"]) for i in om.lookup(name, 1)), default=0),
+                        **{f"s{k}": om.size_m(name, min_frames=k) for k in (1, 2, 3, 4, 5, 6)}})
+        if sz is not None:
+            return (f"Measured from a 3D reconstruction of the video: the longest dimension of the {name} is "
+                    f"about {100 * sz:.0f} centimeters.\n")
+        return ""
+
+    m = re.search(r"which of these objects \((.+?)\) is the closest to the (.+?)\?", question) if rel_distance else None
     if m:
         target = m.group(2)
         opts = [o.strip() for o in m.group(1).split(",") if o.strip() and o.strip() != target]
-        meas = [(o, om.pair_distance(o, target)) for o in opts]
+        meas = [(o, om.pair_distance(o, target, min_frames=min_frames)) for o in opts]
         meas = [(o, d) for o, d in meas if d is not None]
         if len(meas) >= 2:
             return ("Measured from a 3D reconstruction of the video, closest-point distances to the " + target
@@ -216,6 +235,13 @@ def main() -> int:
     ap.add_argument("--route-objects", action="store_true",
                     help="I-28: build the object map in the background (needs --object-map) but attach only "
                          "measured distances for the objects a distance question names, at question time")
+    ap.add_argument("--min-frames", type=int, default=2,
+                    help="--route-objects: trust an object only if seen in >= N keyframes")
+    ap.add_argument("--size-facts", action="store_true",
+                    help="--route-objects: also attach the measured longest dimension for object-size questions")
+    ap.add_argument("--rel-distance-facts", action="store_true",
+                    help="--route-objects: also attach distance rankings for 'which is closest' questions. "
+                         "Off by default: measured rankings were worse than the model (43%% vs 64%%, I-28)")
     ap.add_argument("--detector-device", default="cpu",
                     help="device for OWLv2 (cpu keeps the GPU for the VLM — MPS contention made T3 slow)")
     ap.add_argument("--self-map", action="store_true",
@@ -307,6 +333,7 @@ def main() -> int:
         owl = OWLv2Detector(device=args.detector_device)
     objects: dict[str, dict] = {}
     self_maps: dict[str, str] = {}
+    meas_log: list = []
     timing = collections.defaultdict(float)
     for vi, (ds, scene) in enumerate(vids):
         path = root / ds / f"{scene}.mp4"
@@ -392,7 +419,12 @@ def main() -> int:
                 if room_facts and wants_room_facts(d["question"]):
                     attached += room_facts        # question-time routing: a few tokens after the cached prefix
                 if args.route_objects and om is not None:
-                    attached = object_facts_for(d["question"], om) + attached
+                    n_before = len(meas_log)
+                    attached = object_facts_for(d["question"], om, min_frames=args.min_frames,
+                                                rel_distance=args.rel_distance_facts,
+                                                size_facts=args.size_facts, log=meas_log) + attached
+                    if len(meas_log) > n_before:   # only when THIS question added an entry
+                        meas_log[-1].update(id=d["id"], gt=d["ground_truth"])
                 text = attached + text
                 if pc is not None:
                     ans, _ = pc.answer(text, max_new_tokens=16, do_sample=False)
@@ -416,7 +448,24 @@ def main() -> int:
               + " ".join(f"{m} {timing[m]:.0f}s" for m in modes), flush=True)
 
     # ------------------------------------------------------------------ 집계
-    table = {m: _compute_all_subscores(scored[m]) for m in modes}
+    def aggregate(res: list) -> dict:
+        """lmms-eval 집계. 문항 유형이 하나라도 빠지면 KeyError 를 낸다 (짧은 probe) — 그때는 유형별
+        평균으로 대신하고, 예측은 그대로 저장한다 (한 시간짜리 실행을 집계 때문에 버리지 않는다)."""
+        try:
+            return _compute_all_subscores(res)
+        except KeyError as exc:
+            by: dict[str, list] = {}
+            for r in res:
+                t = r["question_type"]
+                by.setdefault("object_rel_direction" if t.startswith("object_rel_direction") else t, []).append(
+                    r.get("accuracy", r.get("MRA:.5:.95:.05", 0.0)))
+            out = {f"{k}_partial": sum(v) / len(v) for k, v in by.items()}
+            out["overall"] = sum(out.values()) / len(out)
+            print(f"\n⚠️ 일부 문항 유형이 없어 lmms-eval 집계를 못 했다 ({exc}) — 유형별 평균으로 대신한다. "
+                  "공식 수치와 비교하지 마라 (영상 수를 늘려라).")
+            return out
+
+    table = {m: aggregate(scored[m]) for m in modes}
     keys = [k for k in table[modes[0]] if k != "overall"] + ["overall"]
     print("\n" + f"{'유형':<34}" + "".join(f"{m:>16}" for m in modes))
     print("-" * (34 + 16 * len(modes)))
@@ -458,7 +507,7 @@ def main() -> int:
             "object_map": args.object_map, "detector": args.detector if args.object_map else None,
             "oracle_vocab": bool(args.object_map and oracle_vocab), "objects": objects,
             "self_map": args.self_map, "self_maps": self_maps, "route_facts": args.route_facts,
-            "route_objects": args.route_objects,
+            "route_objects": args.route_objects, "min_frames": args.min_frames, "measurements": meas_log,
         }, indent=2, ensure_ascii=False))
         print(f"저장: {args.out}")
     return 0

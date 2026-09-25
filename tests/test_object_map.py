@@ -83,3 +83,18 @@ def test_size_aware_merge_keeps_a_big_object_as_one_instance():
     _pts_obs(om, "bed", 1, (0, 0, 2), spread=1.0, seed=1)      # 2 m wide bed seen whole
     _pts_obs(om, "bed", 2, (1.1, 0, 2), spread=0.3, seed=2)    # later a partial view, centroid 1.1 m away
     assert len(om.lookup("bed")) == 1
+
+
+def test_size_from_full_box_not_inner_region():
+    """I-30: extent uses the full box (the inner region clips it); percentiles reject background in the box."""
+    om = ObjectMap()
+    rng = np.random.default_rng(0)
+    for f in (1, 2, 3):
+        inner = np.stack([rng.uniform(-0.25, 0.25, 60), rng.uniform(-0.1, 0.1, 60), 2 + rng.uniform(-0.1, 0.1, 60)], 1)
+        box = np.stack([rng.uniform(-1.0, 1.0, 120), rng.uniform(-0.2, 0.2, 120), 2 + rng.uniform(-0.2, 0.2, 120)], 1)
+        far = np.array([[0.0, 0.0, 9.0]] * 2)                       # background seen through/behind the object
+        om._observe("table", np.median(inner, 0), f, inner.astype(np.float32),
+                    np.concatenate([box, far]).astype(np.float32))
+    size = om.size_m("table", min_frames=3)
+    assert 1.7 < size < 2.3, size            # true extent 2.0 m along x, not the 0.5 m inner region
+    assert om.size_m("table", min_frames=5) is None

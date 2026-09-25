@@ -26,6 +26,8 @@ INDOOR_VOCAB = [
     "bathroom vanity", "soap dispenser", "toilet paper", "counter", "kitchen counter", "piano", "guitar",
     "speaker", "book", "light switch", "outlet", "coat rack", "clothes", "jacket", "hat", "umbrella", "ladder",
     "stairs", "column", "board", "cart", "printer paper", "tissue box", "remote control", "headphones",
+    # added after the I-28 coverage diagnosis (names VSI questions used that the list was missing)
+    "closet", "computer mouse", "cutting board", "blackboard", "stuffed toy", "paper towel", "mat", "pot",
 ]
 
 

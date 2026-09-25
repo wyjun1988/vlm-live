@@ -22,6 +22,7 @@ The internal offline system (VGGT + Qwen3.5-4B, lots of data) is at 73.3.
 | Cost of live keyframe selection | none — causal halving 49.9 vs offline uniform 48.6 (Δ 95% [-1.7, +4.9]) |
 | Live latency | question-only TTFT **0.23 s** with the visual prefix precomputed (map or not) |
 | Base 4B | video mode 48.6 · image mode 24.7 (answer-format failures) · **image + format instruction 53.7** |
+| Best zero-shot so far | **56.0** — routed room facts (I-27) + routed object distances from >= 3 views (I-29); +7.3 [+3.6, +11.2] over the best-format base, no training |
 | Format instruction | a pure format fix: recovers 585 lost answers; among already well-formed answers the changes net to zero (no leak) |
 | Geometry token path | S1 (projector only): learns answer format, geometry value 0 · S2 LoRA (905 samples): +1.9 [-0.9, +4.4] vs control, numeric answers collapse to the data prior, 44.1 overall |
 | Literature | same data with vs without the 3D encoder: VLM-3R +3.2, VG-LLM +0.9 — the data itself gives ~+20 |
@@ -167,12 +168,45 @@ threshold; (e) attach nothing when unsure. Needs I-27's routing.
 - Next (I-29): raise coverage for absolute distance; stop attaching relative-distance rankings (or only with a
   clear margin).
 
-### I-29 Measure what the question names, at question time — **proposed**
+### I-29 Measure what the question names, at question time — **tested: positive (adopted)**
 I-28's absolute-distance measurements were better than the model's own guesses (MRA 0.50 vs 0.38) but attached to
 only 18% of questions. Detect the question's object names on the stored keyframes when the question arrives
 (OWLv2 on 16 frames in one batch: ~0.1 s on H100; slow on M2), lift and measure, attach if both are seen in >= 2
 keyframes. Keeps TTFT near the budget on H100; trade-off to measure. Drop relative-distance rankings unless the
 margin between options is large (> 30%).
+- Coverage diagnosis (I-28 data, abs-distance questions): of the object mentions, 70% were in the map,
+  7% were missing from the OWLv2 vocabulary (closet, computer mouse, washer, cutting board — now added),
+  22% were in the vocabulary but never detected. Both objects present in only 45% of questions; the
+  "seen in >= 2 keyframes" filter then cut that to the 18% actually attached.
+- **Run 1** (all 32 keyframes detected, `min_frames=1`, absolute distance only, 60 videos): overall 54.7 —
+  *worse* than I-27's 55.4; absolute distance 37.6 → **32.0**. Coverage rose to 83% but quality collapsed.
+- **The number of views is a reliability signal** (same run, from the log; the model copies the measurement,
+  so the predicted type score tracks reality — predicted 31.5 vs actual 32.0):
+
+  | min_frames | coverage | MRA(measured) | MRA(model, same questions) | predicted abs-distance score |
+  |---|---|---|---|---|
+  | 1 | 83% | 31.7 | 39.0 | 31.5 |
+  | 2 | 51% | 44.0 | 39.8 | 39.7 |
+  | 3 | 31% | **51.4** | 36.6 | **42.2** |
+  | none (I-27) | 0% | — | — | 37.6 |
+
+  A single-view instance is a bad 3D estimate (one partial view of an object, no triangulation); three or more
+  views beat the model by 15 MRA points.
+- **Run 2 (`min_frames=3`): overall 56.0 — +0.6 [+0.2, +1.0] over I-27, +2.3 [+1.0, +3.6] over instruction-only,
+  +7.3 [+3.6, +11.2] over the best-format base.** Absolute distance 37.6 → **42.1** (predicted 42.2).
+  Extending the log to 6 confirms 3 is the optimum: coverage 83/51/31/20/12/8% at thresholds 1-6, predicted type
+  score 31.5/39.7/**42.2**/40.2/39.6/39.4 — quality saturates around 50 MRA while coverage keeps falling.
+- Current best live-valid zero-shot configuration: cached prefix (keyframes + format instruction); at question
+  time attach room measurements to room-size questions and a closest-point distance to distance questions when
+  both objects were seen in >= 3 keyframes. One LLM pass; routing is a string match (0.2 us); +43 tokens.
+- → L5.
+
+### I-30 Object size from the lifted point sets — **proposed**
+VSI asks "the longest dimension of the X in centimeters" (1/8 of the score, currently 65.3). We already hold a
+3D point set per object instance, so the extent is `max(ptp(points))` — no new machinery, and the same
+view-count gate (I-29 / L5) decides whether to attach it. Risk: our point sets come from box interiors (the
+central 50% of each box), so extents are systematically *under*-estimated; check the bias before attaching,
+and consider using the full box for the extent while keeping the centre for position.
 
 ### Lessons so far (zero-shot, 4B)
 - **L1 The model copies numbers from the prompt.** Correct → big gains (room size +13..+19); wrong → big losses
@@ -181,6 +215,10 @@ margin between options is large (> 30%).
   the questions that need them (I-27: +1.6 / +2.4 simulated).
 - **L3 A 4B model's self-generated map does not help** (I-20: −4.8). Measurements must come from geometry, not
   from the same model looking at the same frames.
+- **L5 Trust a measurement by how many views it came from.** Attaching every measurement we can compute is
+  worse than attaching none (−5.6 on absolute distance); attaching only the well-observed ones beats the model.
+  The view count is a free, general confidence signal — the same idea should gate room facts and any future
+  measurement.
 - **L4 Coverage and precision are separate problems.** Absolute distances measured from CUT3R beat the model's
   guesses where we had them (MRA 0.50 vs 0.38) but covered 18% of questions; rankings by distance were worse than
   the model (43% vs ~64%). Attach a measurement only for question types where it is known to beat the model.
@@ -280,4 +318,6 @@ timestamps (I-04), recency weighting / decay, possibly state windows (I-05).
 | 5 | Same prompts on 0.8B | I-22 | after 3 |
 | 6 | CUT3R drift vs stream length (needs ScanNet GT poses — data not local yet) | I-05, I-11 | proposed |
 | 7 | Object facts v2: question-time lookup of the named objects, closest-point distances, no counts | I-28 | done: null (−0.2) — abs distance good but 18% coverage; rel distance misleading |
-| 8 | Question-time detection of the named objects (coverage), abs distance only | I-29 | proposed |
+| 8 | Question-time detection of the named objects (coverage), abs distance only | I-29 | done: **56.0, +0.6 [+0.2, +1.0]**; min_frames=3 optimal |
+| 9 | Object size from the lifted point sets (extent), routed like I-29 | I-10, I-30 | next |
+| 10 | The whole routed configuration on 0.8B | I-22 | after 9 |
