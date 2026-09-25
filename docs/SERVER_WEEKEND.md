@@ -1,10 +1,13 @@
-# Weekend run: the Sensenova-only baseline (8x H100, 2026-09-26 → 09-28)
+# Four-day run: the Sensenova-only baseline (8x H100, from 2026-09-26)
 
-One command runs the whole weekend unattended: zero-shot baseline → S1 (real vs control) → ablation →
-S2 LoRA (real vs control) → the pre-registered gate plus VSI for every arm → one report.
+One command runs everything unattended: zero-shot baseline → S1 (real vs control) → ablation → S2 LoRA (real vs
+control) → the pre-registered gate plus VSI for every arm and an S2 learning curve → one report.
 
-**The dataset is SenseNova-SI only.** It is the in-house system's base dataset, and every later addition
-(the geometry-only questions of I-14 first) will be measured against the numbers this run produces.
+**The dataset is SenseNova-SI only.** It is the in-house system's base dataset, and every later addition (the
+geometry-only questions of I-14 first) will be measured against the numbers this run produces.
+
+The file and directory names still say "weekend" (`scripts/server_weekend.sh`, `outputs/weekend/`); the plan
+is now sized for four days: one epoch for S1 and one for S2.
 
 ## Start (5 minutes, then stay ~45 minutes)
 
@@ -19,11 +22,11 @@ tail -f outputs/weekend/STATUS
 ```
 
 Stay until STATUS shows **`p1 done`** and the throughput line (about 45 minutes; up to 20 minutes more if
-`data/sensenova.jsonl` still has to be prepared). Everything that can go wrong with the environment, the data, CUT3R
-or DDP shows up by then. After that, nothing needs a person until the report. `outputs/weekend/REPORT.md` is
-rewritten after every phase, so it can be checked from anywhere at any time.
+`data/sensenova.jsonl` still has to be prepared). Everything that can go wrong with the environment, the data,
+CUT3R or DDP shows up by then. After that nothing needs a person. `outputs/weekend/REPORT.md` is refreshed every
+30 minutes, so progress can be checked from anywhere.
 
-Paths are the ones from `NEXT_STEPS_SERVER.md` and now live in **`configs/server_4b.yaml`**:
+Paths are the ones from `NEXT_STEPS_SERVER.md` and live in **`configs/server_4b.yaml`**:
 
 - model `/group-volume/wooyeol/models/Qwen3.5-4B`
 - CUT3R `third_party/CUT3R` and `checkpoints/cut3r_512_dpt_4_64.pth`
@@ -37,17 +40,18 @@ p0 downloads whatever is missing (the model, CUT3R, OWLv2) and prepares `data/se
 | phase | GPUs | time | what it answers |
 |---|---|---|---|
 | p0 preflight | – | 5–25 min | environment, tests against the real tokenizer, assets, Sensenova prepared |
-| p1 smoke | 1 → 8 | ~25 min | training runs: dummy geometry / CUT3R / 8-GPU S1 / 8-GPU S2 with LoRA. Measures the speed |
+| p1 smoke | 1 → 8 | ~30 min | training runs: dummy geometry / CUT3R / 8-GPU S1 / 8-GPU S2 with LoRA. Measures the speed |
 | p1e eval paths | 4 | ~10 min | the ablation, local VSI (plain and routed) and lmms-eval each run on a few items |
 | p2 eval data | background | 1–3 h | VSI-Bench 5.7 GB, MMStar, VideoMME 101 GB (~200 GB once unpacked) |
 | p3 zero-shot VSI | 3 | ~1 h | **the baseline on all 288 videos**: base plain (image and video mode), + format hint, routed facts |
-| p4 S1 | 4 + 4 | ≤ 10 h | projector alignment, real vs control, 200k samples each |
+| p4 S1 | 4 + 4 | ≤ 26 h | projector alignment, real vs control, one epoch each |
 | p5 S1 ablation | 1 | ~20 min | does the projector carry the geometry's *content*? |
-| p6 S2 | 4 + 4 | ≤ 20 h | LoRA SFT, real vs control, 400k samples each |
-| p7 evaluation | 8 | 3–6 h | gate (VSI, VideoMME, MMStar), VSI for every arm, S2 ablation, latency |
+| p6 S2 | 4 + 4 | ≤ 32 h | LoRA SFT, real vs control, one epoch each |
+| p7 evaluation | 8 | 3–6 h | gate (VSI, VideoMME, MMStar), VSI for every arm, S2 learning curve, S2 ablation, latency |
 | p8 report | – | seconds | `outputs/weekend/REPORT.md` |
 
-Total about 30–40 hours: it finishes on Sunday with a margin.
+Planned total about 65–70 hours. If the speed estimate from p1 was optimistic, each stage may run up to 1.25×
+its hours before it stops itself and saves; even then the whole run stays inside four days (≈ 85 h).
 
 ## The design
 
@@ -71,22 +75,28 @@ The baseline side (p3) evaluates the base model on the full VSI-Bench in three w
 
 Trained models are evaluated on the live path: 32 uniform keyframes in image mode. Each is evaluated plain,
 with the format hint (S2 real), and with the same routed facts. The report can then answer whether training
-beats one line of prompt, and whether training and measurements stack.
+beats one line of prompt, and whether training and measurements stack. The saved S2 checkpoints nearest 25 / 50 /
+75 % are evaluated as well (learning curve): does more Sensenova keep helping, or does the numeric prior take over
+as it did at 905 samples?
 
 ## Budget
 
-- **S1**: 200k samples per arm, the size of VLM-3R's spatial SFT, cut to fit 10 h at the measured speed.
-  **S2**: 400k per arm (about half an epoch), cut to fit 20 h.
+- **One epoch per stage** (`S1_SAMPLES=epoch`, `S2_SAMPLES=epoch`: every record of `data/sensenova.jsonl` once,
+  ~829k), with hour caps of 26 (S1) and 32 (S2). If p1's measured speed says an epoch does not fit the cap, the
+  budget is cut to what fits and the report states the number of samples actually used.
 - **How the fit is computed**:
-  - p1 measures samples/s on 8 GPUs (smokes C and D). One arm is estimated at half that, minus 15% for sharing
-    the CPU and disk with the other arm.
+  - p1 measures samples/s on 8 GPUs (smokes C and D, 60 steps). One arm is estimated at half that, minus 15% for
+    sharing the CPU and disk with the other arm.
   - S2 is re-planned from the speed S1 actually ran at.
   - The numbers go to `budget.env` and `budget_s2.env`, and a re-run reuses them.
 - **Stops**:
   - `--max-hours` (1.25× the stage hours) is a soft stop that still saves `final.pt`.
   - `timeout` kills a hung job an hour after that.
-- **Overriding** — set any of these when starting:
-  `S1_SAMPLES=… S2_SAMPLES=… S1_HOURS=… S2_HOURS=… nohup bash scripts/server_weekend.sh …`
+- **Checkpoints**: every 500 steps (about 2 h) each arm writes `step{N}.pt` (weights only, for the learning curve)
+  and `resume.pt` (weights, optimizer, schedule and data position, overwritten each time).
+- **Overriding** — set any of these when starting, e.g. two S2 epochs:
+  `S2_SAMPLES=1660000 S2_HOURS=60 nohup bash scripts/server_weekend.sh …` (also `S1_SAMPLES`, `S1_HOURS`,
+  `SAVE_EVERY`).
 
 ## Reading the report — the pre-registered rules
 
@@ -95,25 +105,29 @@ beats one line of prompt, and whether training and measurements stack.
 2. **Geometry content, S2**, the key number: VSI `s2_real − s2_control`, a video-level paired bootstrap. An interval
    above 0 means the trained model uses the geometry's content. The S2 ablation (holdout loss) is the second view.
 3. **Gate 1, spatial**: lmms-eval `vsibench`, S2 real − the base's best format ≥ +1.0.
-4. **Gate 2, general**: `videomme` Δ ≥ −1.0. MMStar is reported only.
+4. **Gate 2, general**: `videomme` Δ ≥ −1.0. MMStar is reported only. (If VideoMME could not be downloaded, the
+   general gate is MMStar instead, and the report says so.)
 5. **Gate 3, latency**: question-only TTFT < 1 s (live design, map in the prefix); ingest drift < 1.2.
 6. **Training vs prompting**:
    - `s2_real` vs `base_hint`: on M2 a small SFT (44.1) lost to one line of instruction (53.7).
    - `s2_real_routed` vs `base_routed`.
+7. **Learning curve**: VSI at 25 / 50 / 75 / 100 % of S2. Rising = more data helps; flat or falling after 25 % =
+   the recipe, not the amount, is the limit.
 
 ## Outputs (`outputs/weekend/`)
 
 | file | what |
 |---|---|
 | `STATUS` | one line per step. `FAILED` lines name the log to look at |
-| `REPORT.md` | every number in one place — **this is what to send** |
+| `REPORT.md` | every number in one place, refreshed every 30 min — **this is what to send** |
 | `master.log` | everything the script printed |
 | `p0_preflight.log`, `p1_smoke_[a-d].log`, `p1e_*.log` | preflight and smoke logs |
-| `s1_real/`, `s1_control/`, `s2_real/`, `s2_control/` | `final.pt` + `step{N}.pt` every 200 steps (trained weights only) |
-| `s1_real.log` … | training logs (loss, `inj`, samples/s, memory, `sync OK`) |
+| `s1_real/`, `s1_control/`, `s2_real/`, `s2_control/` | `final.pt`, `step{N}.pt` every 500 steps, `resume.pt` |
+| `s1_real.log` … | training logs (loss, `inj`, samples/s, memory, `sync OK`); every attempt appended |
+| `budget.env`, `budget_s2.env` | the steps each stage was given and the speeds behind them |
 | `p5_ablation_s1.json`, `p7_ablation_s2.json` | holdout-loss ablations |
 | `vsi/<run>.json` | VSI per run, with per-question scores (the report's bootstrap reads these) |
-| `gate/{base,base_video,trained}/`, `gate_check.txt` | lmms-eval results and the gate verdict |
+| `gate/{base,base_video,trained}/`, `gate/general.env`, `gate_check.txt` | lmms-eval results, which general task was used, the verdict |
 | `latency_stream.json`, `latency_live.log` | gate 3 |
 
 ## What to send back
@@ -124,27 +138,35 @@ beats one line of prompt, and whether training and measurements stack.
 ## When something goes wrong
 
 - **Re-run the same command.** Finished phases and jobs are skipped and failed ones retry. A training arm that
-  was cut off starts again from zero: there is no mid-run resume.
+  was cut off **continues from its last `resume.pt`** (at most ~2 h lost), with the same data order and steps as
+  if nothing had happened.
 - **`p0 FAILED`**: nothing else runs. Send the tail of `p0_preflight.log`.
 - **`p1 FAILED`**: training is broken, so nothing after it runs; the downloads continue. Send the smoke log it names.
-- **`p1e FAILED`**: an evaluation path is broken, but training continues. Tell us before Sunday, when p7 needs it.
-- **A training arm `FAILED`**: the other arm keeps its result. A re-run retrains only the failed arm, with the
-  same number of steps.
+- **`p1e FAILED`**: an evaluation path is broken, but training continues. Tell us before day 3, when p7 needs it.
+- **A training arm `FAILED`**: the other arm keeps its result. A re-run resumes only the failed arm.
+- **A bad sample**: a non-finite loss skips that sample; a non-finite gradient skips that step (no update, the
+  schedule still advances). Only three skipped steps in a row stop an arm — that is divergence, not a bad sample.
+  The report's training table shows the counts.
+- **VideoMME never arrived**: the gate runs with MMStar as the general task (`gate/general.env`). To redo it with
+  VideoMME once the download has succeeded, delete `gate/general.env`, `gate/*.ok` and the `gate/base*`,
+  `gate/trained` directories, then re-run.
 - **Stop everything**: `bash scripts/server_weekend.sh stop`. This ends the script and everything it started:
   torchrun, the evaluations and the downloads.
-- **Disk**: about 200 GB for VideoMME and about 10 GB for checkpoints.
+- **Disk**: about 300 GB for VideoMME (archives plus the unpacked copy), about 50 GB for checkpoints.
 
 ## What changed relative to NEXT_STEPS_SERVER.md steps 8–10
 
 - **Arms**: two 4-GPU arms (grad-accum 32) replace one 8-GPU run per stage (grad-accum 16). The effective batch
   is the same, 128, and the real and control arms now run at once.
-- **Budget**: sample budgets replace "1 epoch".
 - **Paths**: `configs/server_4b.yaml` replaces the `--base-model / --geometry-checkpoint / --cut3r-repo` overrides.
   It is needed because `eval_vsi_local.py` takes the base model from the config.
 - **Eval data**: `scripts/fetch_eval_data.py` downloads and unpacks it once. Several lmms-eval runs start at the
   same time, and each would otherwise unpack VideoMME into the same directory.
-- **Text-only records**: S1 passes over them instead of stopping on one (they have no gradient path through the
-  projector). They are not counted as failures.
+- **Resume**: `train.py --resume` continues from `resume.pt`; `--max-hours` is a soft time cap decided for all
+  DDP ranks together.
+- **Bad samples**: S1 passes over text-only records (no gradient path through the projector); a non-finite loss or
+  gradient skips the sample or the step instead of ending the run; the failure-rate stop judges after 2,000
+  samples per worker, not 200.
 - **Gate**: `run_gate.sh` takes `ONLY=base|base_video|trained|check`, so the three measurements run on three GPUs.
 
 ## Deliberately not in this run
@@ -153,3 +175,5 @@ beats one line of prompt, and whether training and measurements stack.
   come next, measured against this run.
 - **Streaming VSI** (`run_streaming_eval.sh`): the live path here is uniform keyframes. On M2, the halving selector
   cost nothing against oracle selection (49.9 vs 48.6).
+- **A second S2 epoch**: with one epoch each the run takes about three of the four days. The learning curve says
+  whether a second epoch would be worth it; it can be started as a follow-up with `S2_SAMPLES` (see Budget).

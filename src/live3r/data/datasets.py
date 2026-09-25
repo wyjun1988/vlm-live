@@ -306,7 +306,11 @@ class SpatialVQADataset(Dataset):
                 if skips >= 1000:  # a mixed file skips a few; a thousand in a row means nothing is usable
                     raise RuntimeError("1,000 records in a row are text-only - require_media needs images "
                                        "or video. Wrong annotation file?") from None
-            except (RecordError, PromptError, FileNotFoundError, OSError, ValueError) as exc:
+            except Exception as exc:  # noqa: BLE001 - see below
+                # Anything a broken record can raise: RecordError, PromptError, a missing or truncated image
+                # (OSError), a decode error (ValueError) ... and whatever the long tail of 830k records holds.
+                # One unexpected exception type must not end a 30-hour unattended run; the failure-rate stop
+                # below still catches anything systematic, and every reason is counted and logged.
                 self._record_fail(idx, exc)
                 attempt += 1
                 if attempt >= self.max_retries:
@@ -322,7 +326,9 @@ class SpatialVQADataset(Dataset):
         if self.fail_reasons[key] <= 3:
             logger.warning("샘플 %d 건너뜀 — %s", idx, str(exc).split("\n")[0])
         total = self.n_ok + self.n_fail
-        if total >= 200 and self.n_fail / total > self.max_fail_rate:
+        # Judged per worker process (each has its own counters). 2,000 samples, not 200: at a true rate of 3%
+        # a 200-sample window exceeds 5% by chance alone in ~4% of worker starts, and a long run has dozens.
+        if total >= 2000 and self.n_fail / total > self.max_fail_rate:
             raise RuntimeError(
                 f"샘플 실패율 {self.n_fail / total:.1%} > {self.max_fail_rate:.0%}. "
                 f"데이터 경로나 형식이 잘못됐다. 사유 분포: {self.fail_reasons}"

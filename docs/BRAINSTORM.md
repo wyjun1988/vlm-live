@@ -460,4 +460,4 @@ timestamps (I-04), recency weighting / decay, possibly state windows (I-05).
 | 11 | Repeat the format instruction after the question (0.8B and 4B) | I-31 | done: **negative both** (0.8B 22.4, 4B 53.0) |
 | 12 | The whole routed configuration on 2B | I-22 | done: 40.3 → **42.7** (+2.4); still 11.0 below 4B+prompt |
 | 13 | Geometry-only training questions: generate, then S1 + ablation | I-14 | generated (3,651); training after the Sensenova baseline |
-| 14 | **Sensenova-only baseline on 8x H100**: zero-shot VSI (full), S1 and S2 with control arms, gate | I-12, I-16 | set up for the weekend of 09-26 (docs/SERVER_WEEKEND.md) |
+| 14 | **Sensenova-only baseline on 8x H100**: zero-shot VSI (full), S1 and S2 (one epoch each) with control arms, S2 learning curve, gate | I-12, I-16, I-18 | four-day run from 09-26 (docs/SERVER_WEEKEND.md) |

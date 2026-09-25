@@ -1,10 +1,14 @@
 # 서버 다음 진행사항 — 2026-09-23 (09-24 M2 실측 반영)
 
-> ## 2026-09-26 — start here: the weekend run
+> ## 2026-09-26 — start here: the four-day run
 > **Run [`docs/SERVER_WEEKEND.md`](SERVER_WEEKEND.md)**: one command (`scripts/server_weekend.sh`) does steps 1–10 of
-> this document unattended (all but the streaming evaluation in 10-1), on SenseNova-SI only, and writes `outputs/weekend/REPORT.md`. Steps 0–7 below stay
-> valid as the manual procedure and as reference; the script follows them. Changes since this document was last
-> updated, all exercised by the script:
+> this document unattended (all but the streaming evaluation in 10-1), on SenseNova-SI only — one epoch for S1
+> and one for S2, each with a control arm — and writes `outputs/weekend/REPORT.md`. Steps 0–7 below stay valid as
+> the manual procedure and as reference; the script follows them. Changes since this document was last updated,
+> all exercised by the script:
+> - `train.py --resume` — an interrupted arm continues from `resume.pt` (weights, optimizer, schedule, data
+>   position) with the same data order as an uninterrupted run; a non-finite loss or gradient skips the sample or
+>   the step instead of ending the run (three skipped steps in a row still stop it).
 > - `configs/server_4b.yaml` — this server's paths (model, CUT3R) in one file for every tool.
 > - `scripts/fetch_eval_data.py` — VSI-Bench / VideoMME / MMStar downloaded and unpacked once, so parallel
 >   lmms-eval runs do not race; also lays out `data/eval/vsibench` for `scripts/eval_vsi_local.py`.

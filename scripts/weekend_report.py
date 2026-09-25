@@ -166,6 +166,27 @@ def section_vsi(out: Path) -> list[str]:
     return lines
 
 
+def section_curve(out: Path) -> list[str]:
+    """VSI at the saved S2 checkpoints: does more Sensenova keep helping, or does the numeric prior take over?"""
+    runs = load_vsi(out)
+    pts = sorted((int(m.group(1)), name) for name in runs for m in [re.match(r"s2_real_step(\d+)$", name)] if m)
+    if not pts:
+        return []
+    lines = ["## S2 learning curve (VSI, image mode, real arm)", "", "| checkpoint | overall | Δ vs base + format hint |",
+             "|---|---|---|"]
+    _, hint = vsi_preds(runs, "base_hint:oracle-image")
+    rows = pts + ([(None, "s2_real")] if "s2_real" in runs else [])
+    for step, name in rows:
+        sc = runs[name].get("scores", {}).get("oracle-image")
+        if not sc:
+            continue
+        _, preds = vsi_preds(runs, f"{name}:oracle-image")
+        d = paired_bootstrap(preds, hint) if preds and hint else None
+        delta = f"{d[0]:+.1f} [{d[1]:+.1f}, {d[2]:+.1f}]" if d else "-"
+        lines.append(f"| {'step ' + str(step) if step else 'final'} | {100 * sc['overall']:.1f} | {delta} |")
+    return lines + [""]
+
+
 # ------------------------------------------------------------------------------------------------ training
 LINE = re.compile(r"^(?P<ts>\d{4}-\d\d-\d\d \d\d:\d\d:\d\d).*?step (?P<step>\d+)/(?P<total>\d+) loss (?P<loss>[\d.]+) "
                   r"lr (?P<lr>\S+) \| inj (?P<inj>.*?) \| gate (?P<gate>.*?) \| (?P<sps>[\d.]+) samp/s .*?"
@@ -177,13 +198,18 @@ def parse_train_log(path: Path) -> dict | None:
         return None
     text = path.read_text(errors="replace")
     rows = [m.groupdict() for m in map(LINE.match, text.splitlines()) if m]
-    info: dict = {"rows": rows, "error": None, "early": None, "donor_same": None}
+    info: dict = {"rows": rows, "error": None, "early": None, "donor_same": None, "resumed": 0, "nonfinite": None}
     for line in text.splitlines():
         if "--max-hours" in line and "reached" in line:
             info["early"] = line.split("WARNING", 1)[-1].strip()
+        if "Resumed from" in line:
+            info["resumed"] += 1
         m = re.search(r"같은 격자 기증자 (\d+)%", line)
         if m:
             info["donor_same"] = int(m.group(1))
+        m = re.search(r"non-finite: (\d+) samples skipped, (\d+) steps without update", line)
+        if m:
+            info["nonfinite"] = (int(m.group(1)), int(m.group(2)))
     tb = text.rfind("Traceback")
     if tb >= 0:
         tail = [ln for ln in text[tb:].splitlines() if ln.strip()]
@@ -207,6 +233,10 @@ def section_training(out: Path) -> list[str]:
             env.update(dict(ln.split("=", 1) for ln in p.read_text().split() if "=" in ln))
     if env:
         lines += ["Budget: " + " · ".join(f"{k} {v}" for k, v in env.items()) + " (steps x 128 = samples per arm)", ""]
+        n = int(env.get("N_TRAIN", 0) or 0)
+        if n:
+            lines += [" · ".join(f"{st} {int(env[k]) * 128 / n:.2f} epochs" for st, k in (("S1", "S1_STEPS"), ("S2", "S2_STEPS"))
+                                 if k in env), ""]
     lines += ["| run | steps | first -> last loss | last inj (L0..) | samples/s | peak mem | skipped | sync | "
               "elapsed | notes |", "|---|---|---|---|---|---|---|---|---|---|"]
     for name in ["smoke_a", "smoke_b", "smoke_c", "smoke_d"] + ARMS:
@@ -220,6 +250,10 @@ def section_training(out: Path) -> list[str]:
             notes.append("stopped by --max-hours")
         if info["donor_same"] is not None:
             notes.append(f"same-grid donors {info['donor_same']}%")
+        if info["resumed"]:
+            notes.append(f"resumed {info['resumed']}x")
+        if info["nonfinite"] and any(info["nonfinite"]):
+            notes.append(f"non-finite: {info['nonfinite'][0]} samples / {info['nonfinite'][1]} steps skipped")
         if info["error"]:
             notes.append(f"error: {info['error']}")
         if (out / f"{name}.done").exists() or (out / name / "final.pt").exists():
@@ -358,7 +392,8 @@ def main() -> int:
     parts = ["# Weekend run report - Sensenova-only baseline", "",
              f"Generated {datetime.now():%Y-%m-%d %H:%M} from `{out}`. Plan and reading guide: "
              "docs/SERVER_WEEKEND.md.", ""]
-    for section in (section_status, section_training, section_ablation, section_vsi, section_gate, section_latency):
+    for section in (section_status, section_training, section_ablation, section_vsi, section_curve, section_gate,
+                    section_latency):
         try:
             parts += section(out)
         except Exception as exc:  # noqa: BLE001 - one broken section must not hide the others

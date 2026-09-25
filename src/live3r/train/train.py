@@ -63,6 +63,67 @@ def setup_distributed(device_arg: str | None):
     return 0, 1, 0, torch.device(dev)
 
 
+class SkipFirst(torch.utils.data.Sampler):
+    """The base sampler's order, minus the first `skip` indices of the first pass (resume mid-epoch).
+
+    Skipping at the index level costs nothing; skipping by iterating the DataLoader would decode every skipped
+    sample's images. After one pass `skip` is reset, so later epochs are complete."""
+
+    def __init__(self, base, skip: int = 0) -> None:
+        self.base, self.skip = base, skip
+
+    def __iter__(self):
+        it = iter(self.base)
+        for _ in range(self.skip):
+            next(it, None)
+        self.skip = 0
+        return it
+
+    def __len__(self) -> int:
+        return max(0, len(self.base) - self.skip)
+
+
+def save_resume(path: Path, live: Live3RModel, opt, sched, step: int, micro_seen: int) -> None:
+    """Everything needed to continue: trained tensors, optimizer moments, schedule position, data position.
+    Written next to `path` and renamed, so a crash while writing leaves the previous file intact."""
+    tmp = path.with_suffix(".pt.tmp")
+    torch.save({"model": live.trainable_state_dict(), "opt": opt.state_dict(), "sched": sched.state_dict(),
+                "step": step, "micro_seen": micro_seen}, tmp)
+    os.replace(tmp, path)
+
+
+class DivergenceGuard:
+    """Non-finite losses: skip the sample (or the step), never the run - unless it is systematic.
+
+    One pathological sample in 800k must not kill a 30-hour arm (and on resume it would kill it again, at the same
+    place). A step whose reduced gradient is non-finite is skipped without an update; the schedule still advances,
+    so both arms keep the same data-to-step mapping. `limit` consecutive skipped steps means the model is
+    diverging, and that does stop the run."""
+
+    def __init__(self, limit: int = 3) -> None:
+        self.limit = limit
+        self.bad_samples = 0
+        self.bad_steps = 0
+        self.consecutive = 0
+
+    def sample(self) -> None:
+        self.bad_samples += 1
+
+    def step(self, ok: bool, at_step: int) -> None:
+        if ok:
+            self.consecutive = 0
+            return
+        self.bad_steps += 1
+        self.consecutive += 1
+        if self.consecutive >= self.limit:
+            raise FloatingPointError(
+                f"{self.consecutive} consecutive steps with a non-finite gradient (last: step {at_step}) - "
+                "the model is diverging, not hitting a bad sample")
+
+    def summary(self) -> str:
+        return f"non-finite: {self.bad_samples} samples skipped, {self.bad_steps} steps without update"
+
+
 def time_is_up(t_start: float, max_hours: float, world: int, device) -> bool:
     """--max-hours, decided for all ranks at once. Each rank's clock crosses the limit at a slightly different
     step; a rank that stopped alone would leave the others waiting in the next all-reduce until NCCL times out."""
@@ -277,11 +338,12 @@ def train(args) -> int:
 
     # 순서는 시드만으로 정한다 — 전역 RNG 를 쓰면 모델 초기화·대조 기증자 준비가 소비한 난수만큼 순서가
     # 바뀌어, 진짜 기하 / 대조(--geom-control) 두 학습이 다른 순서로 데이터를 보게 된다.
-    sampler = (
+    base_sampler = (
         DistributedSampler(ds, num_replicas=world, rank=rank, shuffle=True, seed=args.seed)
         if world > 1
         else RandomSampler(ds, generator=torch.Generator().manual_seed(args.seed))
     )
+    sampler = SkipFirst(base_sampler)
     dl = DataLoader(
         ds,
         batch_size=1,
@@ -321,6 +383,34 @@ def train(args) -> int:
     sched = torch.optim.lr_scheduler.LambdaLR(
         opt, lambda s: cosine_with_warmup(s, total_steps, warmup)
     )
+    out_dir = Path(args.output)
+    resume_path = out_dir / "resume.pt"
+    step, micro_seen, start_epoch = 0, 0, 0
+    if args.resume and resume_path.exists():
+        state = torch.load(resume_path, map_location="cpu")
+        res = live.load_state_dict(state["model"], strict=False)
+        if len(state["model"]) - len(res.unexpected_keys) != len(state["model"]):
+            raise RuntimeError(f"{resume_path}: {len(res.unexpected_keys)} tensors do not fit this model - "
+                               "same --stage and config?")
+        opt.load_state_dict(state["opt"])
+        sched.load_state_dict(state["sched"])
+        step, micro_seen = int(state["step"]), int(state["micro_seen"])
+        if step >= total_steps:
+            raise RuntimeError(f"{resume_path} is already at step {step}/{total_steps} - nothing to resume")
+        # data position: micro-batches consumed -> epoch and offset within it (each rank's pass has len(dl))
+        start_epoch, skip = divmod(micro_seen, len(dl))
+        sampler.skip = skip
+        if not isinstance(base_sampler, DistributedSampler):
+            for _ in range(start_epoch):        # the generator must be where it was: one permutation per epoch
+                list(iter(base_sampler))
+        if is_main:
+            logger.info("Resumed from %s: step %d/%d, epoch %d, skipping %d samples of this pass",
+                        resume_path, step, total_steps, start_epoch, skip)
+    elif args.resume and is_main:
+        logger.info("--resume: no %s yet, starting from the beginning", resume_path)
+    if args.stop_at_step and args.stop_at_step <= step:
+        raise RuntimeError(f"--stop-at-step {args.stop_at_step} is not after the resumed step {step}")
+
     cache = GeomCache(args.geom_cache) if args.geom_cache else None
     donors = GeomDonors() if args.geom_control == "shuffled" else None
     if donors is not None:  # 데이터 뒤쪽의 서로 다른 샘플 둘로 기증자 버퍼를 채운다
@@ -334,7 +424,6 @@ def train(args) -> int:
             if item.get("geom_frames") and all(k != item["cache_key"] for k, _, _ in donors.recent):
                 donors.prime(item["cache_key"], live.run_geometry(item["geom_frames"]))
 
-    out_dir = Path(args.output)
     if is_main:
         out_dir.mkdir(parents=True, exist_ok=True)
         (out_dir / "train_args.json").write_text(json.dumps(vars(args), indent=2, ensure_ascii=False))
@@ -344,8 +433,9 @@ def train(args) -> int:
         if donors is not None:
             logger.info("⚠️ 대조 프로젝터 모드 — 각 샘플에 **다른 샘플의 기하**를 준다 (--geom-control shuffled)")
 
-    step, micro = 0, 0
+    micro = 0
     stop_early = False
+    guard = DivergenceGuard()
     t_start = time.perf_counter()
     skipped = 0
     run_loss, run_n = 0.0, 0
@@ -353,9 +443,9 @@ def train(args) -> int:
     t_last = time.perf_counter()
     samples_since = 0
 
-    for epoch in range(max(1, args.epochs)):
-        if isinstance(sampler, DistributedSampler):
-            sampler.set_epoch(epoch)
+    for epoch in range(start_epoch, max(1, args.epochs)):
+        if isinstance(base_sampler, DistributedSampler):
+            base_sampler.set_epoch(epoch)
         t0 = time.perf_counter()
         for batch in dl:
             t1 = time.perf_counter()
@@ -395,13 +485,22 @@ def train(args) -> int:
                     **pix,
                 )
                 loss = out.loss
-                if not torch.isfinite(loss):
-                    raise FloatingPointError(f"손실이 {loss.item()} — 샘플 id={batch['id']}")
                 if not loss.requires_grad:
                     raise RuntimeError(
                         f"학습 파라미터가 손실 경로에 없다 (샘플 id={batch['id']}) — S1 은 프로젝터만 학습하는데 "
                         "기하 주입이 없는 샘플이다 (텍스트 전용 레코드?). S1 데이터에서 빼거나 S2(LoRA)에서 써라.")
-                (loss / args.grad_accum).backward()
+                if torch.isfinite(loss):
+                    (loss / args.grad_accum).backward()
+                else:
+                    # A bad sample: drop it (DivergenceGuard). Off the sync step nothing is communicated, so
+                    # skipping backward is safe. On the sync step every rank must take part in the all-reduce -
+                    # backward runs, the reduced gradient turns non-finite on every rank alike, and the step
+                    # below is skipped by all of them.
+                    guard.sample()
+                    logger.warning("non-finite loss (%s) at sample id=%s - skipped", loss.item(), batch["id"])
+                    if is_sync:
+                        (loss / args.grad_accum).backward()
+                    loss = loss.detach() * 0.0
             live.injector.clear()  # 역전파 재계산까지 끝난 뒤에만 비운다
             if device.type == "mps":
                 # MPS 캐시 할당기는 모양이 제각각인 샘플마다 새 버퍼를 잡고 잘 놓지 않는다. 상한 기본값이
@@ -419,11 +518,17 @@ def train(args) -> int:
             if micro < args.grad_accum:
                 continue
             micro = 0
-            torch.nn.utils.clip_grad_norm_(params, args.clip)
-            opt.step()
-            sched.step()
+            micro_seen += args.grad_accum
+            norm = torch.nn.utils.clip_grad_norm_(params, args.clip)
+            finite = bool(torch.isfinite(norm))
+            if finite:
+                opt.step()
+            elif is_main:
+                logger.warning("step %d: non-finite gradient norm - no update this step", step + 1)
+            sched.step()                          # the schedule advances either way: same step <-> same data in both arms
             opt.zero_grad(set_to_none=True)
             step += 1
+            guard.step(finite, step)
 
             if step % args.log_every == 0:
                 drift = check_rank_sync(params, world, device)
@@ -465,7 +570,13 @@ def train(args) -> int:
 
             if is_main and args.save_every and step % args.save_every == 0:
                 _save(live, out_dir / f"step{step}.pt")
+                save_resume(resume_path, live, opt, sched, step, micro_seen)
             if step >= total_steps:
+                break
+            if args.stop_at_step and step >= args.stop_at_step:
+                if is_main:
+                    logger.warning("--stop-at-step %d reached - stopping as if interrupted.", step)
+                stop_early = True
                 break
             if args.max_hours and time_is_up(t_start, args.max_hours, world, device):
                 if is_main:
@@ -478,8 +589,11 @@ def train(args) -> int:
 
     if is_main:
         _save(live, out_dir / "final.pt")
+        if args.save_every:
+            save_resume(resume_path, live, opt, sched, step, micro_seen)
         if donors is not None:
             logger.info(donors.summary())
+        logger.info(guard.summary())
         logger.info("완료. 건너뛴 샘플 %d (랭크0 기준, 사유는 워커 로그의 '건너뜀' 경고 참고)", skipped)
     if world > 1:
         dist.barrier()
@@ -521,6 +635,12 @@ def main() -> int:
                     help="stop cleanly after this many hours and save (safety cap for unattended runs; "
                          "use --max-steps to make two arms see the same data)")
     ap.add_argument("--max-samples", type=int, default=None)
+    ap.add_argument("--resume", action="store_true",
+                    help="continue from <output>/resume.pt when it exists (written at every --save-every: trained "
+                         "tensors, optimizer, schedule, data position). Same data order and steps as an "
+                         "uninterrupted run; the control arm's donor buffer is re-primed, nothing else differs")
+    ap.add_argument("--stop-at-step", type=int, default=0,
+                    help="stop cleanly after this step as if interrupted (tests the resume path)")
     ap.add_argument("--lr", type=float, default=3e-5,
                     help="프로젝터 lr. 1e-3 은 주입이 비전 표현을 수십 배로 압도한다 (M2 실측) — 3e-5 권장")
     ap.add_argument("--lora-lr", type=float, default=None,

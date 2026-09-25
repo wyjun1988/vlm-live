@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Weekend run on 8x H100: Sensenova only, to set the baseline. What each phase answers, what to watch and what to
-# send back: docs/SERVER_WEEKEND.md.
+# Multi-day run on 8x H100: Sensenova only, to set the baseline. What each phase answers, what to watch and what to
+# send back: docs/SERVER_WEEKEND.md. Sized for 4 days: one epoch for S1 and one for S2, each with a control arm.
 #
 #   cd /group-volume/wooyeol/vlm-live
 #   mkdir -p outputs/weekend && nohup bash scripts/server_weekend.sh > outputs/weekend/master.log 2>&1 &
@@ -8,9 +8,9 @@
 #   bash scripts/server_weekend.sh stop     # ends the run and everything it started
 #
 # Resumable: a phase or job that succeeded leaves a marker and is skipped on a re-run, so after a crash start the
-# same command again. (A training arm that was cut off starts over - there is no mid-run resume.) A step whose
-# inputs are missing is skipped with a line in STATUS, never run on garbage; independent steps still run.
-# outputs/weekend/REPORT.md is rewritten after every phase.
+# same command again. A training arm that was cut off continues from its last checkpoint (every SAVE_EVERY steps:
+# weights, optimizer, schedule and data position). A step whose inputs are missing is skipped with a line in
+# STATUS, never run on garbage; independent steps still run. outputs/weekend/REPORT.md is refreshed every 30 min.
 #
 #   p0  preflight   imports, tests against the real tokenizer, model / CUT3R / OWLv2 present, Sensenova prepared
 #   p1  smoke       training: A dummy geometry, B CUT3R, C 8-GPU S1, D 8-GPU S2 (LoRA) - sizes the budget
@@ -21,7 +21,7 @@
 #   p5  ablation    S1 holdout loss: real / shuffled / none geometry, and the control projector
 #   p6  S2 (LoRA)   real (from S1 real) || control (from S1 control)
 #   p7  evaluation  8 GPUs at once: the pre-registered gate (lmms-eval: VSI, VideoMME, MMStar), VSI of every arm
-#                   (live path: plain, + format hint, routed), S2 ablation, latency
+#                   (live path: plain, + format hint, routed), the S2 learning curve, S2 ablation, latency
 #   p8  report      outputs/weekend/REPORT.md
 set -uo pipefail
 
@@ -35,12 +35,14 @@ export HF_HOME="${HF_HOME:-/group-volume/wooyeol/hf_cache}"
 export PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
 export TOKENIZERS_PARALLELISM=false
 
-# Training budget in samples per arm. One Sensenova epoch (832k) for S1 and again for S2, each next to a control
-# arm, does not fit a weekend. If the throughput measured in p1 says a stage would overrun its hours, its budget
-# is cut to fit. Both arms of a stage always get the same number of steps - that is what makes them comparable.
-S1_SAMPLES="${S1_SAMPLES:-200000}"; S1_HOURS="${S1_HOURS:-10}"
-S2_SAMPLES="${S2_SAMPLES:-400000}"; S2_HOURS="${S2_HOURS:-20}"
+# Training budget per arm, in samples ("epoch" = every record of data/sensenova.jsonl once) with an hours cap.
+# If the throughput measured in p1 says a stage would overrun its hours, its budget is cut to fit. Both arms of
+# a stage always get the same number of steps - that is what makes them comparable. Four days: S1 <= 26 h and
+# S2 <= 32 h planned, at most 1.25x that each if the estimate was optimistic, plus ~10 h of everything else.
+S1_SAMPLES="${S1_SAMPLES:-epoch}"; S1_HOURS="${S1_HOURS:-26}"
+S2_SAMPLES="${S2_SAMPLES:-epoch}"; S2_HOURS="${S2_HOURS:-32}"
 EFF_BATCH=128                  # per arm: 4 GPUs x grad-accum 32 (= 8 x 16 in docs/NEXT_STEPS_SERVER.md)
+SAVE_EVERY="${SAVE_EVERY:-500}"  # steps between checkpoints (~2 h per arm): resume point + learning-curve weights
 LR=3e-5                        # projector (M2: 1e-3 made the injection 15-30x the vision signal)
 LORA_LR=1e-4
 VSI=(--videos 288 --seed 1)    # all of VSI-Bench: 288 videos, 5,130 questions
@@ -73,10 +75,10 @@ on_gpu()   { local g=$1; shift; CUDA_VISIBLE_DEVICES=$g "$@"; }
 wait_all() { local rc=0 p; for p in "$@"; do wait "$p" || rc=1; done; return $rc; }
 hours_s()  { awk -v h="$1" -v f="$2" -v a="$3" 'BEGIN { printf "%d", h * 3600 * f + a }'; }
 # mean of the last N "x samp/s" values in a training log (the first ones include start-up)
-sps_of()   { grep -ao '[0-9.]* samp/s' "$1" 2> /dev/null | tail -n "${2:-3}" \
+sps_of()   { grep -ao '[0-9.]* samp/s' "$1" 2> /dev/null | tail -n "${2:-6}" \
                | awk '{ s += $1; n++ } END { if (n) printf "%.3f", s / n }'; }
-report()   { python scripts/weekend_report.py "$OUT" > "$OUT/REPORT.md.tmp" 2> "$OUT/report.err" \
-               && mv "$OUT/REPORT.md.tmp" "$OUT/REPORT.md"; }
+report()   { local t; t=$(mktemp "$OUT/REPORT.md.XXXXXX") || return 1   # written whole, then renamed into place
+             python scripts/weekend_report.py "$OUT" > "$t" 2> "$OUT/report.err" && mv "$t" "$OUT/REPORT.md" || rm -f "$t"; }
 base_model() { python -c "import sys, yaml; print(yaml.safe_load(open(sys.argv[1]))['base_model'])" "$CFG"; }
 
 # ============================================================================================ p0 preflight
@@ -126,6 +128,7 @@ s('google/owlv2-base-patch16-ensemble', local_dir='checkpoints/owlv2-base-patch1
       --check-files 5000 > "$OUT/p0_prepare.log" 2>&1 \
       || { fail "p0: prepare_annotations - $OUT/p0_prepare.log"; return 1; }
   fi
+  log "p0: $(wc -l < data/sensenova.jsonl) training records, $(wc -l < data/sensenova.holdout.jsonl) held out"
 }
 
 # ============================================================================================ p2 eval data
@@ -159,19 +162,19 @@ p1() {
   log "p1 smoke B: CUT3R (1 GPU)"
   on_gpu 0 timeout 1h python "${T[@]}" --stage align --output "$OUT/smoke_b" --max-steps 30 --grad-accum 1 \
     > "$OUT/p1_smoke_b.log" 2>&1 || { fail "p1 smoke B - $OUT/p1_smoke_b.log"; return 1; }
-  log "p1 smoke C: S1 on 8 GPUs"
+  log "p1 smoke C: S1 on 8 GPUs (60 steps - also the speed measurement)"
   timeout 1h torchrun --nproc_per_node 8 --master_port 29510 "${T[@]}" --stage align --output "$OUT/smoke_c" \
-    --max-steps 30 --grad-accum 2 > "$OUT/p1_smoke_c.log" 2>&1 || { fail "p1 smoke C - $OUT/p1_smoke_c.log"; return 1; }
+    --max-steps 60 --grad-accum 2 > "$OUT/p1_smoke_c.log" 2>&1 || { fail "p1 smoke C - $OUT/p1_smoke_c.log"; return 1; }
   grep -aq "sync OK" "$OUT/p1_smoke_c.log" || { fail "p1 smoke C: ranks not in sync"; return 1; }
   log "p1 smoke D: S2 (LoRA) on 8 GPUs, from smoke C"
   timeout 1h torchrun --nproc_per_node 8 --master_port 29510 "${T[@]}" --stage sft --output "$OUT/smoke_d" \
-    --init-from "$OUT/smoke_c/final.pt" --lora-lr "$LORA_LR" --max-steps 30 --grad-accum 2 \
+    --init-from "$OUT/smoke_c/final.pt" --lora-lr "$LORA_LR" --max-steps 60 --grad-accum 2 \
     > "$OUT/p1_smoke_d.log" 2>&1 || { fail "p1 smoke D - $OUT/p1_smoke_d.log"; return 1; }
   grep -aq "sync OK" "$OUT/p1_smoke_d.log" || { fail "p1 smoke D: ranks not in sync"; return 1; }
   log "p1 throughput (8 GPUs): S1 $(sps_of "$OUT/p1_smoke_c.log") / S2 $(sps_of "$OUT/p1_smoke_d.log") samples/s"
 }
 
-# Evaluation paths on a few items, so a broken eval shows up now and not on Sunday. A failure here does not stop
+# Evaluation paths on a few items, so a broken eval shows up now and not on day 3. A failure here does not stop
 # training (the weights can be evaluated later) - it is a line in STATUS to act on.
 p1e() {
   local W1="$OUT/smoke_c/final.pt" W2="$OUT/smoke_d/final.pt" j=() rc=0
@@ -201,18 +204,25 @@ p1e() {
 }
 
 # ============================================================================================ budget
+# Steps per arm from the sample budget, the hours cap and the speed measured in p1 (8-GPU smoke -> one 4-GPU arm
+# with the other arm beside it: half, less 15% for the shared CPU and disk). Written once; a re-run reuses it.
 plan_s1() {
   [[ -f "$OUT/budget.env" ]] || python - "$(sps_of "$OUT/p1_smoke_c.log")" "$(sps_of "$OUT/p1_smoke_d.log")" \
-      "$S1_SAMPLES" "$S1_HOURS" "$S2_SAMPLES" "$S2_HOURS" "$EFF_BATCH" > "$OUT/budget.env" << 'EOF'
-import sys
+      "$S1_SAMPLES" "$S1_HOURS" "$S2_SAMPLES" "$S2_HOURS" "$EFF_BATCH" "$(wc -l < data/sensenova.jsonl)" \
+      > "$OUT/budget.env" << 'EOF'
+import math, sys
 c, d = (float(x) if x else 0.0 for x in sys.argv[1:3])
-s1, h1, s2, h2, eff = (float(x) for x in sys.argv[3:8])
-# 8-GPU smoke -> one 4-GPU arm with the other arm running beside it: half, less 15% for the shared CPU and disk
+s1, h1, s2, h2, eff, n = sys.argv[3:9]
+h1, h2, eff, n = float(h1), float(h2), int(eff), int(n)
+want = lambda s: n if s == "epoch" else float(s)
 arm1, arm2 = 0.5 * 0.85 * c, 0.5 * 0.85 * d
-def steps(want, hours, sps):
-    n = want if sps <= 0 else min(want, hours * 3600 * sps)
-    return max(50, int(n // eff))
-print(f"SMOKE_SPS_S1={c:.2f}\nSMOKE_SPS_S2={d:.2f}\nS1_STEPS={steps(s1, h1, arm1)}\nS2_STEPS={steps(s2, h2, arm2)}")
+def plan(w, hours, sps):
+    fit = w if sps <= 0 else min(w, hours * 3600 * sps)
+    steps = max(50, int(fit // eff))
+    return steps, max(1, math.ceil(steps * eff / n))
+st1, ep1 = plan(want(s1), h1, arm1)
+st2, ep2 = plan(want(s2), h2, arm2)
+print(f"N_TRAIN={n}\nSMOKE_SPS_S1={c:.2f}\nSMOKE_SPS_S2={d:.2f}\nS1_STEPS={st1}\nS1_EPOCHS={ep1}\nS2_STEPS={st2}\nS2_EPOCHS={ep2}")
 EOF
   # shellcheck disable=SC1091
   source "$OUT/budget.env"
@@ -221,40 +231,47 @@ EOF
 # smokes. Written once, so a re-run uses the same number.
 plan_s2() {
   [[ -f "$OUT/budget_s2.env" ]] || python - "$(sps_of "$OUT/s1_real.log" 20)" "$SMOKE_SPS_S1" "$SMOKE_SPS_S2" \
-      "$S2_SAMPLES" "$S2_HOURS" "$EFF_BATCH" "$S2_STEPS" > "$OUT/budget_s2.env" << 'EOF'
-import sys
-arm, c, d, want, hours, eff, fallback = (float(x) if x else 0.0 for x in sys.argv[1:8])
+      "$S2_SAMPLES" "$S2_HOURS" "$EFF_BATCH" "$S2_STEPS" "$N_TRAIN" > "$OUT/budget_s2.env" << 'EOF'
+import math, sys
+arm, c, d = (float(x) if x else 0.0 for x in sys.argv[1:4])
+want = sys.argv[4]; hours, eff, fallback, n = float(sys.argv[5]), int(sys.argv[6]), int(sys.argv[7]), int(sys.argv[8])
+w = n if want == "epoch" else float(want)
 sps = arm * min(1.0, d / c) * 0.9 if (arm and c and d) else 0.0
-n = int(min(want, hours * 3600 * sps) // eff) if sps else int(fallback)
-print(f"S1_ARM_SPS={arm:.2f}\nS2_STEPS={max(50, n)}")
+steps = max(50, int(min(w, hours * 3600 * sps) // eff)) if sps else fallback
+print(f"S1_ARM_SPS={arm:.2f}\nS2_STEPS={steps}\nS2_EPOCHS={max(1, math.ceil(steps * eff / n))}")
 EOF
   # shellcheck disable=SC1091
   source "$OUT/budget_s2.env"
 }
 
 # ============================================================================================ training
-# One arm: 4 GPUs, effective batch 128. --max-hours is a soft stop that still saves final.pt; `timeout` is the
-# hard stop for a hang (NCCL, I/O). A finished arm leaves <name>.done and is not retrained on a re-run.
-train_arm() {   # gpus port name hours args...
-  local gpus=$1 port=$2 name=$3 hours=$4; shift 4
+# One arm: 4 GPUs, effective batch 128. --resume continues from <arm>/resume.pt (written every SAVE_EVERY steps)
+# when a previous attempt was cut off - same data order and steps as if nothing had happened. --max-hours is a soft
+# stop that still saves final.pt; `timeout` is the hard stop for a hang (NCCL, I/O). A finished arm leaves
+# <name>.done and is not touched on a re-run. The log is appended to, so every attempt is in it.
+train_arm() {   # gpus port name hours epochs args...
+  local gpus=$1 port=$2 name=$3 hours=$4 epochs=$5; shift 5
   is_done "$name" && return 0
   rm -f "$OUT/$name/final.pt"
+  [[ -f "$OUT/$name/resume.pt" ]] && log "$name: resuming from $OUT/$name/resume.pt"
   log "$name started on GPUs $gpus"
   CUDA_VISIBLE_DEVICES=$gpus timeout --kill-after=10m "$(hours_s "$hours" 1.25 3600)" \
     torchrun --nproc_per_node 4 --master_port "$port" -m live3r.train.train \
       --config "$CFG" --ann data/sensenova.jsonl --media-root "$MEDIA" --grad-checkpointing \
-      --output "$OUT/$name" --max-hours "$(awk -v h="$hours" 'BEGIN { print h * 1.25 }')" \
-      --grad-accum 32 --log-every 20 --save-every 200 --lr "$LR" "$@" > "$OUT/$name.log" 2>&1
+      --output "$OUT/$name" --resume --epochs "$epochs" \
+      --max-hours "$(awk -v h="$hours" 'BEGIN { print h * 1.25 }')" \
+      --grad-accum 32 --log-every 20 --save-every "$SAVE_EVERY" --lr "$LR" "$@" >> "$OUT/$name.log" 2>&1
   [[ -f "$OUT/$name/final.pt" ]] || { fail "$name - $OUT/$name.log"; return 1; }
   mark "$name"
 }
 
 p4() {
   plan_s1
-  log "p4 S1: $S1_STEPS steps per arm = $((S1_STEPS * EFF_BATCH)) samples (smoke: $SMOKE_SPS_S1 samples/s on 8 GPUs)"
-  train_arm 0,1,2,3 29511 s1_real "$S1_HOURS" --stage align --max-steps "$S1_STEPS" &
+  log "p4 S1: $S1_STEPS steps per arm = $((S1_STEPS * EFF_BATCH)) samples, $S1_EPOCHS epoch(s) of $N_TRAIN (smoke: $SMOKE_SPS_S1 samples/s on 8 GPUs)"
+  train_arm 0,1,2,3 29511 s1_real "$S1_HOURS" "$S1_EPOCHS" --stage align --max-steps "$S1_STEPS" &
   local a=$!
-  train_arm 4,5,6,7 29512 s1_control "$S1_HOURS" --stage align --max-steps "$S1_STEPS" --geom-control shuffled &
+  train_arm 4,5,6,7 29512 s1_control "$S1_HOURS" "$S1_EPOCHS" --stage align --max-steps "$S1_STEPS" \
+    --geom-control shuffled &
   wait_all $a $!
 }
 
@@ -270,12 +287,12 @@ p5() {
 p6() {
   plan_s1
   plan_s2
-  log "p6 S2: $S2_STEPS steps per arm = $((S2_STEPS * EFF_BATCH)) samples (S1 ran at $S1_ARM_SPS samples/s per arm)"
-  train_arm 0,1,2,3 29513 s2_real "$S2_HOURS" --stage sft --max-steps "$S2_STEPS" --lora-lr "$LORA_LR" \
-    --init-from "$OUT/s1_real/final.pt" &
+  log "p6 S2: $S2_STEPS steps per arm = $((S2_STEPS * EFF_BATCH)) samples, $S2_EPOCHS epoch(s) (S1 ran at $S1_ARM_SPS samples/s per arm)"
+  train_arm 0,1,2,3 29513 s2_real "$S2_HOURS" "$S2_EPOCHS" --stage sft --max-steps "$S2_STEPS" \
+    --lora-lr "$LORA_LR" --init-from "$OUT/s1_real/final.pt" &
   local a=$!
-  train_arm 4,5,6,7 29514 s2_control "$S2_HOURS" --stage sft --max-steps "$S2_STEPS" --lora-lr "$LORA_LR" \
-    --init-from "$OUT/s1_control/final.pt" --geom-control shuffled &
+  train_arm 4,5,6,7 29514 s2_control "$S2_HOURS" "$S2_EPOCHS" --stage sft --max-steps "$S2_STEPS" \
+    --lora-lr "$LORA_LR" --init-from "$OUT/s1_control/final.pt" --geom-control shuffled &
   wait_all $a $!
 }
 
@@ -301,16 +318,35 @@ p3() {
   wait_all $a $b $!
 }
 
+# The general gate is VideoMME. If its 101 GB never arrived, the gate falls back to MMStar rather than not run at
+# all - decided once, so the three measurements and the check agree. The report says which it was.
+gate_env() {
+  local f="$OUT/gate/general.env"
+  if [[ ! -f "$f" ]]; then
+    if wait_for p2_videomme; then echo "GENERAL=videomme" > "$f"
+    else log "gate: VideoMME not available - the general gate falls back to MMStar"; printf 'GENERAL=mmstar\nREFERENCE=\n' > "$f"; fi
+  fi
+  cat "$f"
+}
 gate_job() {  # gpu step - one of scripts/run_gate.sh's three measurements (the pre-registered gate)
-  local g=$1 s=$2
+  local g=$1 s=$2 genv=()
   [[ -f "$OUT/gate/$s.ok" ]] && return 0
   { wait_for p2_vsibench && wait_for p2_mmstar; } || { fail "gate $s: eval data not downloaded"; return 1; }
-  if [[ "$s" != base_video ]]; then wait_for p2_videomme || { fail "gate $s: VideoMME not downloaded"; return 1; }; fi
+  [[ "$s" == base_video ]] || genv=($(gate_env))     # base_video measures the spatial task only
   log "gate $s started on GPU $g"
-  on_gpu "$g" env ONLY="$s" timeout 14h bash scripts/run_gate.sh "$CFG" "$OUT/s2_real/final.pt" "$OUT/gate" \
+  on_gpu "$g" env ${genv[@]+"${genv[@]}"} ONLY="$s" timeout 14h bash scripts/run_gate.sh "$CFG" "$OUT/s2_real/final.pt" "$OUT/gate" \
     > "$OUT/gate_$s.log" 2>&1 || { fail "gate $s - $OUT/gate_$s.log"; return 1; }
   touch "$OUT/gate/$s.ok"
   log "gate $s done"
+}
+# S2 learning curve: the saved checkpoints nearest 25 / 50 / 75 % of the S2 plan
+curve_steps() {
+  [[ -f "$OUT/budget_s2.env" ]] || return 0
+  local total f
+  total=$(sed -n 's/^S2_STEPS=//p' "$OUT/budget_s2.env")
+  for f in 0.25 0.5 0.75; do
+    awk -v t="$total" -v f="$f" -v e="$SAVE_EVERY" 'BEGIN { n = int(t * f / e + 0.5) * e; if (n > 0 && n < t) print n }'
+  done | sort -un
 }
 
 # p7: one chain of jobs per GPU. The base measurements do not need training, so they run even if it failed.
@@ -336,7 +372,16 @@ gpu4() {
   { have "$C1" "VSI s1_control" && vsi_job 4 s1_control --config "$CFG" --weights "$C1" --modes oracle-image; } || rc=1
   return $rc
 }
-gpu5() { have "$R2" "VSI s2_real_routed" && vsi_job 5 s2_real_routed --config "$CFG" --weights "$R2" "${ROUTED[@]}" --modes oracle-image; }
+gpu5() {
+  local rc=0 n
+  { have "$R2" "VSI s2_real_routed" && vsi_job 5 s2_real_routed --config "$CFG" --weights "$R2" "${ROUTED[@]}" \
+      --modes oracle-image; } || rc=1
+  for n in $(curve_steps); do   # learning curve: does more Sensenova keep helping, or does the numeric prior take over?
+    have "$OUT/s2_real/step$n.pt" "VSI s2_real_step$n" && vsi_job 5 "s2_real_step$n" --config "$CFG" \
+      --weights "$OUT/s2_real/step$n.pt" --modes oracle-image || rc=1
+  done
+  return $rc
+}
 gpu6() { have "$C2" "VSI s2_control_routed" && vsi_job 6 s2_control_routed --config "$CFG" --weights "$C2" "${ROUTED[@]}" --modes oracle-image; }
 gpu7() {  # does the LoRA model read the geometry's content (holdout loss), then latency (gate 3)
   local rc=0
@@ -360,12 +405,13 @@ gpu7() {  # does the LoRA model read the geometry's content (holdout loss), then
 }
 
 p7() {
-  local j=() g rc
+  local j=() g rc genv=()
   for g in 0 1 2 3 4 5 6 7; do "gpu$g" & j+=($!); done
   wait_all "${j[@]}"
   rc=$?
   if [[ -f "$OUT/gate/base.ok" && -f "$OUT/gate/trained.ok" && -f "$OUT/gate/base_video.ok" ]]; then
-    ONLY=check bash scripts/run_gate.sh "$CFG" "$R2" "$OUT/gate" > "$OUT/gate_check.txt" 2>&1 \
+    genv=($(gate_env))
+    env ${genv[@]+"${genv[@]}"} ONLY=check bash scripts/run_gate.sh "$CFG" "$R2" "$OUT/gate" > "$OUT/gate_check.txt" 2>&1 \
       || { fail "gate check - $OUT/gate_check.txt"; rc=1; }
   else
     rc=1
@@ -374,12 +420,15 @@ p7() {
 }
 
 # ============================================================================================ run
-log "weekend run (re)started at $(git log --oneline -1 2> /dev/null)"
+log "run (re)started at $(git log --oneline -1 2> /dev/null)"
 if ! is_done p0; then
   log "p0 preflight"
   if p0; then mark p0; else exit 1; fi
 fi
 start_downloads
+( while true; do sleep 1800; report; done ) &   # REPORT.md stays current through the long training phases
+REFRESH_PID=$!
+trap 'kill "$REFRESH_PID" 2> /dev/null' EXIT
 if ! is_done p1; then
   if p1; then mark p1; else report; exit 1; fi
 fi
@@ -411,4 +460,4 @@ if ! is_done p7; then
   p7 && mark p7
 fi
 if report; then log "REPORT: $OUT/REPORT.md"; else fail "report - $OUT/report.err"; fi
-log "weekend run finished"
+log "run finished"
