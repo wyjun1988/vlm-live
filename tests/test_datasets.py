@@ -110,3 +110,42 @@ def test_lazy_jsonl_is_picklable_after_use(tmp_path):
     assert recs[1]["id"] == 1          # 파일 핸들이 열린다
     again = pickle.loads(pickle.dumps(recs))
     assert again[2]["id"] == 2 and len(again) == 3
+
+
+def _qa(i, images=None):
+    rec = {"id": i, "conversations": [{"from": "human", "value": "<image>q" if images else "q"},
+                                      {"from": "gpt", "value": "a"}]}
+    if images:
+        rec["image"] = images
+    return rec
+
+
+def test_require_media_passes_over_text_only_records_without_counting_failures(tmp_path):
+    """S1 trains only the projector, so a text-only record has no gradient path and train.py stops on it.
+    require_media passes such records over - and they must not count toward the failure-rate stop, or a
+    corpus with a few percent of text-only records would halt an unattended run."""
+    from live3r.data.datasets import SpatialVQADataset
+
+    ann = tmp_path / "a.json"
+    ann.write_text(json.dumps([_qa(0), _qa(1), _qa(2), _qa(3, ["x.jpg"])]))
+    ds = SpatialVQADataset(ann, tmp_path, prompt=None, spec=None, geom_long_side=512, geom_unit=16,
+                           require_media=True)
+    ds._build_images = lambda rec: {"id": rec.id, "media_type": "images"}
+    for i in range(4):
+        assert ds[i]["media_type"] == "images"
+    assert ds.n_fail == 0 and ds.n_skip >= 3 and not ds.fail_reasons
+
+    ds.require_media = False                     # S2 (LoRA) uses text-only records as they are
+    ds._build_text = lambda rec: {"id": rec.id, "media_type": "text"}
+    assert ds[0]["media_type"] == "text" and ds[0]["retries"] == 0
+
+
+def test_require_media_on_a_text_only_file_stops_with_a_clear_error(tmp_path):
+    from live3r.data.datasets import SpatialVQADataset
+
+    ann = tmp_path / "a.json"
+    ann.write_text(json.dumps([_qa(0), _qa(1)]))
+    ds = SpatialVQADataset(ann, tmp_path, prompt=None, spec=None, geom_long_side=512, geom_unit=16,
+                           require_media=True)
+    with pytest.raises(RuntimeError, match="text-only"):
+        ds[0]

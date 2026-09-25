@@ -63,6 +63,15 @@ def setup_distributed(device_arg: str | None):
     return 0, 1, 0, torch.device(dev)
 
 
+def time_is_up(t_start: float, max_hours: float, world: int, device) -> bool:
+    """--max-hours, decided for all ranks at once. Each rank's clock crosses the limit at a slightly different
+    step; a rank that stopped alone would leave the others waiting in the next all-reduce until NCCL times out."""
+    over = torch.tensor([float(time.perf_counter() - t_start > max_hours * 3600)], device=device)
+    if world > 1:
+        dist.all_reduce(over, op=dist.ReduceOp.MAX)
+    return bool(over.item())
+
+
 def all_mean(x: float, world: int, device) -> float:
     if world == 1:
         return x
@@ -261,6 +270,7 @@ def train(args) -> int:
         data_cfg=cfg.data,
         max_samples=args.max_samples,
         seed=args.seed + rank,
+        require_media=args.stage == "align",  # S1: a text-only record has no gradient path
     )
     if is_main and args.dump_samples:
         dump_samples(ds, prompt, args.dump_samples)
@@ -335,6 +345,8 @@ def train(args) -> int:
             logger.info("⚠️ 대조 프로젝터 모드 — 각 샘플에 **다른 샘플의 기하**를 준다 (--geom-control shuffled)")
 
     step, micro = 0, 0
+    stop_early = False
+    t_start = time.perf_counter()
     skipped = 0
     run_loss, run_n = 0.0, 0
     t_data = t_geom = t_fb = 0.0
@@ -455,7 +467,13 @@ def train(args) -> int:
                 _save(live, out_dir / f"step{step}.pt")
             if step >= total_steps:
                 break
-        if step >= total_steps:
+            if args.max_hours and time_is_up(t_start, args.max_hours, world, device):
+                if is_main:
+                    logger.warning("--max-hours %.1f reached at step %d/%d — stopping and saving.",
+                                   args.max_hours, step, total_steps)
+                stop_early = True
+                break
+        if step >= total_steps or stop_early:
             break
 
     if is_main:
@@ -499,6 +517,9 @@ def main() -> int:
     # 최적화
     ap.add_argument("--epochs", type=int, default=1)
     ap.add_argument("--max-steps", type=int, default=0)
+    ap.add_argument("--max-hours", type=float, default=0.0,
+                    help="stop cleanly after this many hours and save (safety cap for unattended runs; "
+                         "use --max-steps to make two arms see the same data)")
     ap.add_argument("--max-samples", type=int, default=None)
     ap.add_argument("--lr", type=float, default=3e-5,
                     help="프로젝터 lr. 1e-3 은 주입이 비전 표현을 수십 배로 압도한다 (M2 실측) — 3e-5 권장")

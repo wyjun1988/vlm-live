@@ -24,27 +24,39 @@ GENERAL="${GENERAL:-videomme}"
 REFERENCE="${REFERENCE-mmstar}"
 BUDGET="${BUDGET:-32}"
 BEST_FORMAT="${BEST_FORMAT:-1}"   # 1 = 게이트 1 기준선을 베이스의 최선 형식으로 (베이스를 비디오 모드로도 잰다)
+# ONLY = one step: base | base_video | trained | check. scripts/server_weekend.sh runs the three measurements
+# on separate GPUs at once, then 'check'. Default 'all' runs them in order as before.
+ONLY="${ONLY:-all}"
+step() { [[ "$ONLY" == all || "$ONLY" == "$1" ]]; }
 TASKS="${SPATIAL},${GENERAL}${REFERENCE:+,${REFERENCE}}"
 
 COMMON="config=${CONFIG},keyframe_budget=${BUDGET},eval_path=live3r,enable_thinking=False"
 [[ -n "${BASE_MODEL:-}" ]] && COMMON="pretrained=${BASE_MODEL},${COMMON}"
 
+if step base; then
 echo "== [1/3] 베이스 — 이미지 모드 (학습·라이브와 같은 경로. weights 없음 = 베이스 VLM 과 같은 출력) =="
 python -m lmms_eval --model live3r --model_args "${COMMON},use_geometry=False" \
   --tasks "$TASKS" --batch_size 1 --log_samples --output_path "$OUT/base"
+fi
 
 ALT=()
 if [[ "$BEST_FORMAT" == "1" ]]; then
+  if step base_video; then
   echo "== [2/3] 베이스 — 비디오 모드, 공간 태스크만 (게이트 1 최선 형식 기준선) =="
   python -m lmms_eval --model live3r --model_args "${COMMON},use_geometry=False,visual_mode=video" \
     --tasks "$SPATIAL" --batch_size 1 --log_samples --output_path "$OUT/base_video"
+  fi
   ALT=(--base-alt "video=$OUT/base_video")
 fi
 
+if step trained; then
 echo "== [3/3] 학습 결과 — 이미지 모드 =="
 python -m lmms_eval --model live3r --model_args "${COMMON},weights=${WEIGHTS}" \
   --tasks "$TASKS" --batch_size 1 --log_samples --output_path "$OUT/trained"
+fi
 
+if step check; then
 echo
 python scripts/check_gate.py "$OUT/base" "$OUT/trained" ${ALT[@]+"${ALT[@]}"} \
   --spatial "$SPATIAL" --general "$GENERAL" --reference "${REFERENCE}"
+fi

@@ -210,7 +210,8 @@ def main() -> int:
     ap.add_argument("--weights", default=None, help="학습 결과 (.pt) — --config 와 같이 준다")
     ap.add_argument("--config", default=None,
                     help="학습 설정 YAML — 주면 학습과 같은 방식으로 모델을 만든다 (base_model·실제 기하·LoRA)")
-    ap.add_argument("--device", default="mps" if torch.backends.mps.is_available() else "cpu")
+    ap.add_argument("--device", default="cuda" if torch.cuda.is_available()
+                    else "mps" if torch.backends.mps.is_available() else "cpu")
     ap.add_argument("--dtype", default="bf16", choices=list(DTYPES))
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--scene-map", action="store_true",
@@ -245,8 +246,9 @@ def main() -> int:
     ap.add_argument("--rel-distance-facts", action="store_true",
                     help="--route-objects: also attach distance rankings for 'which is closest' questions. "
                          "Off by default: measured rankings were worse than the model (43%% vs 64%%, I-28)")
-    ap.add_argument("--detector-device", default="cpu",
-                    help="device for OWLv2 (cpu keeps the GPU for the VLM — MPS contention made T3 slow)")
+    ap.add_argument("--detector-device", default="cuda" if torch.cuda.is_available() else "cpu",
+                    help="device for OWLv2 (on a Mac, cpu keeps the GPU for the VLM — MPS contention made T3 "
+                         "slow; on CUDA it shares the GPU without trouble)")
     ap.add_argument("--self-map", action="store_true",
                     help="background thinking (I-20): the VLM first writes a cognitive map of the scene from the "
                          "keyframes (question-agnostic); the text goes into the prompt for every question")
@@ -504,8 +506,12 @@ def main() -> int:
             "model": args.model, "videos": [f"{a}/{b}" for a, b in vids], "budget": args.budget,
             "n_questions": n, "scores": {m: {k: float(v) for k, v in table[m].items()} for m in modes},
             "format_fail": {m: sum(format_fail(r) for r in scored[m]) / max(1, len(scored[m])) for m in modes},
+            # per-question score (accuracy or MRA) and video: enough for a video-level paired bootstrap
+            # between two runs without re-scoring (scripts/weekend_report.py)
             "predictions": {m: [{"id": r["id"], "type": r["question_type"], "pred": r["prediction"],
-                                 "gt": r["ground_truth"], "attached": r.get("attached", "")}
+                                 "gt": r["ground_truth"], "attached": r.get("attached", ""),
+                                 "video": f"{r['dataset']}/{r['scene_name']}",
+                                 "score": float(r.get("accuracy", r.get("MRA:.5:.95:.05", 0.0)))}
                                 for r in scored[m]] for m in modes},
             "config": args.config, "weights": args.weights, "scene_map": args.scene_map, "maps": maps,
             "format_hint": args.format_hint, "map_image": args.map_image,

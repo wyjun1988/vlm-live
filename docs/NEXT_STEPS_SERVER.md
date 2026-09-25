@@ -1,5 +1,20 @@
 # 서버 다음 진행사항 — 2026-09-23 (09-24 M2 실측 반영)
 
+> ## 2026-09-26 — start here: the weekend run
+> **Run [`docs/SERVER_WEEKEND.md`](SERVER_WEEKEND.md)**: one command (`scripts/server_weekend.sh`) does steps 1–10 of
+> this document unattended (all but the streaming evaluation in 10-1), on SenseNova-SI only, and writes `outputs/weekend/REPORT.md`. Steps 0–7 below stay
+> valid as the manual procedure and as reference; the script follows them. Changes since this document was last
+> updated, all exercised by the script:
+> - `configs/server_4b.yaml` — this server's paths (model, CUT3R) in one file for every tool.
+> - `scripts/fetch_eval_data.py` — VSI-Bench / VideoMME / MMStar downloaded and unpacked once, so parallel
+>   lmms-eval runs do not race; also lays out `data/eval/vsibench` for `scripts/eval_vsi_local.py`.
+> - `scripts/run_gate.sh` — `ONLY=base|base_video|trained|check` runs one measurement (three GPUs at once).
+> - S1 passes over text-only records (no gradient path through the projector) instead of stopping on one.
+> - `train.py --max-hours` — a soft time cap that still saves `final.pt`.
+> - `eval_vsi_local.py` — defaults to CUDA when present (was CPU off a Mac) and saves per-question scores.
+> - `prepare_annotations.py` — the holdout rate uses the file's own size (a 3.6k-record file got 0 holdout).
+> - M2 zero-shot results since 09-24 (format instruction, routed facts, 56.0 on 60 videos): `docs/BRAINSTORM.md` §0b.
+
 **서버가 마지막으로 확인한 커밋은 `9a48137` 이다. 그 뒤의 변경 전체를 여기 요약한다.**
 이 문서를 0단계부터 순서대로 따르면 된다. 단계마다 "보내줄 것"이 있다.
 

@@ -67,6 +67,16 @@ def iter_raw(path: Path):
                     yield json.loads(line)
 
 
+def count_records(path: Path) -> int | None:
+    """Records in a JSONL file (a line count - seconds even for 832k). None for a JSON array: parsing it twice
+    costs minutes, and the only array we prepare is the SenseNova original, whose size is known."""
+    with open(path, "rb") as fh:
+        if fh.read(4096).lstrip().startswith(b"["):
+            return None
+        fh.seek(0)
+        return sum(1 for line in fh if line.strip())
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("src", help="원본 어노테이션 (json 배열 또는 jsonl)")
@@ -98,7 +108,9 @@ def main() -> int:
     ho_path = dst.with_name(dst.stem + ".holdout.jsonl")
     ho_offsets: list[int] = []
     # 홀드아웃은 레코드 순서와 무관하게 뽑아야 한다 (앞/뒤에 특정 소스가 몰려 있을 수 있다)
-    ho_rate = args.holdout / max(1, args.limit or 832_000)
+    # The rate needs the file's size: a fixed 832k (SenseNova) gave a 3,651-record file 0 holdout records.
+    n_src = count_records(src) or 832_000
+    ho_rate = args.holdout / max(1, min(args.limit, n_src) if args.limit else n_src)
     ho_rng = random.Random(args.seed + 1)
 
     with open(dst, "wb") as out, open(ho_path, "wb") as ho:

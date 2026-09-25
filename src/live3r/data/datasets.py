@@ -51,6 +51,13 @@ class RecordError(ValueError):
     """레코드 자체가 망가졌다 (필드 누락·형식 오류). 해당 샘플은 건너뛴다."""
 
 
+class SkipRecord(Exception):
+    """Not an error: a valid record this run does not use (`require_media` and a text-only record).
+
+    Deliberately not a RecordError - it never counts toward `max_fail_rate` or `max_retries`.
+    """
+
+
 # ------------------------------------------------------------------ 레코드 로딩
 class LazyJsonl:
     """JSONL + 오프셋 인덱스(`<path>.idx.npy`) — 레코드를 필요할 때 한 줄씩 읽는다.
@@ -258,8 +265,14 @@ class SpatialVQADataset(Dataset):
         seed: int = 0,
         max_retries: int = 20,
         max_fail_rate: float = 0.05,
+        require_media: bool = False,
     ) -> None:
         self.records = load_records(ann_path, max_samples)
+        # S1 trains only the projector: a text-only record has no gradient path and would stop the run
+        # (train.py raises on it). With this set such records are passed over like broken ones, but they
+        # are not failures.
+        self.require_media = require_media
+        self.n_skip = 0
         self.media_root = Path(media_root)
         self.prompt = prompt
         self.spec = spec
@@ -279,20 +292,28 @@ class SpatialVQADataset(Dataset):
         return len(self.records)
 
     def __getitem__(self, i: int) -> dict:
-        idx = i
-        for attempt in range(self.max_retries):
+        idx, attempt, skips = i, 0, 0
+        while True:
             try:
                 item = self.build(idx)
                 self.n_ok += 1
                 # 워커 프로세스의 카운터는 메인 프로세스에서 안 보인다 → 샘플에 실어 보낸다
-                item["retries"] = attempt
+                item["retries"] = attempt + skips
                 return item
+            except SkipRecord:
+                self.n_skip += 1
+                skips += 1
+                if skips >= 1000:  # a mixed file skips a few; a thousand in a row means nothing is usable
+                    raise RuntimeError("1,000 records in a row are text-only - require_media needs images "
+                                       "or video. Wrong annotation file?") from None
             except (RecordError, PromptError, FileNotFoundError, OSError, ValueError) as exc:
                 self._record_fail(idx, exc)
-                idx = self._py_rng.randrange(len(self.records))
-        raise RuntimeError(
-            f"{self.max_retries}번 연속 샘플 구성 실패. 사유 분포: {self.fail_reasons}"
-        )
+                attempt += 1
+                if attempt >= self.max_retries:
+                    raise RuntimeError(
+                        f"{self.max_retries}번 연속 샘플 구성 실패. 사유 분포: {self.fail_reasons}"
+                    ) from None
+            idx = self._py_rng.randrange(len(self.records))
 
     def _record_fail(self, idx: int, exc: Exception) -> None:
         self.n_fail += 1
@@ -323,6 +344,8 @@ class SpatialVQADataset(Dataset):
             return self._build_images(rec)
         if mt == "video":
             return self._build_video(rec)
+        if self.require_media:
+            raise SkipRecord(f"record {rec.id} is text-only")
         return self._build_text(rec)
 
     def _pack(self, rec: Record, built, **extra) -> dict:

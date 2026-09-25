@@ -324,8 +324,13 @@ impossible (a content-free signal cannot answer them). Directly fixes why S1 lea
   1.07, 92% within 50%. The tail is over-estimates where the reconstruction sees through a doorway. Pose-derived
   labels cannot be checked against the world here (no ground-truth poses locally) but are self-consistent with
   the geometry input, which is what alignment needs.
-- Decisive test in progress: S1 on this data, then the geometry ablation. If the shortcut is really gone,
-  `shuffled − real` should be large and positive, instead of the −0.03 it was on Sensenova.
+- **Generated locally (2026-09-25)**: 3,651 questions from the 452 VSI videos that are not among the 60 eval
+  scenes (8 frames each; 452 per kind for displacement / turn / closest / path / area, 269 room heights that
+  passed the band). `data/geomqa/` (gitignored), 150 held out. The holdout is per record, so other questions
+  about the same video are in training — for the decisive test, split by video instead.
+- Decisive test, **after the weekend baseline** (docs/SERVER_WEEKEND.md, Sensenova only by decision): S1 on this
+  data, then the geometry ablation. If the shortcut is really gone, `shuffled − real` should be large and
+  positive, instead of the −0.03 it was on Sensenova.
 
 ### I-15 Geometry captioning alignment (LLaVA stage-1 analogue) — **proposed**
 Frozen LLM, train only the projector to make CUT3R tokens *describable* ("the camera moved 1.2 m forward",
@@ -454,4 +459,5 @@ timestamps (I-04), recency weighting / decay, possibly state windows (I-05).
 | 10 | The whole routed configuration on 0.8B | I-22 | done: +5.4 (bigger gain) but 24.8 below 4B |
 | 11 | Repeat the format instruction after the question (0.8B and 4B) | I-31 | done: **negative both** (0.8B 22.4, 4B 53.0) |
 | 12 | The whole routed configuration on 2B | I-22 | done: 40.3 → **42.7** (+2.4); still 11.0 below 4B+prompt |
-| 13 | Geometry-only training questions: generate, then S1 + ablation | I-14 | generating |
+| 13 | Geometry-only training questions: generate, then S1 + ablation | I-14 | generated (3,651); training after the Sensenova baseline |
+| 14 | **Sensenova-only baseline on 8x H100**: zero-shot VSI (full), S1 and S2 with control arms, gate | I-12, I-16 | set up for the weekend of 09-26 (docs/SERVER_WEEKEND.md) |
