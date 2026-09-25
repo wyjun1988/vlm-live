@@ -1,0 +1,41 @@
+# Server (8x H100) — the 2B model with this machine's paths, the counterpart of server_4b.yaml.
+# Same geometry / fusion / data settings as the 4B so the two are comparable; LoRA r16 as in live3r_2b.yaml.
+# Used by the `small` role of scripts/server_weekend.sh (docs/SERVER_WEEKEND.md).
+base_model: /group-volume/wooyeol/models/Qwen3.5-2B
+dtype: bf16
+attn_implementation: sdpa
+
+geometry:
+  name: cut3r
+  checkpoint: checkpoints/cut3r_512_dpt_4_64.pth
+  tap_layers: [6, 9, 12]
+  hidden_size: 768
+  image_size: 512
+  stride: 1
+  freeze: true
+  expose_pose_token: true
+  options:
+    repo_path: third_party/CUT3R
+
+fusion:
+  mode: deepstack
+  inject_layers: [0, 1, 2]
+  merge_size: 2
+  mlp_ratio: 2.0
+  zero_init: true
+
+lora:
+  enabled: true
+  r: 16
+  alpha: 32
+  dropout: 0.05
+
+data:
+  max_pixels: 131072     # 128 x 32 x 32 -> <= 128 LLM tokens per image (same as every M2 result)
+  max_images: 32
+  max_length: 8192
+
+stream:
+  max_visual_tokens: 16384
+  budget_policy: evict
+  target_fps: 30.0

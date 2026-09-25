@@ -250,11 +250,14 @@ def build_model(args, cfg: Live3RConfig, is_main: bool) -> Live3RModel:
                 logger.info("S1 결과 로드: %d/%d 텐서 (%s)", loaded, len(state), args.init_from)
             if loaded == 0:
                 raise RuntimeError(f"{args.init_from} 에서 로드된 텐서가 0개다 — 키가 안 맞는다")
-        elif is_main:
+        elif is_main and not args.no_geometry:
             logger.warning(
                 "S2(sft) 를 S1 정렬 없이 시작한다 — LLM 이 기하를 무시하는 지름길을 배울 수 있다. "
                 "--init-from 으로 S1 결과를 넣는 걸 권장."
             )
+        if is_main and args.no_geometry:
+            logger.info("--no-geometry: plain SFT reference - the encoder is never run, the projector stays at "
+                        "its zero-init (so an eval that loads these weights injects nothing)")
     return model
 
 
@@ -453,7 +456,7 @@ def train(args) -> int:
 
             # ---- 기하 (동결, no_grad) ----
             geom_outs = None
-            if batch["geom_frames"]:
+            if batch["geom_frames"] and not args.no_geometry:
                 geom_outs = cache.get(batch["cache_key"]) if cache else None
                 if geom_outs is None:
                     geom_outs = live.run_geometry(batch["geom_frames"])
@@ -647,6 +650,9 @@ def main() -> int:
                     help="LoRA lr (S2). 안 주면 --lr 과 같다. 보통 1e-4 대")
     ap.add_argument("--inj-warn", type=float, default=3.0,
                     help="레이어별 ‖주입‖/‖비전 히든‖ 이 이 값을 넘으면 경고")
+    ap.add_argument("--no-geometry", action="store_true",
+                    help="plain SFT reference (S2 only): never run the geometry encoder, inject nothing. "
+                         "real - this = the value of the whole geometry path; real - shuffled = of its content")
     ap.add_argument("--geom-control", choices=["none", "shuffled"], default="none",
                     help="shuffled = 대조 프로젝터: 다른 샘플의 기하로 학습한다 (같은 데이터·시드로 진짜 기하 "
                          "학습과 나란히 돌려 차이를 기하 내용의 가치로 본다. GeomDonors 참고)")

@@ -56,15 +56,23 @@ def test_training_log_line_is_parsed(tmp_path):
     assert wr.fmt_hours(info["rows"]) == "2.5 h"
 
 
-def test_status_does_not_blame_p1_for_a_p1e_failure(tmp_path):
+def test_status_does_not_blame_an_arm_for_its_namesakes_failure(tmp_path):
+    """A 'FAILED s1_control' line must not mark s1_control_seed1 or s1_control_2b as failed, and vice versa."""
     (tmp_path / "p0.done").touch()
-    (tmp_path / "STATUS").write_text("2026-09-26 01:00:00 FAILED p1e ablation - x.log\n"
-                                     "2026-09-26 01:00:01 FAILED s1_control - s1_control.log\n")
-    rows = {ln.split(" | ")[0].strip("| "): ln for ln in wr.section_status(tmp_path) if ln.startswith("| ")}
-    assert rows["p1 smoke (training)"].endswith("| - |")
-    assert rows["p1e smoke (evaluation paths)"].endswith("| FAILED |")
+    (tmp_path / "s1_control_2b.done").touch()
+    (tmp_path / "PID.node_control").touch()
+    (tmp_path / "STATUS").write_text("2026-09-26 01:00:00 [control] started on node_control at abc\n"
+                                     "2026-09-26 01:00:01 [control] FAILED s1_control - s1_control.log\n"
+                                     "2026-09-26 01:00:02 [small] FAILED s1_real_2b - x.log\n")
+    text = wr.section_status(tmp_path)
+    rows = {ln.split(" | ")[0].strip("| "): ln for ln in text if ln.startswith("| ")}
     assert rows["s1_control S1 control"].endswith("| FAILED |")
-    assert rows["p0 preflight"].endswith("| done |")
+    assert rows["s1_control_seed1 S1 control, seed 1"].endswith("| - |")
+    assert rows["s1_control_2b 2B S1 control"].endswith("| done |")
+    assert rows["s1_real_2b 2B S1 real"].endswith("| FAILED |")
+    assert rows["s1_real S1 real"].endswith("| - |")
+    assert rows["p0 shared preflight"].endswith("| done |")
+    assert any("Nodes seen: node_control" in ln and "roles: control" in ln for ln in text)
 
 
 def test_report_on_an_empty_run_directory_says_what_is_missing(tmp_path, capsys):

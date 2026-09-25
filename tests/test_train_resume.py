@@ -7,6 +7,8 @@ import json
 import os
 import sys
 
+import yaml
+
 import numpy as np
 import pytest
 import torch
@@ -114,3 +116,31 @@ def test_non_finite_gradient_skips_the_update_and_a_run_of_them_stops(monkeypatc
     assert not _same(torch.load(tmp_path / "d" / "step2.pt"), untouched), "the next good step made no update"
     with pytest.raises(FloatingPointError, match="diverging"):
         _run(monkeypatch, tmp_path, tmp_path / "f", "--max-steps", "3", "--save-every", "0")
+
+
+@needs_tok
+def test_no_geometry_trains_lora_without_ever_running_the_encoder(monkeypatch, tmp_path):
+    """The plain-SFT reference arm: LoRA learns, the encoder is never called, the projector stays at zero-init."""
+    from live3r.model.live3r import Live3RModel
+
+    cfg = yaml.safe_load(open("configs/live3r_dummy.yaml"))
+    cfg["lora"]["enabled"] = True
+    lora_yaml = tmp_path / "lora.yaml"
+    lora_yaml.write_text(yaml.safe_dump(cfg))
+    calls = {"n": 0}
+    orig = Live3RModel.run_geometry
+
+    def spy(self, frames):
+        calls["n"] += 1
+        return orig(self, frames)
+
+    monkeypatch.setattr(Live3RModel, "run_geometry", spy)
+    out = tmp_path / "g"
+    _run(monkeypatch, tmp_path, out, "--config", str(lora_yaml), "--stage", "sft", "--no-geometry",
+         "--max-steps", "2", "--save-every", "0")
+    assert calls["n"] == 0
+    state = torch.load(out / "final.pt")
+    lora_b = [v for k, v in state.items() if "lora_B" in k]
+    assert lora_b and any(torch.count_nonzero(v) for v in lora_b), "LoRA did not train"
+    assert all(torch.equal(v, torch.zeros_like(v)) for k, v in state.items() if "fc2.weight" in k and "projector" in k), \
+        "the unused projector moved off its zero-init"

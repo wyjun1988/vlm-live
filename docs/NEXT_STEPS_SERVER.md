@@ -1,11 +1,14 @@
 # 서버 다음 진행사항 — 2026-09-23 (09-24 M2 실측 반영)
 
-> ## 2026-09-26 — start here: the four-day run
-> **Run [`docs/SERVER_WEEKEND.md`](SERVER_WEEKEND.md)**: one command (`scripts/server_weekend.sh`) does steps 1–10 of
-> this document unattended (all but the streaming evaluation in 10-1), on SenseNova-SI only — one epoch for S1
-> and one for S2, each with a control arm — and writes `outputs/weekend/REPORT.md`. Steps 0–7 below stay valid as
-> the manual procedure and as reference; the script follows them. Changes since this document was last updated,
-> all exercised by the script:
+> ## 2026-09-26 — start here: the four-day run on 4 nodes
+> **Run [`docs/SERVER_WEEKEND.md`](SERVER_WEEKEND.md)**: `scripts/server_weekend.sh` with one `ROLE` per node
+> (`real`, `control`, `sft`, `small`) does steps 1–10 of this document unattended (all but the streaming evaluation
+> in 10-1), on SenseNova-SI only — one epoch for S1 and one for S2, real and control arms on separate nodes, plus a
+> plain-SFT reference, an S2-without-S1 arm, a second seed and the 2B model — and writes `outputs/weekend/REPORT.md`.
+> The nodes coordinate through markers on the shared volume; there is no multi-node job. Steps 0–7 below stay
+> valid as the manual procedure and as reference; the script follows them. Changes since this document was last
+> updated, all exercised by the script:
+> - `train.py --no-geometry` — the plain-SFT reference arm (never runs the encoder, injects nothing).
 > - `train.py --resume` — an interrupted arm continues from `resume.pt` (weights, optimizer, schedule, data
 >   position) with the same data order as an uninterrupted run; a non-finite loss or gradient skips the sample or
 >   the step instead of ending the run (three skipped steps in a row still stop it).

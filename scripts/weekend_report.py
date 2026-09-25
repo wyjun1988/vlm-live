@@ -29,12 +29,17 @@ TYPE_SHORT = {
     "object_rel_distance": "rel dist", "object_size_estimation": "obj size", "room_size_estimation": "room size",
     "route_planning": "route", REL_DIR: "rel dir",
 }
-PHASES = [("p0", "preflight"), ("p1", "smoke (training)"), ("p1e", "smoke (evaluation paths)"),
-          ("p2_vsibench", "VSI-Bench data"), ("p2_mmstar", "MMStar data"), ("p2_videomme", "VideoMME data"),
-          ("p3", "zero-shot VSI baseline"), ("s1_real", "S1 real"), ("s1_control", "S1 control"),
-          ("p4", "S1 pair"), ("p5", "S1 ablation"), ("s2_real", "S2 real"), ("s2_control", "S2 control"),
-          ("p6", "S2 pair"), ("p7", "evaluation")]
-ARMS = ["s1_real", "s1_control", "s2_real", "s2_control"]
+# markers a run leaves (outputs/weekend/<name>.done); the roles of scripts/server_weekend.sh produce them
+PHASES = [("p0", "shared preflight"), ("p2_vsibench", "VSI-Bench data"), ("p2_mmstar", "MMStar data"),
+          ("p2_videomme", "VideoMME data"), ("p3", "zero-shot VSI baseline"),
+          ("s1_real", "S1 real"), ("s1_control", "S1 control"), ("s2_real", "S2 real"), ("s2_control", "S2 control"),
+          ("s2_sft", "plain SFT (no geometry)"), ("s2_joint", "S2 joint (no S1)"),
+          ("s1_real_seed1", "S1 real, seed 1"), ("s1_control_seed1", "S1 control, seed 1"),
+          ("s2_real_seed1", "S2 real, seed 1"), ("s2_control_seed1", "S2 control, seed 1"),
+          ("s1_real_2b", "2B S1 real"), ("s1_control_2b", "2B S1 control"), ("s2_real_2b", "2B S2 real"),
+          ("s2_control_2b", "2B S2 control"), ("gate_base", "gate: base"), ("gate_base_video", "gate: base video"),
+          ("gate_trained", "gate: trained"), ("gate_check", "gate verdict"),
+          ("role.real", "role real"), ("role.control", "role control"), ("role.sft", "role sft"), ("role.small", "role small")]
 # (label, run A, run B): A - B. A run is "<vsi json name>:<mode>"; "base_best" is the base's better format.
 COMPARISONS = [
     ("Base: image mode - video mode (the format confound)", "base_plain:oracle-image", "base_plain:oracle-video"),
@@ -49,6 +54,19 @@ COMPARISONS = [
     ("S2 real: routed - plain (measurements after training)", "s2_real_routed:oracle-image", "s2_real:oracle-image"),
     ("Routed: S2 real - base (training on top of prompting)", "s2_real_routed:oracle-image", "base_routed:oracle-image"),
     ("Routed: S2 real - S2 control", "s2_real_routed:oracle-image", "s2_control_routed:oracle-image"),
+    ("Plain SFT - base best format (what SFT alone buys)", "s2_sft:oracle-image", "base_best"),
+    ("Plain SFT + hint - plain SFT", "s2_sft_hint:oracle-image", "s2_sft:oracle-image"),
+    ("S2 real - plain SFT (value of the whole geometry path)", "s2_real:oracle-image", "s2_sft:oracle-image"),
+    ("S2 control - plain SFT (a content-free injection)", "s2_control:oracle-image", "s2_sft:oracle-image"),
+    ("S2 joint (no S1) - S2 real (is S1 needed?)", "s2_joint:oracle-image", "s2_real:oracle-image"),
+    ("Seed 1: S2 real - control", "s2_real_seed1:oracle-image", "s2_control_seed1:oracle-image"),
+    ("S2 real: seed 1 - seed 0 (training-seed noise)", "s2_real_seed1:oracle-image", "s2_real:oracle-image"),
+    ("S2 control: seed 1 - seed 0 (training-seed noise)", "s2_control_seed1:oracle-image", "s2_control:oracle-image"),
+    ("2B: base + hint - base video mode", "base_hint_2b:oracle-image", "base_plain_2b:oracle-video"),
+    ("2B: S2 real - control (geometry content, 2B)", "s2_real_2b:oracle-image", "s2_control_2b:oracle-image"),
+    ("2B: S2 real - 2B base + hint", "s2_real_2b:oracle-image", "base_hint_2b:oracle-image"),
+    ("2B routed: S2 real - control", "s2_real_2b_routed:oracle-image", "s2_control_2b_routed:oracle-image"),
+    ("2B S2 real - 4B S2 real (the size gap after training)", "s2_real_2b:oracle-image", "s2_real:oracle-image"),
 ]
 
 
@@ -239,8 +257,9 @@ def section_training(out: Path) -> list[str]:
                                  if k in env), ""]
     lines += ["| run | steps | first -> last loss | last inj (L0..) | samples/s | peak mem | skipped | sync | "
               "elapsed | notes |", "|---|---|---|---|---|---|---|---|---|---|"]
-    for name in ["smoke_a", "smoke_b", "smoke_c", "smoke_d"] + ARMS:
-        log = out / (f"p1_{name}.log" if name.startswith("smoke") else f"{name}.log")
+    logs = sorted(out.glob("p1_*_smoke_*.log")) + sorted(out.glob("s[12]_*.log"))
+    for log in logs:
+        name = log.stem.removeprefix("p1_")
         info = parse_train_log(log)
         if info is None:
             continue
@@ -280,7 +299,8 @@ def verdict(mean: float, ci: float, pos: str, neg: str, none: str) -> str:
 def section_ablation(out: Path) -> list[str]:
     lines = ["## Geometry ablation (holdout loss, lower is better)", ""]
     found = False
-    for label, f in [("S1 (projector only)", "p5_ablation_s1.json"), ("S2 (LoRA)", "p7_ablation_s2.json")]:
+    for label, f in [("S1 (projector only)", "p5_ablation_s1.json"), ("S2 (LoRA)", "p7_ablation_s2.json"),
+                     ("2B S2 (LoRA)", "p7_ablation_2b.json")]:
         p = out / f
         if not p.exists():
             lines.append(f"- {label}: not run yet (`{f}`)")
@@ -370,12 +390,19 @@ def section_status(out: Path) -> list[str]:
     lines = ["## Status", ""]
     status = (out / "STATUS").read_text(errors="replace").splitlines() if (out / "STATUS").exists() else []
     failed = [ln for ln in status if "FAILED" in ln]
+    nodes = sorted(p.name.removeprefix("PID.") for p in out.glob("PID.*"))
+    roles = sorted({m.group(1) for ln in status for m in [re.search(r"\[([a-z+]+)\] started on", ln)] if m})
+    if nodes:
+        lines += [f"Nodes seen: {', '.join(nodes)} · roles: {', '.join(roles) or '-'}", ""]
     lines += ["| step | state |", "|---|---|"]
+    done = {p.stem for p in out.glob("*.done")}
     for key, label in PHASES:
         hit = re.compile(rf"FAILED {re.escape(key)}\b")   # "p1" must not match a "p1e" failure
-        state = "done" if (out / f"{key}.done").exists() else (
-            "FAILED" if any(hit.search(ln) for ln in failed) else "-")
+        state = "done" if key in done else ("FAILED" if any(hit.search(ln) for ln in failed) else "-")
         lines.append(f"| {key} {label} | {state} |")
+    other = sorted(k for k in done if k not in {k for k, _ in PHASES} and not k.startswith(("p0.", "p1.")))
+    if other:
+        lines.append(f"| other markers | {', '.join(other)} |")
     lines.append("")
     if failed:
         lines += ["Failures (from STATUS):", "", "```", *failed[-15:], "```", ""]
