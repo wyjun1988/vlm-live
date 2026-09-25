@@ -79,14 +79,21 @@ the training prior. Scale is the missing ingredient (literature: ~+20 from data,
 
 ### Model size
 
-| | instruction only | + routed measurements | gain |
-|---|---|---|---|
-| Qwen3.5-4B | 53.7 | **56.0** | +2.3 [+1.0, +3.6] |
-| Qwen3.5-2B | *running* | *running* | |
-| Qwen3.5-0.8B | 23.4 | 28.8 | **+5.4 [+4.0, +6.8]** |
+| | instruction only | + routed measurements | gain | copies the measurement (room / distance) |
+|---|---|---|---|---|
+| Qwen3.5-4B | 53.7 | **56.0** | +2.3 [+1.0, +3.6] | 98% / 98% |
+| Qwen3.5-2B | 40.3 | **42.7** | +2.4 [+0.7, +4.0] | 93% / 98% |
+| Qwen3.5-0.8B | 23.4 | **28.8** | +5.4 [+4.0, +6.8] | 42% / 97% |
 
-Measurements help the small model twice as much, but 0.8B+measurements is still 24.8 below 4B+prompt; its
-weakness is perception (appearance order 6.8 vs 66.9), which numbers cannot supply.
+**Measurements do not buy back model size.** 2B + measurements (42.7) is still 11.0 [−16.0, −6.4] below 4B with a
+prompt alone (53.7); 4B + measurements is 13.3 above 2B + measurements. The 0.8B's larger gain is headroom, not
+capability — it started at 5.7 on room size.
+
+Where the smaller models actually lose (vs 4B, routed): appearance order **10.1 / 6.8 vs 66.9**, relative
+direction 35.5 / 39.8 vs 54.6, relative distance 46.5 / 33.1 vs 64.0. These are perception and cross-frame
+tracking, which a number in the prompt cannot supply. Where a measurement is handed over, 2B uses it almost as
+well as 4B (93% vs 98%), so arithmetic is not the bottleneck at 2B. (2B is *better* than 4B at route planning,
+37.8 vs 27.0 — the one type where the 4B is oddly weak.)
 
 ---
 
@@ -367,8 +374,12 @@ If measurements (I-27/I-29) carry the spatial reasoning, the LLM mostly reads an
   4B) but the room area only 53%, because 13/60 room-size answers are format failures ("Based on the visual
   ev...", truncated) — the 0.8B fails the answer format 15-18% of the time even with the instruction, vs 0.2%
   for the 4B. So part of the remaining gap is instruction-following, not perception → I-31.
-- Verdict: the detector does not buy back LLM size at 0.8B. Worth repeating at 2B, where the perception gap is
-  much smaller, before concluding.
+- **2B (added 2026-09-25): 40.3 → 42.7, +2.4 [+0.7, +4.0].** It copies a handed-over measurement almost as well
+  as the 4B (93% / 98%), so arithmetic is not its bottleneck — but it is still 11.0 below the 4B with a prompt
+  alone, and its appearance-order score is 10.1 vs the 4B's 66.9.
+- **Verdict: measurements do not buy back LLM size.** The gap between sizes is perception and cross-frame
+  tracking, not calculation, and numbers in the prompt cannot supply it. Keep 4B for quality; revisit the small
+  sizes only after training, where they have the most headroom.
 
 ---
 
@@ -425,4 +436,4 @@ timestamps (I-04), recency weighting / decay, possibly state windows (I-05).
 | 9 | Object size from the lifted point sets (extent), routed like I-29 | I-10, I-30 | done: **negative** (model 66.7 vs measured 40.3) — not attached |
 | 10 | The whole routed configuration on 0.8B | I-22 | done: +5.4 (bigger gain) but 24.8 below 4B |
 | 11 | Repeat the format instruction after the question (0.8B and 4B) | I-31 | done: **negative both** (0.8B 22.4, 4B 53.0) |
-| 12 | The whole routed configuration on 2B | I-22 | queued |
+| 12 | The whole routed configuration on 2B | I-22 | done: 40.3 → **42.7** (+2.4); still 11.0 below 4B+prompt |
