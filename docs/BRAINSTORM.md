@@ -35,6 +35,61 @@ costs on other question types — so *what* to show, and when, matters (I-27).
 
 ---
 
+## 0b. Scoreboard — everything tried, and what it gave (2026-09-25)
+
+VSI, same 60 videos / 1,151 questions, **image mode** (the live path), Qwen3.5-4B, zero-shot unless marked.
+Intervals are video-level bootstrap, lmms-eval aggregation.
+
+### Adopted — the configuration that works (cumulative)
+
+| Step | Score | Δ | 95% CI |
+|---|---|---|---|
+| Base, image mode | 24.7 | — | |
+| Base, video mode (its best format) | 48.6 | — | *gate-1 baseline* |
+| + format instruction (one line, in the prefix) | 53.7 | +5.1 | [+1.7, +8.7] |
+| + room measurements routed to room-size questions (I-27) | 55.4 | +1.7 | [+0.6, +2.8] |
+| + object distances from >= 3 views (I-29) | **56.0** | +0.6 | [+0.2, +1.0] |
+| **total over the gate-1 baseline** | | **+7.3** | [+3.6, +11.2] |
+
+No training. One LLM pass, cached prefix unchanged, +43 tokens at question time, question-only TTFT 0.23 s.
+
+### Rejected (kept in the code, off by default)
+
+| Tried | Result | Why it failed |
+|---|---|---|
+| Top-down map image (I-08) | −0.3 | costs order/direction as much as the area gains |
+| Measured facts always in the prompt (I-07) | −0.4 img / +0.8 vid | same, without a picture → route instead |
+| Object map as text, VLM grounding, oracle names (I-09) | **−13.7** | hallucinated objects, one bed → 7 instances |
+| Object map as text, OWLv2 fixed vocabulary (I-09) | **−9.9** | fewer hallucinations, counts still wrong |
+| The 4B writing its own cognitive map first (I-20) | **−4.8** | adds only its own errors |
+| Every computable distance, min_frames=1 (I-29 run 1) | −0.7 vs I-27 | 1-view 3D estimates are bad |
+| Object size from measured extent (I-30) | model 66.7 vs ours 40.3 | category prior beats measurement (L6) |
+| Repeat the instruction after the question (I-31) | 4B −0.7, 0.8B −1.0 | one copy is enough at both sizes |
+
+### Training path, for contrast (Sensenova 905 samples, LoRA + projector)
+
+| | Score |
+|---|---|
+| S2 real geometry | 44.1 |
+| S2 control (shuffled geometry) | 42.3 |
+| geometry's own contribution | +1.9 [−0.9, +4.4] — not significant |
+
+A small SFT lands **11.9 below** prompting the base: it fixes the answer format but collapses numeric answers onto
+the training prior. Scale is the missing ingredient (literature: ~+20 from data, +1..3 from the 3D encoder).
+
+### Model size
+
+| | instruction only | + routed measurements | gain |
+|---|---|---|---|
+| Qwen3.5-4B | 53.7 | **56.0** | +2.3 [+1.0, +3.6] |
+| Qwen3.5-2B | *running* | *running* | |
+| Qwen3.5-0.8B | 23.4 | 28.8 | **+5.4 [+4.0, +6.8]** |
+
+Measurements help the small model twice as much, but 0.8B+measurements is still 24.8 below 4B+prompt; its
+weakness is perception (appearance order 6.8 vs 66.9), which numbers cannot supply.
+
+---
+
 ## 1. Live architecture and memory
 
 ### I-01 Background situation prompt, question-only answering — **adopted**
@@ -201,14 +256,28 @@ margin between options is large (> 30%).
   both objects were seen in >= 3 keyframes. One LLM pass; routing is a string match (0.2 us); +43 tokens.
 - → L5.
 
-### I-30 Object size from the lifted point sets — **proposed**
+### I-30 Object size from the lifted point sets — **tested: negative (do not attach)**
 VSI asks "the longest dimension of the X in centimeters" (1/8 of the score, currently 65.3). We already hold a
 3D point set per object instance, so the extent is `max(ptp(points))` — no new machinery, and the same
 view-count gate (I-29 / L5) decides whether to attach it. Risk: our point sets come from box interiors (the
 central 50% of each box), so extents are systematically *under*-estimated; check the bias before attaching,
 and consider using the full box for the extent while keeping the centre for position.
+- Implemented with a separate full-box point set and a 2-98 percentile extent, then measured on 12 videos
+  (43 size questions): **worse than the model at every threshold.** Model alone 66.7 MRA; measured 36.6 / 40.3 /
+  39.5 at min_frames 1/2/3, predicted type score 38.4 / 48.4 / 54.4 — all below 66.7. The bias flipped from the
+  expected under-estimate to a **+26..39% over-estimate** (measured/truth median 1.26-1.39): the box contains
+  floor and wall around the object, and a percentile extent does not remove it (door 118 vs 135 cm is good, but
+  table 166 vs 107 and sofa 229 vs 181 are not).
+- Not run at full scale — the diagnosis already shows it would cost ~1.4 points overall. `--size-facts` stays in
+  the code, off by default.
+- → L6.
 
 ### Lessons so far (zero-shot, 4B)
+- **L6 Attach geometry only for scene-specific quantities; the model's prior already wins on canonical ones.**
+  Object size is a property of the object category — a door is ~135 cm, a sofa ~180 cm — and the pretrained model
+  knows it (66.7 MRA) better than we can measure it (40.3). Room area and inter-object distance are properties of
+  *this* scene, which no prior can supply, and there measurement wins (+13.8 and +4.5). Before building any new
+  measurement, ask whether the answer is knowable from the object category alone.
 - **L1 The model copies numbers from the prompt.** Correct → big gains (room size +13..+19); wrong → big losses
   (counts −25). Any text memory must be precise, or absent.
 - **L2 Always-on geometric context costs other question types** (order / direction −6..−10). Show facts only to
@@ -280,9 +349,43 @@ Latency cost; only if I-20 shows thinking itself is what helps.
 
 ## 5. Model size
 
-### I-22 Smaller LLM with an explicit object map — **proposed**
-If measurements (I-07/I-09) carry the spatial reasoning, the LLM mostly reads and compares numbers →
-0.8B/2B may suffice. The detector (OWLv2, 622 MB) is cheaper than LLM size. Test after I-09 works on 4B.
+### I-22 Smaller LLM with an explicit object map — **tested: gain is bigger, but the gap is not closed**
+If measurements (I-27/I-29) carry the spatial reasoning, the LLM mostly reads and compares numbers →
+0.8B/2B may suffice. The detector (OWLv2, 622 MB) is cheaper than LLM size.
+
+| 60 videos, image mode | instruction only | + routed measurements | gain |
+|---|---|---|---|
+| Qwen3.5-4B | 53.7 | **56.0** | +2.3 [+1.0, +3.6] |
+| Qwen3.5-0.8B | 23.4 | **28.8** | **+5.4 [+4.0, +6.8]** |
+
+- **Measurements help the small model more than twice as much** (room size 5.7 → 34.2, absolute distance
+  1.2 → 16.2) — the direction the "shrink the LLM" idea needs.
+- **But 0.8B + measurements (28.8) is still 24.8 below 4B with a prompt alone (53.7).** The 0.8B's weakness is
+  not arithmetic: appearance order 6.8 vs 66.9, relative direction 39.8 vs 54.6 — it cannot read the scene.
+  Measurements cannot supply that.
+- **Where the small model loses the measurement we hand it:** it copies a distance 98% of the time (same as the
+  4B) but the room area only 53%, because 13/60 room-size answers are format failures ("Based on the visual
+  ev...", truncated) — the 0.8B fails the answer format 15-18% of the time even with the instruction, vs 0.2%
+  for the 4B. So part of the remaining gap is instruction-following, not perception → I-31.
+- Verdict: the detector does not buy back LLM size at 0.8B. Worth repeating at 2B, where the perception gap is
+  much smaller, before concluding.
+
+---
+
+### I-31 Repeat the format instruction after the question — **tested: negative on both sizes**
+The instruction lives in the cached prefix, thousands of tokens before the answer; small models drift back to
+explaining. Repeating it directly after the question costs ~12 tokens at question time (still one pass, prefix
+untouched). Tested on 0.8B (15-18% format failures, so the headroom looked large) and on 4B (0.2%, to check for
+a regression).
+- **0.8B: 23.4 → 22.4, and format failures got *worse*, 17.5% → 24.2%.** 746 of 1,151 answers changed, so the
+  repeated instruction is not a small nudge — it shifts the whole answer distribution (e.g. a size answer 16 → 40,
+  a distance 0.22 → 0.27). The instruction is not "too far away"; a second copy just competes with the question
+  for the small model's attention.
+- **4B: 53.7 → 53.0**, even though format failures went 0.2% → 0.0%. The instruction was already doing its job;
+  a second copy only perturbs answers that were fine.
+- Lesson: one copy of the instruction, in the prefix, is enough at both sizes. The small model's format failures
+  are a capability limit, not a placement problem — fixing them needs training (or constrained decoding), not
+  prompt surgery. This also bounds how much of the 0.8B's gap is "formatting": very little.
 
 ---
 
@@ -319,5 +422,7 @@ timestamps (I-04), recency weighting / decay, possibly state windows (I-05).
 | 6 | CUT3R drift vs stream length (needs ScanNet GT poses — data not local yet) | I-05, I-11 | proposed |
 | 7 | Object facts v2: question-time lookup of the named objects, closest-point distances, no counts | I-28 | done: null (−0.2) — abs distance good but 18% coverage; rel distance misleading |
 | 8 | Question-time detection of the named objects (coverage), abs distance only | I-29 | done: **56.0, +0.6 [+0.2, +1.0]**; min_frames=3 optimal |
-| 9 | Object size from the lifted point sets (extent), routed like I-29 | I-10, I-30 | next |
-| 10 | The whole routed configuration on 0.8B | I-22 | after 9 |
+| 9 | Object size from the lifted point sets (extent), routed like I-29 | I-10, I-30 | done: **negative** (model 66.7 vs measured 40.3) — not attached |
+| 10 | The whole routed configuration on 0.8B | I-22 | done: +5.4 (bigger gain) but 24.8 below 4B |
+| 11 | Repeat the format instruction after the question (0.8B and 4B) | I-31 | done: **negative both** (0.8B 22.4, 4B 53.0) |
+| 12 | The whole routed configuration on 2B | I-22 | queued |

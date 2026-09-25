@@ -237,6 +237,9 @@ def main() -> int:
                          "measured distances for the objects a distance question names, at question time")
     ap.add_argument("--min-frames", type=int, default=2,
                     help="--route-objects: trust an object only if seen in >= N keyframes")
+    ap.add_argument("--hint-after", action="store_true",
+                    help="also repeat the format instruction AFTER the question (the cached prefix copy is far "
+                         "from the answer; small models drift back to explaining). Question-time, still one pass")
     ap.add_argument("--size-facts", action="store_true",
                     help="--route-objects: also attach the measured longest dimension for object-size questions")
     ap.add_argument("--rel-distance-facts", action="store_true",
@@ -426,6 +429,8 @@ def main() -> int:
                     if len(meas_log) > n_before:   # only when THIS question added an entry
                         meas_log[-1].update(id=d["id"], gt=d["ground_truth"])
                 text = attached + text
+                if args.hint_after:
+                    text = text + "\nAnswer directly in the requested format without explanation."
                 if pc is not None:
                     ans, _ = pc.answer(text, max_new_tokens=16, do_sample=False)
                 else:
@@ -508,6 +513,7 @@ def main() -> int:
             "oracle_vocab": bool(args.object_map and oracle_vocab), "objects": objects,
             "self_map": args.self_map, "self_maps": self_maps, "route_facts": args.route_facts,
             "route_objects": args.route_objects, "min_frames": args.min_frames, "measurements": meas_log,
+            "hint_after": args.hint_after,
         }, indent=2, ensure_ascii=False))
         print(f"저장: {args.out}")
     return 0
