@@ -331,6 +331,21 @@ best at — the complement of I-32.
   much — a fact the model has to map onto a lettered option is harder to copy than a number it repeats (2B copied
   room/distance numbers 93–98% of the time). Measurements still do not buy back model size (I-22).
 
+### I-34 Route-planning turns and closest-object rankings from the map — **diagnostic negative (2026-09-27)**
+The last two VSI types the map could speak to, logged at every threshold from one routed run (nothing attached):
+- **Closest-object ranking** (172 questions): the map's argmin over the four options is right 40.7% at ≥ 1 view
+  (model on the same questions 63.0), 54.2% at ≥ 2 (59.3), 66.7% at ≥ 3 with 9% coverage (66.7). Never better
+  than the model — I-28's rejection holds with the improved estimator. Ranking four noisy distances compounds
+  their errors; reporting one (I-29) does not.
+- **Route planning** (34 questions in the subset): the turn sequence along the path (the direction math applied
+  leg by leg) needs every waypoint tracked — 15% coverage — and was right on 1 of those 5 (the model: 3 of 5).
+  The questions' path abstraction ("go forward until the trash bin is on your right") is not the map's straight
+  legs, and the category is 3.8% of the benchmark anyway.
+So **57.8 is the ceiling of the routed-measurement family** on this subset: every VSI type that geometry can
+answer better than the frames (room size, absolute distance, relative direction) is already covered, and the
+rest (order, counting, size, closest-object, route) are either read from the frames already or beyond what
+tracked centroids can give.
+
 ### Lessons so far (zero-shot, 4B)
 - **L6 Attach geometry only for scene-specific quantities; the model's prior already wins on canonical ones.**
   Object size is a property of the object category — a door is ~135 cm, a sofa ~180 cm — and the pretrained model
@@ -555,4 +570,5 @@ timestamps (I-04), recency weighting / decay, possibly state windows (I-05).
 | 19 | I-33 relative direction from three tracked positions: diagnostic, then attached at ≥ 1 view (4B, 60 videos) | I-33, I-29 | done: **57.8, +1.8 [+0.9, +2.8]** — adopted; total over the base's best format +9.2 [+5.0, +13.4] |
 | 20 | I-21b thinking with a 2,048-token budget (4B, 5 videos): does reasoning help accuracy at all? | I-21, I-19 | done: **no** — 23/101 closed; on those, 67.8 vs 73.5 without thinking |
 | 21 | I-33 direction facts on the 2B (60 videos) | I-33, I-22 | done: 43.5 vs 42.7, +0.9 [+0.2, +1.6]; the 2B follows the fact 50% of the time (4B 93%) |
+| 22 | I-34 closest-object rankings and route-planning turns from the map (diagnostic, 4B, 60 videos) | I-34, I-28 | done: **negative** — rankings 40.7–66.7 never above the model; routes 15% coverage, 1/5 right |
 | 14 | **Sensenova-only baseline on 4 nodes x 8 H100**: zero-shot VSI (full); S1 and S2 (one epoch each) real vs control, two seeds; plain SFT (no geometry); S2 joint (no S1); the 2B pair; S2 learning curve; gate | I-12, I-16, I-18, I-22 | four-day run from 09-26 (docs/SERVER_WEEKEND.md) |

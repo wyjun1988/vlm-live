@@ -92,6 +92,24 @@ def main() -> int:
                     covered = m[f"d{k}"] is not None
                     if covered:
                         meas_ok.append(mra(m[f"d{k}"], gt))
+                elif kind in ("route", "reldist"):
+                    gt = doc["ground_truth"].strip()
+                    gt_text = next((o.split(".", 1)[1].strip().lower() for o in doc["options"] if o.strip().startswith(gt + ".")), "")
+                    model = float(fuzzy_matching(p["pred"]) == gt)
+                    if kind == "route":
+                        if k > 3:
+                            continue
+                        pred = m[f"t{k}"]
+                        covered = pred is not None
+                        if covered:
+                            meas_ok.append(float([x.strip() for x in gt_text.split(",")] == pred))
+                    else:
+                        if k > 3:
+                            continue
+                        pred = m[f"rs{k}"]        # strict: every option measured
+                        covered = pred is not None
+                        if covered:
+                            meas_ok.append(float(canon(pred) == canon(gt_text)))
                 elif kind == "direction":
                     gt = doc["ground_truth"].strip()
                     gt_label = next((o.split(".", 1)[1].strip().lower() for o in doc["options"] if o.strip().startswith(gt + ".")), None)

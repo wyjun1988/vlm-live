@@ -114,3 +114,43 @@ def test_direction_facts_use_the_most_observed_instance_and_need_all_three():
     om2 = FakeMap({"stove": [(1, 5, (0.0, 0.0, 0.0))], "sofa": [(2, 4, (0.0, 3.0, 0.0))]})
     assert ev.object_facts_for(q, om2, min_frames=3, direction_facts=True) == ""
     assert ev.object_facts_for(q, om, min_frames=3, direction_facts=False) == ""   # logged, not attached
+
+
+ROUTE_Q = ("You are a robot beginning at the bed facing the tv. You want to navigate to the toilet. You will perform "
+           "the following actions (Note: for each [please fill in], choose either 'turn back,' 'turn left,' or 'turn "
+           "right.'): 1. Go forward until the TV 2. [please fill in] 3. Go forward until the shower 4. [please fill in] "
+           "5. Go forward until the toilet is on your right. You have reached the final destination.")
+
+
+def test_parse_route_reads_start_facing_and_the_step_list():
+    start, facing, steps = ev.parse_route(ROUTE_Q)
+    assert (start, facing) == ("bed", "tv")
+    assert steps == [("forward", "TV"), ("turn", None), ("forward", "shower"), ("turn", None), ("forward", "toilet")]
+    q2 = ("You are a robot beginning at the sink and facing the heater. You want to navigate to the doorframe. You will "
+          "perform the following actions (Note: for each [please fill in], choose either 'turn back,' 'turn left,' or "
+          "'turn right.'): 1. [please fill in] 2. Go forward until the doorframe. You have reached the final destination.")
+    assert ev.parse_route(q2) == ("sink", "heater", [("turn", None), ("forward", "doorframe")])
+
+
+def test_route_turns_follow_the_path():
+    # bed (0,0) facing tv (0,5): walk to the tv, then the shower is to the east (5,5) -> turn right; then the toilet
+    # is north of the shower (5,10) -> from heading east, north is a left turn
+    pos = {"bed": (0.0, 0.0), "tv": (0.0, 5.0), "shower": (5.0, 5.0), "toilet": (5.0, 10.0)}
+    _, _, steps = ev.parse_route(ROUTE_Q)
+    assert ev.route_turns("bed", "tv", steps, lambda n: pos.get(n.lower())) == ["turn right", "turn left"]
+    # a turn first: at the sink facing the heater (north), the doorframe is behind -> turn back
+    pos2 = {"sink": (0.0, 0.0), "heater": (0.0, 3.0), "doorframe": (0.5, -4.0)}
+    assert ev.route_turns("sink", "heater", [("turn", None), ("forward", "doorframe")], lambda n: pos2.get(n)) == ["turn back"]
+    # a missing position -> no answer rather than a guess
+    assert ev.route_turns("bed", "tv", steps, lambda n: pos.get(n.lower()) if n != "shower" else None) is None
+
+
+def test_rank_closest_strict_needs_every_option():
+    class Dist:
+        def __init__(self, d): self.d = d
+        def pair_distance(self, a, b, min_frames=2):
+            return self.d.get(a) if min_frames <= 2 else (self.d.get(a) if a != "sofa" else None)
+    om = Dist({"chair": 1.2, "stool": 0.8, "stove": 3.0, "sofa": 2.0})
+    assert ev.rank_closest(["chair", "stool", "stove", "sofa"], "tv", om, 2, strict=True) == "stool"
+    assert ev.rank_closest(["chair", "stool", "stove", "sofa"], "tv", om, 3, strict=True) is None   # sofa unmeasured
+    assert ev.rank_closest(["chair", "stool", "stove", "sofa"], "tv", om, 3, strict=False) == "stool"

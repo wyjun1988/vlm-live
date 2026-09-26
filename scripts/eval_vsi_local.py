@@ -183,12 +183,72 @@ def object_xy(om, name: str, min_frames: int, to_map=None):
 
 
 _DIRECTION_RE = re.compile(r"standing by the (.+?) and facing the (.+?), is the (.+?) to ")
+_ROUTE_HEAD_RE = re.compile(r"beginning at the (.+?) (?:and )?facing the (.+?)\. You want to navigate to the (.+?)\.")
+_REL_DIST_RE = re.compile(r"which of these objects \((.+?)\) is the closest to the (.+?)\?")
+
+
+def parse_route(question: str):
+    """VSI route planning -> (start, facing, steps); steps are ("turn", None) or ("forward", object)."""
+    m = _ROUTE_HEAD_RE.search(question)
+    if not m:
+        return None
+    start, facing, _target = m.groups()
+    body = question.split("):", 1)[1] if "):" in question else question[m.end():]
+    body = body.split("You have reached", 1)[0]
+    steps = []
+    for item in re.split(r"\s*\d+\.\s+", body):
+        item = item.strip().rstrip(".")
+        if not item:
+            continue
+        if "please fill in" in item:
+            steps.append(("turn", None))
+        else:
+            w = re.match(r"Go forward until the (.+)", item, flags=re.I)
+            if w:
+                name = re.sub(r"\s+is on your (?:left|right)$", "", w.group(1).strip())
+                steps.append(("forward", name))
+    return start, facing, steps
+
+
+def route_turns(start, facing, steps, xy_of) -> list[str] | None:
+    """The turn at each [please fill in], from tracked positions: the robot stands at the last waypoint facing
+    along the leg it just walked (at the start: facing `facing`), and turns towards the next waypoint - the same
+    signed angle as the direction questions ("back" = 135 degrees or more). None when a position is missing or a
+    turn is not followed by a leg."""
+    pos = {n: xy_of(n) for n in {start, facing} | {w for k, w in steps if k == "forward"}}
+    if any(v is None for v in pos.values()):
+        return None
+    cur, ahead = pos[start], pos[facing]
+    turns = []
+    for i, (kind, w) in enumerate(steps):
+        if kind == "turn":
+            nxt = next((w2 for k2, w2 in steps[i + 1:] if k2 == "forward"), None)
+            if nxt is None or (i + 1 < len(steps) and steps[i + 1][0] == "turn"):
+                return None
+            lab = direction_label(cur, ahead, pos[nxt], "medium")
+            turns.append(f"turn {lab}")
+        else:
+            nxt_pos = pos[w]
+            if abs(nxt_pos[0] - cur[0]) + abs(nxt_pos[1] - cur[1]) < 1e-6:
+                return None
+            ahead = (cur[0] + (nxt_pos[0] - cur[0]), cur[1] + (nxt_pos[1] - cur[1]))   # facing along the leg
+            cur, ahead = nxt_pos, (nxt_pos[0] + (nxt_pos[0] - cur[0]), nxt_pos[1] + (nxt_pos[1] - cur[1]))
+    return turns
+
+
+def rank_closest(options: list[str], target: str, om, min_frames: int, strict: bool):
+    """The option nearest to `target` by closest-point distance; strict = every option must be measured."""
+    meas = [(o, om.pair_distance(o, target, min_frames=min_frames)) for o in options]
+    got = [(o, d) for o, d in meas if d is not None]
+    if (strict and len(got) < len(options)) or len(got) < 2:
+        return None
+    return min(got, key=lambda t: t[1])[0]
 
 
 def object_facts_for(question: str, om, min_frames: int = 2, rel_distance: bool = False,
                      size_facts: bool = False, log: list | None = None, order_facts: bool = False,
                      count_facts: bool = False, direction_facts: bool = False, to_map=None,
-                     direction_min_frames: int | None = None) -> str:
+                     direction_min_frames: int | None = None, route_plan_facts: bool = False) -> str:
     """I-28: at question time, look up only the objects the question names and attach measured closest-point
     distances — or nothing if an object is missing / seen in fewer than 2 keyframes. No counts (the model counts
     better from the images). NOTE: the names are read with VSI's question templates (benchmark-specific); a
@@ -243,6 +303,28 @@ def object_facts_for(question: str, om, min_frames: int = 2, rel_distance: bool 
             return f"From an object tracker run over the video: about {n} distinct {name}(s) were tracked.\n"
         return ""
 
+    if "beginning at the" in question and "navigate to" in question:   # route planning: turns along the path
+        parsed = parse_route(question)
+        if parsed and log is not None:
+            start, facing, steps = parsed
+            entry = {"kind": "route", "start": start, "facing": facing, "steps": steps}
+            for k in (1, 2, 3):
+                entry[f"t{k}"] = route_turns(start, facing, steps,
+                                             lambda n, k=k: object_xy(om, n, k, to_map))
+            log.append(entry)
+        if parsed and route_plan_facts:
+            turns = route_turns(*parsed, lambda n: object_xy(om, n, direction_min_frames or min_frames, to_map))
+            if turns:
+                return ("Measured from a 3D reconstruction of the video, the turns along this route are: "
+                        + ", ".join(turns) + ".\n")
+        return ""
+    m = _REL_DIST_RE.search(question)
+    if m and log is not None:   # which option is closest: logged strict (all measured) and partial (>= 2 measured)
+        target = m.group(2)
+        opts = [o.strip() for o in m.group(1).split(",") if o.strip() and o.strip() != target]
+        log.append({"kind": "reldist", "target": target, "options": opts,
+                    **{f"rs{k}": rank_closest(opts, target, om, k, True) for k in (1, 2, 3)},
+                    **{f"rp{k}": rank_closest(opts, target, om, k, False) for k in (1, 2, 3)}})
     m = _DIRECTION_RE.search(question)
     if m:   # relative direction from three tracked positions (logged at every threshold; attached on request)
         a, b, c = m.groups()
@@ -341,6 +423,9 @@ def main() -> int:
     ap.add_argument("--direction-min-frames", type=int, default=None,
                     help="--direction-facts: view-count threshold for directions (default: --min-frames). 1 is the "
                          "measured optimum; distances need 3")
+    ap.add_argument("--route-plan-facts", action="store_true",
+                    help="--route-objects: attach the turn sequence computed along a route-planning question's path "
+                         "from tracked positions (uses --direction-min-frames; logged either way)")
     ap.add_argument("--count-facts", action="store_true",
                     help="--route-objects: attach the map's instance count to counting questions (logged either way)")
     ap.add_argument("--rel-distance-facts", action="store_true",
@@ -542,6 +627,7 @@ def main() -> int:
                                                 order_facts=args.order_facts, count_facts=args.count_facts,
                                                 direction_facts=args.direction_facts,
                                                 direction_min_frames=args.direction_min_frames,
+                                                route_plan_facts=args.route_plan_facts,
                                                 to_map=s.scene_map.to_map) + attached
                     if len(meas_log) > n_before:   # only when THIS question added an entry
                         meas_log[-1].update(id=d["id"], gt=d["ground_truth"])
@@ -646,6 +732,7 @@ def main() -> int:
             "route_objects": args.route_objects, "min_frames": args.min_frames, "measurements": meas_log,
             "hint_after": args.hint_after, "order_facts": args.order_facts, "count_facts": args.count_facts,
             "direction_facts": args.direction_facts, "direction_min_frames": args.direction_min_frames,
+            "route_plan_facts": args.route_plan_facts,
             "frame_labels": args.frame_labels, "thinking": args.thinking, "think_tokens": args.think_tokens,
             "thinking_log": think_log,
         }, indent=2, ensure_ascii=False))
