@@ -442,7 +442,7 @@ happens before the question, so question time does not change.
   saw +10% with Gemini-1.5 Pro — a much stronger model; at 4B, thinking-first does not help without training
   (keeps I-19's training variant open, closes the zero-shot one).
 
-### I-21 Thinking on at question time (4B) — **tested: incompatible with live (2026-09-26)**
+### I-21 Thinking on at question time (4B) — **tested: incompatible with live, and no accuracy gain (2026-09-26)**
 Latency cost; only if I-20 shows thinking itself is what helps.
 - Zero-shot probe: thinking on (`<think>` open, 512-token budget, answer read after `</think>`; a budget that
   runs out counts as wrong — the honest cost), format instruction, 20 videos / 333 questions, against 54.7 on the
@@ -450,8 +450,13 @@ Latency cost; only if I-20 shows thinking itself is what helps.
   answers, score ~3. Its reasoning is orderly ("locate the nightstand … the TV is on a dresser to the left …") and
   simply long. Whether it would be *right* given room is unanswered at this budget (a 2,048-token probe on 5
   videos is queued); the live question is answered: > 500 reasoning tokens per question is seconds on an H100
-  (the 0.8B did not close within 96 tokens either), against a 1-second answer. Thinking at question time is out;
-  I-19's remaining form is *trained* short geometric reasoning, or none.
+  (the 0.8B did not close within 96 tokens either), against a 1-second answer.
+- **2,048-token probe** (5 videos, 101 questions): still only 23 closed (mean 1,808 tokens, median at the cap);
+  on those 23 the thinking answer scores **67.8 vs 73.5 without thinking** on the same questions (relative distance
+  88.9 = 88.9, counting 64.0 = 64.0, appearance order 25 vs 50, size 60 vs 67.5). No type where it closed got
+  better. So zero-shot thinking at 4B neither fits the latency nor helps where it finishes — the "Thinking in
+  Space" finding (linguistic CoT does not help) reproduced at this size. Thinking at question time is out; I-19's
+  remaining form is *trained* short geometric reasoning, or none.
 
 ---
 
@@ -544,5 +549,5 @@ timestamps (I-04), recency weighting / decay, possibly state windows (I-05).
 | 17 | **I-14 decisive test**: S1 real vs control on the geometry QA (0.8B, 3,417 records, video-level holdout 234), ablation | I-14 | done: **positive** — shuffled − real +0.168 ± 0.064, value of content +0.052 ± 0.020; numeric kinds only, orientation not read |
 | 18 | I-21 thinking on at question time (4B, 20 videos, 512-token budget) | I-21, I-19 | done: **live-incompatible** — 11/333 closed within 512 tokens, score ~3; 2,048-token accuracy probe on 5 videos queued |
 | 19 | I-33 relative direction from three tracked positions: diagnostic, then attached at ≥ 1 view (4B, 60 videos) | I-33, I-29 | done: **57.8, +1.8 [+0.9, +2.8]** — adopted; total over the base's best format +9.2 [+5.0, +13.4] |
-| 20 | I-21b thinking with a 2,048-token budget (4B, 5 videos): does reasoning help accuracy at all? | I-21, I-19 | queued |
+| 20 | I-21b thinking with a 2,048-token budget (4B, 5 videos): does reasoning help accuracy at all? | I-21, I-19 | done: **no** — 23/101 closed; on those, 67.8 vs 73.5 without thinking |
 | 14 | **Sensenova-only baseline on 4 nodes x 8 H100**: zero-shot VSI (full); S1 and S2 (one epoch each) real vs control, two seeds; plain SFT (no geometry); S2 joint (no S1); the 2B pair; S2 learning curve; gate | I-12, I-16, I-18, I-22 | four-day run from 09-26 (docs/SERVER_WEEKEND.md) |
