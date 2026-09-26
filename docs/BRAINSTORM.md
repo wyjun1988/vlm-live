@@ -360,7 +360,7 @@ answer better than the frames (room size, absolute distance, relative direction)
 rest (order, counting, size, closest-object, route) are either read from the frames already or beyond what
 tracked centroids can give.
 
-### I-35 The routed-measurement harness as an encoder bake-off — **built; VGGT-window run queued (2026-09-27)**
+### I-35 The routed-measurement harness as an encoder bake-off — **first result: CUT3R wins clearly (2026-09-27)**
 Every fact the live system attaches is scored against VSI ground truth (room area MRA, distance MRA, direction
 accuracy at each view threshold) — so any encoder that yields poses and point maps can be compared with CUT3R
 without training a single parameter: swap the encoder behind SceneMap/ObjectMap, run the 60 videos, read the
@@ -372,6 +372,21 @@ direction accuracy (scale-free) head to head with CUT3R's 76.4% at ≥ 1 view; r
 normalisation (shape quality) and the median ratio itself (how far from metric). What it decides: whether the
 streaming, metric, recurrent encoder (CUT3R) is leaving accuracy on the table versus a joint multi-view model that
 would need a scale source live (a metric depth model, or CUT3R itself).
+- **Result** (60 videos; the 0.8B as the LLM since the facts do not depend on it and VGGT + 4B swaps the M2):
+
+  | fact | CUT3R (keyframes) | VGGT window 8, chained |
+  |---|---|---|
+  | direction accuracy at ≥ 1 view (coverage) | **76.4** (77%) | 56.7 (51%) |
+  | the 99 direction questions both cover | **72** right | 54 right |
+  | room area MRA / median measured-true ratio / scale-free MRA | **65.8** / 1.07 / **69.0** | 9.5 / 0.54 / 16.2 |
+  | distance MRA at ≥ 3 views, scale-normalised (coverage) | **51.4** (31%) | 37.3 (8%) |
+  | detections lifted into the map | 17,134 | 7,950 |
+
+  The per-video VGGT/CUT3R area ratio has median 0.50 and IQR 0.24–3.85: the per-window normalised scale does
+  not chain consistently through the shared cameras, so the global map is a patchwork of scales and even the
+  scale-free facts degrade. A metric, recurrent encoder is the right map builder here — and it is the streaming
+  one. Caveats: window 8, chordal-mean chaining, fp32 on MPS, no offline joint-32 upper bound. The harness is
+  ready for the next encoder (an adapter + one 60-video run).
 
 ### Lessons so far (zero-shot, 4B)
 - **L6 Attach geometry only for scene-specific quantities; the model's prior already wins on canonical ones.**
@@ -602,5 +617,5 @@ timestamps (I-04), recency weighting / decay, possibly state windows (I-05).
 | 26 | accumulation at ~3 fps (every 10th frame): does the scale drift grow? | I-05 | queued (M2, after the bake-off) |
 | 24 | sparse view AND sparse map: 8 keyframes for the LLM, geometry on those 8 only, with / without routed facts | I-02 | done: hint-only **47.3** (vs 53.7 at 32 keyframes, −6.4 [−9.8, −2.6]); + facts 47.2 (−0.1 [−1.8, +1.7]) — facts built from 8 frames cover 30% of direction questions (77% at 32) and add nothing |
 | 24b | long-video proxy done right: LLM sees 8 keyframes, maps from every 30th frame, routed facts | I-02 | queued (M2, after the bake-off) |
-| 25 | I-35 encoder bake-off: VGGT window 8 behind the same maps (directions attached, metric facts logged) | I-35 | queued (M2) |
+| 25 | I-35 encoder bake-off: VGGT window 8 behind the same maps (directions attached, metric facts logged) | I-35 | done: **CUT3R wins** — direction 76.4 vs 56.7 (72 vs 54 on common questions), room area MRA 65.8 vs 9.5 (scale-free 69.0 vs 16.2) |
 | 14 | **Sensenova-only baseline on 4 nodes x 8 H100**: zero-shot VSI (full); S1 and S2 (one epoch each) real vs control, two seeds; plain SFT (no geometry); S2 joint (no S1); the 2B pair; S2 learning curve; gate | I-12, I-16, I-18, I-22 | four-day run from 09-26 (docs/SERVER_WEEKEND.md) |

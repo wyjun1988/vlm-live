@@ -46,6 +46,10 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("result")
     ap.add_argument("--vsi-root", default="data/eval/vsibench")
+    ap.add_argument("--normalize-scale", action="store_true",
+                    help="abs/size: divide every measurement by the median measured/true ratio of the covered "
+                         "questions before scoring (an encoder with a normalised, non-metric scale - I-35); the "
+                         "ratio itself is printed")
     args = ap.parse_args()
     d = json.loads(Path(args.result).read_text())
     docs = {x["id"]: x for x in (json.loads(ln) for ln in open(Path(args.vsi_root) / "test.jsonl") if ln.strip())}
@@ -60,6 +64,18 @@ def main() -> int:
             by_kind[m["kind"]].append(m)
     print(f"{Path(args.result).name}: {sum(len(v) for v in by_kind.values())} routed questions, kinds {sorted(by_kind)}")
 
+    scale: dict = {}
+    if args.normalize_scale:
+        import statistics
+        for kind, key in (("abs", "d"), ("size", "s")):
+            for k in KS:
+                ratios = [m[f"{key}{k}"] * (100 if kind == "size" else 1) / float(docs[m["id"]]["ground_truth"])
+                          for m in by_kind.get(kind, []) if m.get(f"{key}{k}") is not None
+                          and float(docs[m["id"]]["ground_truth"]) > 0]
+                if ratios:
+                    scale[(kind, k)] = statistics.median(ratios)
+        if scale:
+            print("scale normalisation, median measured/true: " + " ".join(f"{kd}@{k}={v:.2f}" for (kd, k), v in sorted(scale.items())))
     for kind, rows in sorted(by_kind.items()):
         print(f"\n== {kind} ({len(rows)} questions)")
         print(f"{'min_frames':>10}{'coverage':>10}{'measured':>10}{'model':>10}{'model@all':>10}   value/question")
@@ -91,7 +107,7 @@ def main() -> int:
                         model = 0.0
                     covered = m[f"d{k}"] is not None
                     if covered:
-                        meas_ok.append(mra(m[f"d{k}"], gt))
+                        meas_ok.append(mra(m[f"d{k}"] / scale.get((kind, k), 1.0), gt))
                 elif kind in ("route", "reldist"):
                     gt = doc["ground_truth"].strip()
                     gt_text = next((o.split(".", 1)[1].strip().lower() for o in doc["options"] if o.strip().startswith(gt + ".")), "")
@@ -125,7 +141,7 @@ def main() -> int:
                         model = 0.0
                     covered = m[f"s{k}"] is not None
                     if covered:
-                        meas_ok.append(mra(100 * m[f"s{k}"], gt))
+                        meas_ok.append(mra(100 * m[f"s{k}"] / scale.get((kind, k), 1.0), gt))
                 else:
                     continue
                 model_all.append(model)
