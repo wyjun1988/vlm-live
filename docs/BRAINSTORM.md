@@ -126,6 +126,10 @@ append the current frame when the question arrives (~117 tokens: tens of ms on H
 ### I-04 Timestamps in the situation prompt — **zero-shot form tested: null (2026-09-26)**
 Image-mode keyframes carry no time (order is only implicit). Add keyframe times and per-object first/last-seen
 times to the text. Also the basis for recency and decay (I-26).
+- Long video, first measurement (row 24): with 8 keyframes instead of 32 the 4B loses 6.4 points (53.7 → 47.3)
+  even on these 1–3 min videos, and facts computed from the same 8 frames give nothing back (47.2) — a map that
+  sees only what the LLM sees is as starved as the LLM. The live question is the other case, where the maps see
+  every frame and only the LLM's view shrinks (row 24b, queued).
 - Zero-shot form: every keyframe labelled `Frame k at t s:` (`--frame-labels`), on top of the format instruction
   (53.7) → **54.3, +0.7 [−2.4, +3.6]**. Not a gain: the labels change answers of every type (435 of 1,151), and
   the changes cancel — route planning +5.4 and counting +3.2 against relative distance −6.4 and room size −2.3.
@@ -596,6 +600,7 @@ timestamps (I-04), recency weighting / decay, possibly state windows (I-05).
 | 22 | I-34 closest-object rankings and route-planning turns from the map (diagnostic, 4B, 60 videos) | I-34, I-28 | done: **negative** — rankings 40.7–66.7 never above the model; routes 15% coverage, 1/5 right |
 | 23 | accumulation: CUT3R fed every 30th frame (~1 fps; maps from all of it) vs keyframes only, on the 57.8 configuration | I-02, I-05 | done: **56.9, −0.9 [−2.4, +0.8]** — directions +5.8 (83.4% measured), room −10.8 and distance −2.3 from a ~10% scale inflation |
 | 26 | accumulation at ~3 fps (every 10th frame): does the scale drift grow? | I-05 | queued (M2, after the bake-off) |
-| 24 | long-video proxy: LLM sees 8 keyframes, with / without routed facts | I-02 | running (M2) |
+| 24 | sparse view AND sparse map: 8 keyframes for the LLM, geometry on those 8 only, with / without routed facts | I-02 | done: hint-only **47.3** (vs 53.7 at 32 keyframes, −6.4 [−9.8, −2.6]); + facts 47.2 (−0.1 [−1.8, +1.7]) — facts built from 8 frames cover 30% of direction questions (77% at 32) and add nothing |
+| 24b | long-video proxy done right: LLM sees 8 keyframes, maps from every 30th frame, routed facts | I-02 | queued (M2, after the bake-off) |
 | 25 | I-35 encoder bake-off: VGGT window 8 behind the same maps (directions attached, metric facts logged) | I-35 | queued (M2) |
 | 14 | **Sensenova-only baseline on 4 nodes x 8 H100**: zero-shot VSI (full); S1 and S2 (one epoch each) real vs control, two seeds; plain SFT (no geometry); S2 joint (no S1); the 2B pair; S2 learning curve; gate | I-12, I-16, I-18, I-22 | four-day run from 09-26 (docs/SERVER_WEEKEND.md) |
