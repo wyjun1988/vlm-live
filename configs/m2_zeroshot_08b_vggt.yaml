@@ -1,0 +1,28 @@
+# M2 encoder bake-off with the 0.8B as the LLM (2026-09-27). The facts logged for the comparison (direction accuracy,
+# room area, distances against VSI ground truth) do not depend on the LLM, and VGGT-1B (5 GB fp32) next to the 4B
+# swaps the M2 (15 min per video); the 0.8B keeps the run in memory. Same encoder settings as m2_zeroshot_4b_vggt.yaml.
+base_model: checkpoints/qwen3.5-0.8b
+dtype: bf16
+
+geometry:
+  name: vggt_window
+  checkpoint: facebook/VGGT-1B
+  tap_layers: [11, 17, 23]
+  hidden_size: 2048
+  image_size: 518
+  options:
+    window: 8
+
+fusion:
+  mode: deepstack
+  inject_layers: [0, 1, 2]
+  merge_size: 2
+  zero_init: true
+
+lora:
+  enabled: false
+
+data:
+  max_pixels: 131072
+  max_images: 32
+  max_length: 8192

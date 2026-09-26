@@ -660,6 +660,11 @@ def main() -> int:
         done = sum(len(v) for v in scored.values()) // max(1, len(modes))
         print(f"  [{vi + 1}/{len(vids)}] {ds}/{scene} ({total}프레임, {len(qs)}문항) · 누적 {done}문항 · "
               + " ".join(f"{m} {timing[m]:.0f}s" for m in modes), flush=True)
+        del sessions, pc
+        if dev.type == "mps":
+            # the MPS caching allocator keeps every buffer shape it has seen; over 60 videos with dense geometry
+            # (--geom-stride) that grew past physical memory and the run swapped (2026-09-27, 16 GB of swap)
+            torch.mps.empty_cache()
 
     # ------------------------------------------------------------------ 집계
     def aggregate(res: list) -> dict:
