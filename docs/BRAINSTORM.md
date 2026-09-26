@@ -346,6 +346,19 @@ answer better than the frames (room size, absolute distance, relative direction)
 rest (order, counting, size, closest-object, route) are either read from the frames already or beyond what
 tracked centroids can give.
 
+### I-35 The routed-measurement harness as an encoder bake-off — **built; VGGT-window run queued (2026-09-27)**
+Every fact the live system attaches is scored against VSI ground truth (room area MRA, distance MRA, direction
+accuracy at each view threshold) — so any encoder that yields poses and point maps can be compared with CUT3R
+without training a single parameter: swap the encoder behind SceneMap/ObjectMap, run the 60 videos, read the
+measurement table. First comparison encoder: **VGGT on a sliding window** (`geometry.name: vggt_window`,
+`configs/m2_zeroshot_4b_vggt.yaml`): each new keyframe re-runs VGGT-1B on the last 8 frames; consecutive windows
+are chained into one frame by the cameras they share (a similarity transform, `sim3.py`; the global scale is set
+by the first two-frame window — VGGT's scale is normalised, not metric). ~8 s per window on the M2. Read-out:
+direction accuracy (scale-free) head to head with CUT3R's 76.4% at ≥ 1 view; room area and distances after ratio
+normalisation (shape quality) and the median ratio itself (how far from metric). What it decides: whether the
+streaming, metric, recurrent encoder (CUT3R) is leaving accuracy on the table versus a joint multi-view model that
+would need a scale source live (a metric depth model, or CUT3R itself).
+
 ### Lessons so far (zero-shot, 4B)
 - **L6 Attach geometry only for scene-specific quantities; the model's prior already wins on canonical ones.**
   Object size is a property of the object category — a door is ~135 cm, a sofa ~180 cm — and the pretrained model
@@ -571,4 +584,7 @@ timestamps (I-04), recency weighting / decay, possibly state windows (I-05).
 | 20 | I-21b thinking with a 2,048-token budget (4B, 5 videos): does reasoning help accuracy at all? | I-21, I-19 | done: **no** — 23/101 closed; on those, 67.8 vs 73.5 without thinking |
 | 21 | I-33 direction facts on the 2B (60 videos) | I-33, I-22 | done: 43.5 vs 42.7, +0.9 [+0.2, +1.6]; the 2B follows the fact 50% of the time (4B 93%) |
 | 22 | I-34 closest-object rankings and route-planning turns from the map (diagnostic, 4B, 60 videos) | I-34, I-28 | done: **negative** — rankings 40.7–66.7 never above the model; routes 15% coverage, 1/5 right |
+| 23 | accumulation: CUT3R fed every 30th / 10th frame (maps from all of it) vs keyframes only, on the 57.8 configuration | I-02, I-05 | running (M2) |
+| 24 | long-video proxy: LLM sees 8 keyframes, with / without routed facts | I-02 | running (M2) |
+| 25 | I-35 encoder bake-off: VGGT window 8 behind the same maps (directions attached, metric facts logged) | I-35 | queued (M2) |
 | 14 | **Sensenova-only baseline on 4 nodes x 8 H100**: zero-shot VSI (full); S1 and S2 (one epoch each) real vs control, two seeds; plain SFT (no geometry); S2 joint (no S1); the 2B pair; S2 learning curve; gate | I-12, I-16, I-18, I-22 | four-day run from 09-26 (docs/SERVER_WEEKEND.md) |

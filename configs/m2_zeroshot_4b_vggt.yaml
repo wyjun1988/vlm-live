@@ -1,0 +1,31 @@
+# M2 zero-shot with a windowed VGGT as the geometry encoder (encoder bake-off, 2026-09-27).
+#   Same LLM path as m2_zeroshot_4b.yaml; only the encoder behind the maps changes. VGGT is not streaming (each
+#   new keyframe re-runs the model on the last `window` frames; consecutive windows are chained by the cameras they
+#   share) and its scale is normalised, not metric - so the comparison with CUT3R is on direction accuracy and on
+#   the *shape* of the metric facts (ratio-normalised), read from the measurement logs. Zero-init projector: the
+#   LLM never sees geometry tokens; the encoder only feeds the maps.
+base_model: checkpoints/qwen3.5-4b
+dtype: bf16
+
+geometry:
+  name: vggt_window
+  checkpoint: facebook/VGGT-1B     # Hugging Face id (cached locally)
+  tap_layers: [11, 17, 23]         # of 24 aggregator layers
+  hidden_size: 2048                # aggregator token width
+  image_size: 518                  # VGGT's long side, patch 14
+  options:
+    window: 8
+
+fusion:
+  mode: deepstack
+  inject_layers: [0, 1, 2]
+  merge_size: 2
+  zero_init: true
+
+lora:
+  enabled: false
+
+data:
+  max_pixels: 131072
+  max_images: 32
+  max_length: 8192
