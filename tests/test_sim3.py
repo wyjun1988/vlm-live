@@ -55,3 +55,19 @@ def test_chordal_mean_is_a_proper_rotation_between_its_inputs():
     m = chordal_mean_rotation(np.stack([a, b]))
     assert np.allclose(m @ m.T, np.eye(3), atol=1e-9) and np.linalg.det(m) == pytest.approx(1.0)
     assert np.allclose(m, rot([0, 1, 0], 20), atol=1e-9)
+
+
+def test_rigid_alignment_keeps_the_windows_own_scale():
+    rng = np.random.default_rng(2)
+    g = trajectory(5, rng)
+    r, t = rot([0, 1, 0], 70), np.array([3.0, 0.0, -1.0])
+    w = g.copy()
+    w[:, :3, :3] = np.einsum("ij,njk->nik", r.T, g[:, :3, :3])
+    w[:, :3, 3] = np.einsum("ij,nj->ni", r.T, g[:, :3, 3] - t) / 1.4      # the window is 1.4x too small
+    s_free, _, _ = sim3_from_shared_cameras(g, w)
+    s_rigid, r2, t2 = sim3_from_shared_cameras(g, w, rigid=True)
+    assert s_free == pytest.approx(1.4) and s_rigid == 1.0
+    assert np.allclose(r2, r, atol=1e-8)
+    # rigid: centroids still coincide, so the new window's metric scale is kept and only its frame is aligned
+    moved = apply_sim3(s_rigid, r2, t2, w)
+    assert np.allclose(moved[:, :3, 3].mean(0), g[:, :3, 3].mean(0), atol=1e-8)

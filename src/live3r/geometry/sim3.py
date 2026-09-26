@@ -20,16 +20,21 @@ def chordal_mean_rotation(rots: np.ndarray) -> np.ndarray:
     return r
 
 
-def sim3_from_shared_cameras(c2w_global: np.ndarray, c2w_window: np.ndarray) -> tuple[float, np.ndarray, np.ndarray]:
+def sim3_from_shared_cameras(c2w_global: np.ndarray, c2w_window: np.ndarray,
+                             rigid: bool = False) -> tuple[float, np.ndarray, np.ndarray]:
     """(s, R, t) with  X_global = s * R @ X_window + t, from the same cameras seen in both frames.
 
     c2w_global / c2w_window: [N,4,4] camera-to-world matrices of the N shared frames, in the global frame and in
     the new window's frame. Scale comes from the spread of the camera centres (needs N >= 2, else 1.0); rotation is
     the chordal mean of the per-camera relative rotations; translation aligns the centroids of the centres.
+    rigid=True keeps s = 1: for an encoder that is metric on its own in every window (CUT3R after a state reset),
+    so that no scale error is carried from window to window.
     """
     cg, cw = c2w_global[:, :3, 3], c2w_window[:, :3, 3]
     n = len(cg)
-    if n >= 2:
+    if rigid:
+        s = 1.0
+    elif n >= 2:
         dg = np.linalg.norm(cg - cg.mean(0), axis=1).mean()
         dw = np.linalg.norm(cw - cw.mean(0), axis=1).mean()
         s = float(dg / dw) if dw > 1e-6 and dg > 1e-6 else 1.0

@@ -30,6 +30,7 @@ import logging
 import sys
 from pathlib import Path
 
+import numpy as np
 import torch
 
 from ..config import GeometryConfig
@@ -58,8 +59,16 @@ class CUT3RStream(GeometryStream):
         repo_path: str | None = None,
         device: str | torch.device = "cpu",
         net=None,
+        reset_every: int = 0,
+        overlap: int = 3,
     ) -> None:
-        """net 을 직접 주면 체크포인트 없이 쓴다 (구조 검증·테스트용)."""
+        """net 을 직접 주면 체크포인트 없이 쓴다 (구조 검증·테스트용).
+
+        reset_every > 0: windowed state (I-36). Every `reset_every` ingested frames the recurrent state is dropped,
+        the last `overlap` frames are fed again so the new state shares cameras with the old one, and the new
+        window is aligned to the global frame rigidly (see `ResetChainer`). Measured 2026-09-27: without resets the
+        metric scale inflates ~10% over ~100 frames while the relative layout keeps improving.
+        """
         # CUT3R 포즈 토큰의 위치가 -1 이라 순수 PyTorch RoPE2D 폴백이 터진다.
         # curope(CUDA)가 있으면 아무것도 안 한다. 자세한 사정은 rope_patch 모듈 상단.
         from .rope_patch import patch_rope2d
@@ -92,12 +101,38 @@ class CUT3RStream(GeometryStream):
         # True 면 ingest 가 CUT3R 헤드까지 돌려 점맵(첫 프레임 좌표계 = 월드)·신뢰도·카메라 포즈를 붙인다.
         # 장면 지도 프롬프트(serve/scene_map.py)용. 헤드(DPT)는 토큰만 쓸 때는 필요 없어서 기본은 끔.
         self.decode_points = False
+        self.windowing = ResetChainer(reset_every, overlap) if reset_every > 0 else None
         self.reset()
 
     # ------------------------------------------------------------------ 상태 관리
     def reset(self) -> None:
         self._frame_index = 0
         self._state = None
+        if getattr(self, "windowing", None) is not None:
+            self.windowing.reset()
+
+    @torch.no_grad()
+    def ingest(self, frames: torch.Tensor) -> GeomOutput:
+        """프레임 1장 [B,3,H,W] → 잠재 토큰 (+ 점맵·포즈, decode_points 일 때). 윈도우 리셋은 여기서 처리한다."""
+        wnd = self.windowing
+        if wnd is None:
+            return self._ingest_raw(frames)
+        if wnd.due():
+            if not self.decode_points:
+                raise RuntimeError("windowed CUT3R (reset_every) needs decode_points=True - the alignment uses the poses")
+            keep = self._frame_index
+            self._state = None
+            self._frame_index = 0          # the re-fed frames start a fresh stream (pose token of frame 0)
+            window_c2w = []
+            for f in wnd.overlap_frames():
+                o = self._ingest_raw(f)
+                window_c2w.append(o.extra["c2w"][0].float().cpu().numpy())
+            self._frame_index = keep
+            wnd.rebase(window_c2w)
+        out = self._ingest_raw(frames)
+        wnd.apply(out)                     # window frame -> global frame, and remember this frame for the next overlap
+        wnd.remember(frames, out.extra["c2w"][0].float().cpu().numpy())
+        return out
 
     def state_bytes(self) -> int:
         if self._state is None:
@@ -108,8 +143,8 @@ class CUT3RStream(GeometryStream):
 
     # ---------------------------------------------------------------------- 인제스트
     @torch.no_grad()
-    def ingest(self, frames: torch.Tensor) -> GeomOutput:
-        """프레임 1장 [B,3,H,W] → 잠재 토큰.
+    def _ingest_raw(self, frames: torch.Tensor) -> GeomOutput:
+        """프레임 1장 [B,3,H,W] → 잠재 토큰 (현재 상태의 좌표계 그대로).
 
         `ARCroco3DStereo.forward_recurrent` 의 한 스텝과 동일한 순서로 돈다:
           인코딩 → (첫 프레임이면) 상태 초기화 → 포즈 토큰 조회 → 재귀 롤아웃 → 상태·메모리 갱신
@@ -279,6 +314,67 @@ def _load_cut3r(checkpoint: str, repo_path: str | None, device):
     return net.to(device).eval()
 
 
+class ResetChainer:
+    """Windowed recurrent state: when to reset, and how to keep every window in one global frame.
+
+    Keeps the last `overlap` ingested frames (their input tensors and their *global* camera poses). After a reset
+    those frames are fed to the fresh state; their poses in the new window's frame together with the stored global
+    poses give the rigid transform (rotation + translation, no scale: each window is metric on its own) that maps
+    everything the new window produces into the global frame. Pure bookkeeping; the encoder does the passes.
+    """
+
+    def __init__(self, reset_every: int, overlap: int = 3) -> None:
+        if overlap < 1:
+            raise ValueError("overlap must be >= 1 (at least one shared camera)")
+        self.reset_every, self.overlap = int(reset_every), int(overlap)
+        self.reset()
+
+    def reset(self) -> None:
+        from collections import deque
+
+        self._recent: deque = deque(maxlen=self.overlap)      # (frame tensor [B,3,H,W], global c2w [4,4])
+        self.since_reset = 0
+        self.rotation = np.eye(3)
+        self.translation = np.zeros(3)
+        self.resets = 0
+
+    def due(self) -> bool:
+        return self.since_reset >= self.reset_every and len(self._recent) >= 1
+
+    def overlap_frames(self):
+        return [f for f, _ in self._recent]
+
+    def rebase(self, window_c2w: list[np.ndarray]) -> None:
+        """The overlap frames' poses in the new window's frame -> the rigid map into the global frame."""
+        from .sim3 import sim3_from_shared_cameras
+
+        g = np.stack([c for _, c in self._recent])
+        _, r, t = sim3_from_shared_cameras(g, np.stack(window_c2w), rigid=True)
+        self.rotation, self.translation = r, t
+        self.since_reset = 0
+        self.resets += 1
+
+    def transform_c2w(self, c2w: np.ndarray) -> np.ndarray:
+        out = np.array(c2w, dtype=np.float64, copy=True)
+        out[:3, :3] = self.rotation @ c2w[:3, :3]
+        out[:3, 3] = self.rotation @ c2w[:3, 3] + self.translation
+        return out
+
+    def apply(self, out: GeomOutput) -> None:
+        """Rewrite a raw output (window frame) into the global frame, in place."""
+        c2w = out.extra["c2w"]
+        out.extra["c2w"] = torch.from_numpy(
+            np.stack([self.transform_c2w(c[:4, :4]) for c in c2w.float().cpu().numpy()]).astype(np.float32)).to(c2w.device)
+        if out.pointmap is not None:
+            r = torch.from_numpy(self.rotation.astype(np.float32)).to(out.pointmap.device)
+            t = torch.from_numpy(self.translation.astype(np.float32)).to(out.pointmap.device)
+            out.pointmap = torch.einsum("ij,bjhw->bihw", r, out.pointmap.float()) + t.view(1, 3, 1, 1)
+        self.since_reset += 1
+
+    def remember(self, frames: torch.Tensor, global_c2w: np.ndarray) -> None:
+        self._recent.append((frames.detach(), np.asarray(global_c2w, dtype=np.float64)))
+
+
 @register("cut3r")
 def _build(cfg: GeometryConfig) -> CUT3RStream:
     if not cfg.checkpoint:
@@ -289,4 +385,6 @@ def _build(cfg: GeometryConfig) -> CUT3RStream:
         tap_layers=taps,
         image_size=cfg.image_size,
         repo_path=cfg.options.get("repo_path"),
+        reset_every=int(cfg.options.get("reset_every", 0)),
+        overlap=int(cfg.options.get("overlap", 3)),
     )

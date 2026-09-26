@@ -132,12 +132,22 @@ times to the text. Also the basis for recency and decay (I-26).
   The interval is four times wider than the routed-facts ones because the labels perturb everything rather than
   adding one targeted fact. Timestamps stay relevant for the live system (recency, I-26), not as a VSI lever.
 
-### I-05 CUT3R forgetting and drift over long streams — **proposed (risk)**
+### I-05 CUT3R forgetting and drift over long streams — **measured: scale drift (2026-09-27)**
 The CUT3R state is a fixed 768-token memory overwritten every frame, so old content dilutes and poses drift.
 In evaluation CUT3R only sees 32 sparse keyframes, which hides this; live at 10 fps it sees thousands of frames,
 and the maps inherit any drift because they live in the first frame's coordinates.
 - Test: ScanNet sequences with ground-truth poses — pose / scale error vs stream length; map consistency when
   the camera revisits a place. Mitigations: windowed state reset + re-anchoring, or I-11.
+- **Measured without GT poses, through the facts** (row 23): CUT3R fed every 30th frame (~1 fps; 3–4× the
+  frames of the keyframe-only runs) with the maps built from all of it, on the 57.8 configuration → 56.9
+  (−0.9 [−2.4, +0.8]). Scale-free facts got **better**: direction accuracy at ≥ 1 view 76.4 → 83.4, the type 69.2
+  → 75.0 (+5.8). Metric facts got **worse**: room-area median measured/true 1.07 → 1.18, area MRA 65.8 → 55.5
+  (type −10.8), distance MRA at ≥ 3 views 51.4 → 43.2 (type −2.3). Relative layout holds and improves with more
+  views; the metric scale inflates ~10% over ~100 ingested frames. That is the recurrent state's scale drift,
+  and the live system (thousands of frames) will see more of it — the ~3 fps run (row 25) shows the trend.
+- Mitigation to test next (I-36): reset the state every N ingested frames, re-feed the last k frames so the two
+  windows share cameras, and chain windows **rigidly** (each CUT3R window is metric on its own, so no scale is
+  propagated — unlike the VGGT chain, where the first window sets the scale).
 
 ### I-06 Halving-aware incremental prefill — **parked**
 Append keyframes to the LLM cache as they arrive and rebuild only on evictions. Not needed on H100 (full
@@ -584,7 +594,8 @@ timestamps (I-04), recency weighting / decay, possibly state windows (I-05).
 | 20 | I-21b thinking with a 2,048-token budget (4B, 5 videos): does reasoning help accuracy at all? | I-21, I-19 | done: **no** — 23/101 closed; on those, 67.8 vs 73.5 without thinking |
 | 21 | I-33 direction facts on the 2B (60 videos) | I-33, I-22 | done: 43.5 vs 42.7, +0.9 [+0.2, +1.6]; the 2B follows the fact 50% of the time (4B 93%) |
 | 22 | I-34 closest-object rankings and route-planning turns from the map (diagnostic, 4B, 60 videos) | I-34, I-28 | done: **negative** — rankings 40.7–66.7 never above the model; routes 15% coverage, 1/5 right |
-| 23 | accumulation: CUT3R fed every 30th / 10th frame (maps from all of it) vs keyframes only, on the 57.8 configuration | I-02, I-05 | running (M2) |
+| 23 | accumulation: CUT3R fed every 30th frame (~1 fps; maps from all of it) vs keyframes only, on the 57.8 configuration | I-02, I-05 | done: **56.9, −0.9 [−2.4, +0.8]** — directions +5.8 (83.4% measured), room −10.8 and distance −2.3 from a ~10% scale inflation |
+| 26 | accumulation at ~3 fps (every 10th frame): does the scale drift grow? | I-05 | queued (M2, after the bake-off) |
 | 24 | long-video proxy: LLM sees 8 keyframes, with / without routed facts | I-02 | running (M2) |
 | 25 | I-35 encoder bake-off: VGGT window 8 behind the same maps (directions attached, metric facts logged) | I-35 | queued (M2) |
 | 14 | **Sensenova-only baseline on 4 nodes x 8 H100**: zero-shot VSI (full); S1 and S2 (one epoch each) real vs control, two seeds; plain SFT (no geometry); S2 joint (no S1); the 2B pair; S2 learning curve; gate | I-12, I-16, I-18, I-22 | four-day run from 09-26 (docs/SERVER_WEEKEND.md) |
