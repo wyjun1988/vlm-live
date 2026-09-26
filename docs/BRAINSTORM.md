@@ -326,6 +326,10 @@ best at — the complement of I-32.
   on 73% (its own answers on the same questions: 53.5). Total over the gate-1 baseline: 48.6 → 57.8, +9.2
   [+5.0, +13.4], still zero-shot. Adopted into the routed configuration; the running server baseline keeps the
   pre-direction configuration for internal consistency, the next run includes it.
+- **On the 2B** (same run): 43.5 vs 42.7, +0.9 [+0.2, +1.6]. The facts are identical (same tracker), but the 2B
+  chose the attached direction on only **50%** of the 157 questions (4B: 93%), so the same fact is worth half as
+  much — a fact the model has to map onto a lettered option is harder to copy than a number it repeats (2B copied
+  room/distance numbers 93–98% of the time). Measurements still do not buy back model size (I-22).
 
 ### Lessons so far (zero-shot, 4B)
 - **L6 Attach geometry only for scene-specific quantities; the model's prior already wins on canonical ones.**
@@ -550,4 +554,5 @@ timestamps (I-04), recency weighting / decay, possibly state windows (I-05).
 | 18 | I-21 thinking on at question time (4B, 20 videos, 512-token budget) | I-21, I-19 | done: **live-incompatible** — 11/333 closed within 512 tokens, score ~3; 2,048-token accuracy probe on 5 videos queued |
 | 19 | I-33 relative direction from three tracked positions: diagnostic, then attached at ≥ 1 view (4B, 60 videos) | I-33, I-29 | done: **57.8, +1.8 [+0.9, +2.8]** — adopted; total over the base's best format +9.2 [+5.0, +13.4] |
 | 20 | I-21b thinking with a 2,048-token budget (4B, 5 videos): does reasoning help accuracy at all? | I-21, I-19 | done: **no** — 23/101 closed; on those, 67.8 vs 73.5 without thinking |
+| 21 | I-33 direction facts on the 2B (60 videos) | I-33, I-22 | done: 43.5 vs 42.7, +0.9 [+0.2, +1.6]; the 2B follows the fact 50% of the time (4B 93%) |
 | 14 | **Sensenova-only baseline on 4 nodes x 8 H100**: zero-shot VSI (full); S1 and S2 (one epoch each) real vs control, two seeds; plain SFT (no geometry); S2 joint (no S1); the 2B pair; S2 learning curve; gate | I-12, I-16, I-18, I-22 | four-day run from 09-26 (docs/SERVER_WEEKEND.md) |
