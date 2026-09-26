@@ -37,12 +37,14 @@ import argparse
 import collections
 import json
 import random
+import re
 import sys
 import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
+import numpy as np  # noqa: E402
 import torch  # noqa: E402
 
 DTYPES = {"fp32": torch.float32, "bf16": torch.bfloat16, "fp16": torch.float16}
@@ -143,8 +145,50 @@ def wants_room_facts(question: str) -> bool:
     return "room" in q and any(k in q for k in ("size", "square meter", "area"))
 
 
+def first_seen(om, names: list[str], min_frames: int) -> dict[str, int | None]:
+    """Keyframe number in which each named object was first seen (the earliest instance that passes the view-count
+    filter), or None when it was not seen well enough."""
+    out = {}
+    for n in names:
+        inst = om.lookup(n, min_frames)
+        out[n] = min(i["first"] for i in inst) if inst else None
+    return out
+
+
+def direction_label(a, b, c, difficulty: str) -> str:
+    """Standing at a, facing b: where is c? Floor-plan coordinates (x, y, up) are right-handed with the up axis
+    towards the viewer of the plan, so a counter-clockwise turn from the facing direction is a turn to the LEFT.
+    VSI's three phrasings: easy left/right; medium left/right/back (back = at least 135 degrees); hard = quadrant."""
+    import math
+
+    f = (b[0] - a[0], b[1] - a[1])
+    v = (c[0] - a[0], c[1] - a[1])
+    theta = math.degrees(math.atan2(f[0] * v[1] - f[1] * v[0], f[0] * v[0] + f[1] * v[1]))   # +: left
+    side = "left" if theta > 0 else "right"
+    if difficulty == "easy":
+        return side
+    if difficulty == "medium":
+        return "back" if abs(theta) >= 135 else side
+    return ("front-" if abs(theta) < 90 else "back-") + side
+
+
+def object_xy(om, name: str, min_frames: int, to_map=None):
+    """Floor-plan position of the most-observed tracked instance of `name`, or None."""
+    inst = om.lookup(name, min_frames)
+    if not inst:
+        return None
+    best = max(inst, key=lambda i: len(i["frames"]))
+    xyz = np.median(np.asarray(best["obs"], dtype=np.float64), axis=0)[None]
+    return (to_map(xyz) if to_map is not None else xyz)[0, :2]
+
+
+_DIRECTION_RE = re.compile(r"standing by the (.+?) and facing the (.+?), is the (.+?) to ")
+
+
 def object_facts_for(question: str, om, min_frames: int = 2, rel_distance: bool = False,
-                     size_facts: bool = False, log: list | None = None) -> str:
+                     size_facts: bool = False, log: list | None = None, order_facts: bool = False,
+                     count_facts: bool = False, direction_facts: bool = False, to_map=None,
+                     direction_min_frames: int | None = None) -> str:
     """I-28: at question time, look up only the objects the question names and attach measured closest-point
     distances — or nothing if an object is missing / seen in fewer than 2 keyframes. No counts (the model counts
     better from the images). NOTE: the names are read with VSI's question templates (benchmark-specific); a
@@ -174,6 +218,51 @@ def object_facts_for(question: str, om, min_frames: int = 2, rel_distance: bool 
         if sz is not None:
             return (f"Measured from a 3D reconstruction of the video: the longest dimension of the {name} is "
                     f"about {100 * sz:.0f} centimeters.\n")
+        return ""
+
+    m = re.search(r"first-time appearance order of the following categories in the video: (.+?)\?", question)
+    if m:   # I-32: the object map knows when each object was first seen - route that to the order question
+        names = [n.strip() for n in m.group(1).split(",") if n.strip()]
+        seen = first_seen(om, names, min_frames)
+        if log is not None:
+            log.append({"kind": "order", "names": names,
+                        **{f"f{k}": first_seen(om, names, k) for k in (1, 2, 3, 4, 5, 6)}})
+        if order_facts and all(v is not None for v in seen.values()) and len(set(seen.values())) == len(seen):
+            order = sorted(names, key=lambda n: seen[n])
+            return ("From an object tracker run over the video: the first keyframe each of these appears in is "
+                    + ", ".join(f"{n} (frame {seen[n]})" for n in order)
+                    + f"; so the first-time appearance order is {', '.join(order)}.\n")
+        return ""
+    m = re.search(r"How many (.+?)\(s\) are in this room", question)
+    if m:   # counting: log what the map's instance count would say (attached only with --count-facts)
+        name = m.group(1)
+        if log is not None:
+            log.append({"kind": "count", "a": name, **{f"c{k}": len(om.lookup(name, k)) for k in (1, 2, 3, 4, 5, 6)}})
+        n = len(om.lookup(name, min_frames))
+        if count_facts and n:
+            return f"From an object tracker run over the video: about {n} distinct {name}(s) were tracked.\n"
+        return ""
+
+    m = _DIRECTION_RE.search(question)
+    if m:   # relative direction from three tracked positions (logged at every threshold; attached on request)
+        a, b, c = m.groups()
+        difficulty = "hard" if "front-left" in question else ("medium" if "back" in question else "easy")
+
+        def label_at(k):
+            pos = [object_xy(om, n, k, to_map) for n in (a, b, c)]
+            if any(p is None for p in pos):
+                return None
+            return direction_label(pos[0], pos[1], pos[2], difficulty)
+
+        # directions tolerate a single view (the sign of an angle survives centroid error that a metric distance
+        # does not - diagnostic 2026-09-26: 76% right at >= 1 view vs the model's 54%), so their threshold is separate
+        lab = label_at(min_frames if direction_min_frames is None else direction_min_frames)
+        if log is not None:
+            log.append({"kind": "direction", "a": a, "b": b, "c": c, "difficulty": difficulty,
+                        **{f"r{k}": label_at(k) for k in (1, 2, 3, 4, 5, 6)}})
+        if direction_facts and lab is not None:
+            return (f"Measured from a 3D reconstruction of the video: standing by the {a} and facing the {b}, "
+                    f"the {c} is to your {lab}.\n")
         return ""
 
     m = re.search(r"which of these objects \((.+?)\) is the closest to the (.+?)\?", question) if rel_distance else None
@@ -243,6 +332,17 @@ def main() -> int:
                          "from the answer; small models drift back to explaining). Question-time, still one pass")
     ap.add_argument("--size-facts", action="store_true",
                     help="--route-objects: also attach the measured longest dimension for object-size questions")
+    ap.add_argument("--order-facts", action="store_true",
+                    help="--route-objects: I-32 - for appearance-order questions attach the keyframe in which each "
+                         "named object was first seen (only when all of them were seen, in distinct frames)")
+    ap.add_argument("--direction-facts", action="store_true",
+                    help="--route-objects: attach the measured relative direction (standing by A facing B, C is to "
+                         "your left/right/back/quadrant) from three tracked positions (logged either way)")
+    ap.add_argument("--direction-min-frames", type=int, default=None,
+                    help="--direction-facts: view-count threshold for directions (default: --min-frames). 1 is the "
+                         "measured optimum; distances need 3")
+    ap.add_argument("--count-facts", action="store_true",
+                    help="--route-objects: attach the map's instance count to counting questions (logged either way)")
     ap.add_argument("--rel-distance-facts", action="store_true",
                     help="--route-objects: also attach distance rankings for 'which is closest' questions. "
                          "Off by default: measured rankings were worse than the model (43%% vs 64%%, I-28)")
@@ -252,6 +352,11 @@ def main() -> int:
     ap.add_argument("--self-map", action="store_true",
                     help="background thinking (I-20): the VLM first writes a cognitive map of the scene from the "
                          "keyframes (question-agnostic); the text goes into the prompt for every question")
+    ap.add_argument("--frame-labels", action="store_true",
+                    help="I-04: label every keyframe with its number and time ('Frame 3 at 41.2 s:') in image mode")
+    ap.add_argument("--thinking", action="store_true",
+                    help="I-21 probe: thinking ON at question time (reason, then answer after </think>)")
+    ap.add_argument("--think-tokens", type=int, default=512, help="--thinking: generation budget per question")
     ap.add_argument("--format-hint", action="store_true",
                     help="지도 없이 형식 지시 한 줄만 (지도 프롬프트의 대조군 — 지시 효과와 지도 효과를 가른다)")
     ap.add_argument("--geom-stride", type=int, default=10**9,
@@ -282,6 +387,7 @@ def main() -> int:
         StreamingSession,
         UniformOracleSelector,
     )
+    from live3r.eval.prefix_cache import split_thinking
     from live3r.model.live3r import Live3RModel
     from live3r.serve.scene_map import SceneMap
 
@@ -339,6 +445,7 @@ def main() -> int:
     objects: dict[str, dict] = {}
     self_maps: dict[str, str] = {}
     meas_log: list = []
+    think_log: list = []
     timing = collections.defaultdict(float)
     for vi, (ds, scene) in enumerate(vids):
         path = root / ds / f"{scene}.mp4"
@@ -376,6 +483,10 @@ def main() -> int:
                     mdir.mkdir(parents=True, exist_ok=True)
                     s.last_map_image.save(mdir / f"{ds}_{scene}.png")
             segs = StreamingSession.segments(pb, pre)
+            if args.frame_labels and pre["visual_mode"] == "image":   # I-04: keyframes carry their time
+                n_img = len(pre["step_tokens"])
+                labels = [f"Frame {k + 1} at {fi / fps:.1f} s: " for k, fi in enumerate(pre["frame_indices"])]
+                segs = [x for pair in zip(labels, segs[:n_img]) for x in pair] + segs[n_img:]
             om = None
             if args.object_map and s.scene_map is not None:
                 from live3r.serve.object_map import ObjectMap
@@ -427,14 +538,24 @@ def main() -> int:
                     n_before = len(meas_log)
                     attached = object_facts_for(d["question"], om, min_frames=args.min_frames,
                                                 rel_distance=args.rel_distance_facts,
-                                                size_facts=args.size_facts, log=meas_log) + attached
+                                                size_facts=args.size_facts, log=meas_log,
+                                                order_facts=args.order_facts, count_facts=args.count_facts,
+                                                direction_facts=args.direction_facts,
+                                                direction_min_frames=args.direction_min_frames,
+                                                to_map=s.scene_map.to_map) + attached
                     if len(meas_log) > n_before:   # only when THIS question added an entry
                         meas_log[-1].update(id=d["id"], gt=d["ground_truth"])
                 text = attached + text
                 if args.hint_after:
                     text = text + "\nAnswer directly in the requested format without explanation."
                 if pc is not None:
-                    ans, _ = pc.answer(text, max_new_tokens=16, do_sample=False)
+                    if args.thinking:   # I-21 probe: reason first, answer after </think>, within a token budget
+                        raw, _ = pc.answer(text, thinking=True, max_new_tokens=args.think_tokens, do_sample=False)
+                        think, ans, closed = split_thinking(raw)
+                        think_log.append({"id": d["id"], "closed": closed, "tokens": len(live.tokenizer(raw).input_ids),
+                                          "think": think[:600]})
+                    else:
+                        ans, _ = pc.answer(text, max_new_tokens=16, do_sample=False)
                 else:
                     ids = pb.build_query(text, segs).to(dev)
                     mm = torch.zeros_like(ids)
@@ -499,6 +620,10 @@ def main() -> int:
         print(f"  {m:16s} {100 * f:5.1f}%")
     n = len(scored[modes[0]])
     print(f"\n문항 {n} · 디코딩 {timing['decode']:.0f}s · " + " · ".join(f"{m} {timing[m] / max(1, n):.2f}s/문항" for m in modes))
+    if think_log:
+        closed = sum(t["closed"] for t in think_log)
+        print(f"thinking: {closed}/{len(think_log)} closed within {args.think_tokens} tokens · "
+              f"mean {sum(t['tokens'] for t in think_log) / len(think_log):.0f} tokens")
 
     if args.out:
         Path(args.out).parent.mkdir(parents=True, exist_ok=True)
@@ -519,7 +644,10 @@ def main() -> int:
             "oracle_vocab": bool(args.object_map and oracle_vocab), "objects": objects,
             "self_map": args.self_map, "self_maps": self_maps, "route_facts": args.route_facts,
             "route_objects": args.route_objects, "min_frames": args.min_frames, "measurements": meas_log,
-            "hint_after": args.hint_after,
+            "hint_after": args.hint_after, "order_facts": args.order_facts, "count_facts": args.count_facts,
+            "direction_facts": args.direction_facts, "direction_min_frames": args.direction_min_frames,
+            "frame_labels": args.frame_labels, "thinking": args.thinking, "think_tokens": args.think_tokens,
+            "thinking_log": think_log,
         }, indent=2, ensure_ascii=False))
         print(f"저장: {args.out}")
     return 0

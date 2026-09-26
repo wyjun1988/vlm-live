@@ -50,9 +50,14 @@ class PrefixCache:
         self.rope_deltas = _inner(model.base).rope_deltas
 
     @torch.no_grad()
-    def answer(self, question: str, **gen_kwargs) -> tuple[str, torch.Tensor]:
-        """질문 토큰만 처리한다. (답, 전체 입력 id) 를 돌려준다."""
-        full = self.prompt.build_query(question, self.segments)
+    def answer(self, question: str, thinking: bool = False, **gen_kwargs) -> tuple[str, torch.Tensor]:
+        """질문 토큰만 처리한다. (답, 전체 입력 id) 를 돌려준다.
+
+        thinking=True: the model reasons first (THINK_PREFIX); the returned text is everything it wrote, with the
+        `</think>` marker kept so the caller can split it (see `split_thinking`)."""
+        from ..data.prompt import ASSISTANT_PREFIX, THINK_PREFIX
+
+        full = self.prompt.build_query(question, self.segments, THINK_PREFIX if thinking else ASSISTANT_PREFIX)
         p = self.prefix_ids.shape[1]
         if full.shape[1] <= p or not torch.equal(full[0, :p], self.prefix_ids[0]):
             raise RuntimeError("질문 프롬프트가 캐시한 프리픽스로 시작하지 않는다 — 세그먼트/템플릿 불일치")
@@ -62,7 +67,21 @@ class PrefixCache:
             input_ids=ids, attention_mask=torch.ones_like(ids),
             past_key_values=copy.deepcopy(self.cache), **gen_kwargs,
         )
-        return self.prompt.tok.decode(out[0, ids.shape[1]:], skip_special_tokens=True), full
+        if not thinking:
+            return self.prompt.tok.decode(out[0, ids.shape[1]:], skip_special_tokens=True), full
+        text = self.prompt.tok.decode(out[0, ids.shape[1]:], skip_special_tokens=False)
+        for t in ("<|im_end|>", "<|endoftext|>"):
+            text = text.replace(t, "")
+        return text, full
+
+
+def split_thinking(text: str) -> tuple[str, str, bool]:
+    """(reasoning, answer, closed). Unclosed = the budget ran out before `</think>`: the answer is then empty,
+    which scores as wrong - that is the honest cost of thinking under a token budget."""
+    if "</think>" in text:
+        think, ans = text.split("</think>", 1)
+        return think.strip(), ans.strip(), True
+    return text.strip(), "", False
 
 
 def _inner(base):

@@ -47,7 +47,9 @@ SAVE_EVERY="${SAVE_EVERY:-500}"  # steps between checkpoints: resume point + lea
 LR=3e-5                        # projector (M2: 1e-3 made the injection 15-30x the vision signal)
 LORA_LR=1e-4
 VSI=(--videos 288 --seed 1)    # all of VSI-Bench: 288 videos, 5,130 questions
-# Best zero-shot prompting from M2 (docs/BRAINSTORM.md I-27 + I-29): 48.6 -> 56.0 on 60 videos, no training.
+# Best zero-shot prompting from M2 at the time this run was defined (docs/BRAINSTORM.md I-27 + I-29): 48.6 -> 56.0
+# on 60 videos, no training. Kept as is for the whole run so p3's base_routed and p7's *_routed compare like with
+# like. The NEXT run adds `--direction-facts --direction-min-frames 1` (I-33, 2026-09-26: 56.0 -> 57.8).
 ROUTED=(--scene-map --no-map-image --object-map --detector owlv2 --detector-device cuda
         --route-facts --route-objects --min-frames 3 --detect-every 1)
 ALL8=0,1,2,3,4,5,6,7

@@ -35,7 +35,7 @@ costs on other question types — so *what* to show, and when, matters (I-27).
 
 ---
 
-## 0b. Scoreboard — everything tried, and what it gave (2026-09-25)
+## 0b. Scoreboard — everything tried, and what it gave (2026-09-26)
 
 VSI, same 60 videos / 1,151 questions, **image mode** (the live path), Qwen3.5-4B, zero-shot unless marked.
 Intervals are video-level bootstrap, lmms-eval aggregation.
@@ -48,10 +48,13 @@ Intervals are video-level bootstrap, lmms-eval aggregation.
 | Base, video mode (its best format) | 48.6 | — | *gate-1 baseline* |
 | + format instruction (one line, in the prefix) | 53.7 | +5.1 | [+1.7, +8.7] |
 | + room measurements routed to room-size questions (I-27) | 55.4 | +1.7 | [+0.6, +2.8] |
-| + object distances from >= 3 views (I-29) | **56.0** | +0.6 | [+0.2, +1.0] |
-| **total over the gate-1 baseline** | | **+7.3** | [+3.6, +11.2] |
+| + object distances from >= 3 views (I-29) | 56.0 | +0.6 | [+0.2, +1.0] |
+| + relative directions from three tracked positions, >= 1 view (I-33) | **57.8** | +1.8 | [+0.9, +2.8] |
+| **total over the gate-1 baseline** | | **+9.2** | [+5.0, +13.4] |
 
-No training. One LLM pass, cached prefix unchanged, +43 tokens at question time, question-only TTFT 0.23 s.
+No training. One LLM pass, cached prefix unchanged, a few dozen tokens at question time, question-only TTFT 0.23 s.
+Same-day nulls (09-26): appearance order from the tracker (I-32), keyframe time labels (I-04), thinking at question
+time (I-21). The rule that held every time: attach geometry only for what the frames do not already say.
 
 ### Rejected (kept in the code, off by default)
 
@@ -120,9 +123,14 @@ keyframes + that text go in together.
 Halving keeps evenly spaced frames, so the last few seconds are nearly absent. For "what is in front of me now",
 append the current frame when the question arrives (~117 tokens: tens of ms on H100).
 
-### I-04 Timestamps in the situation prompt — **proposed**
+### I-04 Timestamps in the situation prompt — **zero-shot form tested: null (2026-09-26)**
 Image-mode keyframes carry no time (order is only implicit). Add keyframe times and per-object first/last-seen
 times to the text. Also the basis for recency and decay (I-26).
+- Zero-shot form: every keyframe labelled `Frame k at t s:` (`--frame-labels`), on top of the format instruction
+  (53.7) → **54.3, +0.7 [−2.4, +3.6]**. Not a gain: the labels change answers of every type (435 of 1,151), and
+  the changes cancel — route planning +5.4 and counting +3.2 against relative distance −6.4 and room size −2.3.
+  The interval is four times wider than the routed-facts ones because the labels perturb everything rather than
+  adding one targeted fact. Timestamps stay relevant for the live system (recency, I-26), not as a VSI lever.
 
 ### I-05 CUT3R forgetting and drift over long streams — **proposed (risk)**
 The CUT3R state is a fixed 768-token memory overwritten every frame, so old content dilutes and poses drift.
@@ -279,6 +287,46 @@ and consider using the full box for the extent while keeping the centre for posi
   the code, off by default.
 - → L6.
 
+### I-32 Appearance order from the object tracker — **tested: null (2026-09-26)**
+The routed object map (I-29) already records the keyframe in which each tracked instance was first seen. VSI's
+appearance-order questions ask exactly that for four named categories. Route it: when such a question arrives,
+look up the four names; if all four were tracked (view-count filter, distinct first frames), attach "first seen:
+X (frame 2), Y (frame 5), …; so the order is X, Y, …". Nothing is attached when any name is missing — a partial
+order would mislead (L6: precise or absent). Coverage: 557/618 of these questions name only categories in the
+detector's vocabulary; how many pass the view filter is what the run measures. Counting is logged the same way
+(instance count per threshold vs the truth) but not attached — the tracker over-splits.
+- Run: routed configuration (56.0) + `--order-facts`, 60 videos → **56.1, +0.2 [+0.0, +0.6]**. Facts attached to
+  17 of 148 appearance questions (11% coverage at ≥ 3 views); only 2 answers changed (both to correct).
+- Why it cannot pay: where the tracker covers, its order is **less** accurate than the model's own answer
+  (64.7 vs 82.4 on the same 17 questions; at ≥ 1 view 32.9 vs 73.2). The VLM reads temporal order straight from
+  the frame sequence — it is the one VSI quantity the images carry directly (L6 again: attach geometry only where
+  the images do not already say it). Counting the same way: the map's instance count scores 24–42 MRA against the
+  model's 60 at every threshold — never attach counts.
+
+### I-33 Relative direction from three tracked positions — **tested: positive (adopted, 2026-09-26)**
+VSI's relative-direction questions ("standing by A facing B, is C to the left/right[/back | quadrant]?") are a
+function of three positions the object map already has. Compute the signed angle in the wall-aligned floor plan
+(counter-clockwise = left) and turn it into the question's own label set. Diagnostic (logged at every view-count
+threshold from one routed run, nothing attached):
+
+| ≥ views | coverage | measured | model on the same questions | projected gain on the type |
+|---|---|---|---|---|
+| 1 | 77% | **76.4** | 53.5 | +17.6 |
+| 2 | 40% | 88.9 | 59.3 | +11.8 |
+| 3 | 19% | 92.3 | 56.4 | +6.9 |
+
+By difficulty at ≥ 1 view: easy 91 vs 60, medium 80 vs 59, hard (4 quadrants) 63 vs 44. Unlike a metric distance,
+the sign of an angle survives the centroid error of a single view, so the threshold for directions is separate
+(`--direction-min-frames 1`, distances stay at 3). Roughly +2 overall if the model copies the fact as it does the
+distances. This is the category the model is weakest at among the choice questions, and the one the tracker is
+best at — the complement of I-32.
+- Attach run: routed (56.0) + `--direction-facts --direction-min-frames 1`, 60 videos → **57.8, +1.8 [+0.9, +2.8]**,
+  all of it on relative direction (54.6 → 69.2, +14.7; easy +7, medium +12, hard +11 net correct answers). Facts
+  attached to 157 of 204 direction questions; the model chose the attached direction on 93% of them and was right
+  on 73% (its own answers on the same questions: 53.5). Total over the gate-1 baseline: 48.6 → 57.8, +9.2
+  [+5.0, +13.4], still zero-shot. Adopted into the routed configuration; the running server baseline keeps the
+  pre-direction configuration for internal consistency, the next run includes it.
+
 ### Lessons so far (zero-shot, 4B)
 - **L6 Attach geometry only for scene-specific quantities; the model's prior already wins on canonical ones.**
   Object size is a property of the object category — a door is ~135 cm, a sofa ~180 cm — and the pretrained model
@@ -303,7 +351,7 @@ and consider using the full box for the extent while keeping the centre for posi
 
 ## 3. Training objectives and data
 
-### I-14 (U#4) Questions that can only be answered with geometry — **built, under test**
+### I-14 (U#4) Questions that can only be answered with geometry — **tested: positive but weak (0.8B S1, 2026-09-26)**
 Generate new training questions whose answers come from geometry, e.g. "how did the camera move between frame 1
 and frame 5", "how far is the point marked here", "which of these two frames was taken closer to the door".
 Answers computed from CUT3R's own outputs — no human labels, no teacher model. The format shortcut becomes
@@ -328,9 +376,32 @@ impossible (a content-free signal cannot answer them). Directly fixes why S1 lea
   scenes (8 frames each; 452 per kind for displacement / turn / closest / path / area, 269 room heights that
   passed the band). `data/geomqa/` (gitignored), 150 held out. The holdout is per record, so other questions
   about the same video are in training — for the decisive test, split by video instead.
-- Decisive test, **after the weekend baseline** (docs/SERVER_WEEKEND.md, Sensenova only by decision): S1 on this
-  data, then the geometry ablation. If the shortcut is really gone, `shuffled − real` should be large and
-  positive, instead of the −0.03 it was on Sensenova.
+- **Decisive test (M2, 0.8B, S1 projector-only, 3,417 records / 1 epoch / 428 steps, lr 3e-5; control arm with
+  the same data order and `--geom-control shuffled`; 227 held-out questions from 30 videos never seen in training):**
+  - `shuffled − real` = **+0.168 ± 0.064** (Sensenova pilot: −0.026 ± 0.047) → the projector's output depends
+    on the geometry's content.
+  - value of content = control·shuffled − real = **+0.052 ± 0.020** (Sensenova: −0.041 ± 0.052); real beats the
+    control on 65.6% of samples.
+  - Per kind (shuffled − real): camera displacement +0.13, path length +0.25, room area +0.72, room height +0.13;
+    **turn direction +0.005 and closest image −0.006 — nothing.** Scale and distance are read from the geometry
+    tokens; orientation is not (at this size and stage).
+  - The training curves say the same: the control follows the real arm's loss almost exactly (aligned gap
+    −0.027 over 428 steps), so the two projectors learned the same format and differ only in what they read.
+  - **Generated answers** (`scripts/geomqa_generate_eval.py`, greedy, same 227 questions; each projector under
+    its own / another record's / no geometry): the decoded answer changes with the geometry **only for camera
+    displacement** — 17 of 52 answers change, MRA 35.8 with the record's geometry vs 29.0 with another's
+    (+7.9 ± 7.3), and the answers spread over 9 values where the control says "0.5 m" to 50 of 60 questions. For
+    path length, room area and room height the decoded number is identical under swapped geometry (0 of 30, 0 of
+    30, 0 of 18 change): the loss gap there is a likelihood shift that never flips the argmax. The real projector
+    still beats the control on those kinds (+9 to +13 MRA) — through a better learned prior over typical values,
+    not by reading the record. Turn direction 35.0 vs chance 33; closest image 41.7, unchanged under swap.
+  - **Verdict**: the shortcut is gone (the loss depends on content, the control does not follow), and the
+    projector reads scale — but at 0.8B, projector-only, one epoch, that reading is weak: it moves likelihoods
+    everywhere and decoded answers for one kind. Whether S2 (the LLM learning to use what the projector conveys)
+    or a 4B turns it into answers is the next question, and the one the server can settle.
+- **Implication for the server**: the first S1 that provably carries content. The natural follow-up after the
+  Sensenova baseline is S1 on geometry QA (generated from Sensenova's own image sequences with
+  `make_geometry_qa.py --records`) → S2 on Sensenova, against the Sensenova-only S1 → S2 pair.
 
 ### I-15 Geometry captioning alignment (LLaVA stage-1 analogue) — **proposed**
 Frozen LLM, train only the projector to make CUT3R tokens *describable* ("the camera moved 1.2 m forward",
@@ -371,8 +442,16 @@ happens before the question, so question time does not change.
   saw +10% with Gemini-1.5 Pro — a much stronger model; at 4B, thinking-first does not help without training
   (keeps I-19's training variant open, closes the zero-shot one).
 
-### I-21 Thinking on at question time (4B) — **parked**
+### I-21 Thinking on at question time (4B) — **tested: incompatible with live (2026-09-26)**
 Latency cost; only if I-20 shows thinking itself is what helps.
+- Zero-shot probe: thinking on (`<think>` open, 512-token budget, answer read after `</think>`; a budget that
+  runs out counts as wrong — the honest cost), format instruction, 20 videos / 333 questions, against 54.7 on the
+  same videos → **the 4B closed its reasoning on 11 of 333 questions** (mean 509 of 512 tokens): 96.7% empty
+  answers, score ~3. Its reasoning is orderly ("locate the nightstand … the TV is on a dresser to the left …") and
+  simply long. Whether it would be *right* given room is unanswered at this budget (a 2,048-token probe on 5
+  videos is queued); the live question is answered: > 500 reasoning tokens per question is seconds on an H100
+  (the 0.8B did not close within 96 tokens either), against a 1-second answer. Thinking at question time is out;
+  I-19's remaining form is *trained* short geometric reasoning, or none.
 
 ---
 
@@ -460,4 +539,10 @@ timestamps (I-04), recency weighting / decay, possibly state windows (I-05).
 | 11 | Repeat the format instruction after the question (0.8B and 4B) | I-31 | done: **negative both** (0.8B 22.4, 4B 53.0) |
 | 12 | The whole routed configuration on 2B | I-22 | done: 40.3 → **42.7** (+2.4); still 11.0 below 4B+prompt |
 | 13 | Geometry-only training questions: generate, then S1 + ablation | I-14 | generated (3,651); training after the Sensenova baseline |
+| 15 | I-32 appearance order from the tracker's first-seen frames, routed (4B, 60 videos) | I-32, I-29 | done: **null** (56.1, +0.2 [+0.0, +0.6]; 11% coverage, tracker order worse than the model where it covers) |
+| 16 | I-04 keyframe time labels in image mode (4B, 60 videos) | I-04 | done: **null** (54.3, +0.7 [−2.4, +3.6]; per-type gains and losses cancel) |
+| 17 | **I-14 decisive test**: S1 real vs control on the geometry QA (0.8B, 3,417 records, video-level holdout 234), ablation | I-14 | done: **positive** — shuffled − real +0.168 ± 0.064, value of content +0.052 ± 0.020; numeric kinds only, orientation not read |
+| 18 | I-21 thinking on at question time (4B, 20 videos, 512-token budget) | I-21, I-19 | done: **live-incompatible** — 11/333 closed within 512 tokens, score ~3; 2,048-token accuracy probe on 5 videos queued |
+| 19 | I-33 relative direction from three tracked positions: diagnostic, then attached at ≥ 1 view (4B, 60 videos) | I-33, I-29 | done: **57.8, +1.8 [+0.9, +2.8]** — adopted; total over the base's best format +9.2 [+5.0, +13.4] |
+| 20 | I-21b thinking with a 2,048-token budget (4B, 5 videos): does reasoning help accuracy at all? | I-21, I-19 | queued |
 | 14 | **Sensenova-only baseline on 4 nodes x 8 H100**: zero-shot VSI (full); S1 and S2 (one epoch each) real vs control, two seeds; plain SFT (no geometry); S2 joint (no S1); the 2B pair; S2 learning curve; gate | I-12, I-16, I-18, I-22 | four-day run from 09-26 (docs/SERVER_WEEKEND.md) |

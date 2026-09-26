@@ -35,6 +35,9 @@ import torch
 IMAGE_PLACEHOLDER = "<image>"
 VIDEO_PLACEHOLDER = "<video>"
 ASSISTANT_PREFIX = "<|im_start|>assistant\n<think>\n\n</think>\n\n"
+# thinking ON (the model writes its reasoning, then `</think>`, then the answer) - probes only (I-21); the live
+# system and training use the empty block above
+THINK_PREFIX = "<|im_start|>assistant\n<think>\n"
 
 _PLACEHOLDER_RE = re.compile(r"<image>|<video>")
 
@@ -192,10 +195,11 @@ class PromptBuilder:
             turns_used=n,
         )
 
-    def build_query(self, question: str, segments: list[str]) -> torch.Tensor:
-        """추론용 — 답변 없이 생성 프롬프트까지만. 스트리밍 평가가 쓴다."""
+    def build_query(self, question: str, segments: list[str],
+                    assistant_prefix: str = ASSISTANT_PREFIX) -> torch.Tensor:
+        """추론용 — 답변 없이 생성 프롬프트까지만. 스트리밍 평가가 쓴다. assistant_prefix=THINK_PREFIX 는 thinking 켬."""
         (u, _), = self.substitute([(question, "")], segments, "visual")
-        text = f"<|im_start|>user\n{u.strip()}{self.im_end}\n{ASSISTANT_PREFIX}"
+        text = f"<|im_start|>user\n{u.strip()}{self.im_end}\n{assistant_prefix}"
         return torch.tensor(self.tok(text, add_special_tokens=False).input_ids).unsqueeze(0)
 
     def summarize(self, built: BuiltPrompt, width: int = 400) -> str:

@@ -91,7 +91,9 @@ sample's geometry (`--geom-control shuffled`). Anything learnable without geomet
 
 The control S2 starts from the control S1, so the control is the whole two-stage recipe without geometric content.
 Trained models are evaluated on the live path: 32 uniform keyframes in image mode; plain, with the format hint,
-and with the routed measurements (I-27/I-29, the best zero-shot prompting from M2: 48.6 → 56.0 on 60 videos).
+and with the routed measurements (I-27/I-29, the best zero-shot prompting from M2 when this run was defined:
+48.6 → 56.0 on 60 videos; the run keeps that configuration throughout so its routed rows compare like with like —
+the relative-direction facts found on 09-26 (I-33, → 57.8) go into the next run).
 
 ## Budget
 
