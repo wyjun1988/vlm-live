@@ -183,9 +183,13 @@ and the maps inherit any drift because they live in the first frame's coordinate
   way — room-area ratio 1.18 → 1.10 (keyframes 1.07), area MRA 55.5 → 58.7 (65.8), distance ratio at ≥ 3 views
   0.82 → 0.86 (0.99) — but the direction gain is lost: measured accuracy 83.4 → 77.7 (keyframes 76.4), the type
   75.0 → 71.7. The long recurrent baseline is what improved the relative layout; cutting it every 40 frames gives
-  that back while only halving the drift. Neither accumulation variant beats keyframes-only. Next refinements:
-  longer windows with a bigger overlap (80 / 6 — queued), or aligning windows on overlapping point clouds instead
-  of three camera poses.
+  that back while only halving the drift. Neither accumulation variant beats keyframes-only.
+- **80 / 6** (row 29) is worse: 55.3. Its scale is as good (room ratio 1.12, distance ratio at ≥ 3 views 0.93,
+  the best of the accumulated variants) but direction accuracy falls to 63.1% — the fresh window is aligned to
+  the *drifted* poses of the old state, and more shared cameras average in more of that drift as an orientation
+  error. Rigid pose-chaining is the weak link. Better: align windows on their overlapping point clouds, or
+  correct the state's scale directly (the same surface re-observed at a growing scale is detectable against the
+  accumulated map), or keep two states — a long one for directions, a short one for metric facts.
 
 ### I-06 Halving-aware incremental prefill — **parked**
 Append keyframes to the LLM cache as they arrive and rebuild only on evictions. Not needed on H100 (full
@@ -650,11 +654,11 @@ timestamps (I-04), recency weighting / decay, possibly state windows (I-05).
 | 23 | accumulation: CUT3R fed every 30th frame (~1 fps; maps from all of it) vs keyframes only, on the 57.8 configuration | I-02, I-05 | done: **56.9, −0.9 [−2.4, +0.8]** — directions +5.8 (83.4% measured), room −10.8 and distance −2.3 from a ~10% scale inflation |
 | 26 | accumulation at ~3 fps (every 10th frame): does the scale drift grow? | I-05 | done (20 videos): **yes** — room-area ratio 1.03 → 1.23 → 1.39 for keyframes / 1 fps / 3 fps; overall 54.7 vs 59.1 (−4.3 [−6.5, −2.4]) |
 | 28 | I-36 windowed CUT3R state (reset 40 / overlap 3, rigid chaining) at ~1 fps | I-36, I-05 | done: 56.9 (= no resets) — metric facts half recovered (room ratio 1.10, area MRA 58.7), direction gain lost (83.4 → 77.7) |
-| 29 | I-36 with longer windows (reset 80 / overlap 6) | I-36 | queued (M2, overnight) |
+| 29 | I-36 with longer windows (reset 80 / overlap 6) | I-36 | done: **55.3** (−2.5 [−4.3, −0.9] vs keyframes; −1.6 vs 40/3) — scale similar (room ratio 1.12, distance ratio 0.93) but direction accuracy 63.1% (40/3: 77.7): re-aligning to drifted poses through more shared cameras inherits their orientation error |
 | 24 | sparse view AND sparse map: 8 keyframes for the LLM, geometry on those 8 only, with / without routed facts | I-02 | done: hint-only **47.3** (vs 53.7 at 32 keyframes, −6.4 [−9.8, −2.6]); + facts 47.2 (−0.1 [−1.8, +1.7]) — facts built from 8 frames cover 30% of direction questions (77% at 32) and add nothing |
 | 24b | long-video proxy done right: LLM sees 8 keyframes, maps from every 30th frame, routed facts | I-02 | done: **48.3** vs 47.3 without facts (+1.0 [−0.8, +2.8]); direction +8.0 where facts exist — but detection still ran on the 8 keyframes only (direction coverage 35%, distances 4%): the object map, not the geometry, is the bottleneck |
 | 27a | detection decoupled from the LLM's keyframes: OWLv2 on the geometry frames (~1 fps, median 82 detection frames per video), online object map, LLM at 8 keyframes | I-02 | done: **48.8** — +0.5 [−1.3, +2.3] vs keyframe detection, +1.5 [−0.8, +3.9] vs no facts; direction coverage 35% → 87% (type +4.6); distance facts worse (view count no longer means separate views) |
 | 27b | the same with the LLM at 32 keyframes — does dense detection lift the adopted 57.8? | I-02 | done: **55.4**, −2.4 [−4.0, −0.7] — direction coverage 77% → 86% but accuracy 76.4 → 75.6 (net 0); distances −8.0 (three near-duplicate "views"), room −10.8 (~1 fps drift) |
-| 30 | dense detection + time-separated view counting (`--view-gap 30`) + 80/6 resets, 32 keyframes — the combined fix | I-02, I-05, I-36 | queued (M2, tomorrow morning) |
+| 30 | dense detection + time-separated view counting (`--view-gap 30`) + 40/3 resets, 32 keyframes — the combined fix | I-02, I-05, I-36 | running (M2, overnight) |
 | 25 | I-35 encoder bake-off: VGGT window 8 behind the same maps (directions attached, metric facts logged) | I-35 | done: **CUT3R wins** — direction 76.4 vs 56.7 (72 vs 54 on common questions), room area MRA 65.8 vs 9.5 (scale-free 69.0 vs 16.2) |
 | 14 | **Sensenova-only baseline on 4 nodes x 8 H100**: zero-shot VSI (full); S1 and S2 (one epoch each) real vs control, two seeds; plain SFT (no geometry); S2 joint (no S1); the 2B pair; S2 learning curve; gate | I-12, I-16, I-18, I-22 | four-day run from 09-26 (docs/SERVER_WEEKEND.md) |
