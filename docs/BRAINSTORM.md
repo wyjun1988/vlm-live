@@ -134,8 +134,20 @@ times to the text. Also the basis for recency and decay (I-26).
   on the 8 keyframes, so directions were covered for 35% of questions (77% at 32 keyframes) and distances for 4%.
   The geometry is not the limit (room facts as good as the 1 fps run); the object map is, and it is tied to the
   LLM's keyframe budget. For the live system detection has to run on the geometry stream, not on the LLM's
-  keyframes — an online object map (row 27, queued): then the maps' coverage no longer depends on how much of the
+  keyframes — an online object map (row 27): then the maps' coverage no longer depends on how much of the
   video the LLM gets to see.
+- Long video, third measurement (row 27a): the online map (detection on every 30th frame and every keyframe,
+  median 82 detection frames per video, 52,893 detections lifted vs 17,134 in the 32-keyframe run) at 8 keyframes
+  → **48.8**: +0.5 [−1.3, +2.3] over keyframe detection, +1.5 [−0.8, +3.9] over no facts; direction coverage at
+  ≥ 1 view 35% → 87% (above the 32-keyframe run's 77%) and the direction type 55.9 → 60.5. So the maps' coverage
+  is now independent of the LLM's view — but the facts recover ~1.5 of the 6.4 points lost, because the rest is
+  the LLM's own loss on counting (−20), appearance order (−9), relative distance (−16) and size (−5), which no
+  fact addresses. Two things to fix in the dense map: the view-count filter (at ~1 fps "3 views" are often three
+  near-duplicate frames — distance MRA at ≥ 3 views 35.2 vs 51.4 with keyframe views; the count should require
+  time separation, or the threshold has to rise: with dense detection the measured distance improves
+  monotonically with the view count, 8.5 → 42.2 MRA from ≥ 1 to ≥ 6 views, and only at ≥ 6 (48% coverage) does it
+  beat the model on the same questions, +3.1 on the type), and the scale drift of the accumulated state (I-05),
+  which the dense map inherits (median measured/true distance 0.31 at ≥ 1 view → 0.87 at ≥ 6).
 - Zero-shot form: every keyframe labelled `Frame k at t s:` (`--frame-labels`), on top of the format instruction
   (53.7) → **54.3, +0.7 [−2.4, +3.6]**. Not a gain: the labels change answers of every type (435 of 1,151), and
   the changes cancel — route planning +5.4 and counting +3.2 against relative distance −6.4 and room size −2.3.
@@ -636,6 +648,7 @@ timestamps (I-04), recency weighting / decay, possibly state windows (I-05).
 | 29 | I-36 with longer windows (reset 80 / overlap 6) | I-36 | queued (M2, overnight) |
 | 24 | sparse view AND sparse map: 8 keyframes for the LLM, geometry on those 8 only, with / without routed facts | I-02 | done: hint-only **47.3** (vs 53.7 at 32 keyframes, −6.4 [−9.8, −2.6]); + facts 47.2 (−0.1 [−1.8, +1.7]) — facts built from 8 frames cover 30% of direction questions (77% at 32) and add nothing |
 | 24b | long-video proxy done right: LLM sees 8 keyframes, maps from every 30th frame, routed facts | I-02 | done: **48.3** vs 47.3 without facts (+1.0 [−0.8, +2.8]); direction +8.0 where facts exist — but detection still ran on the 8 keyframes only (direction coverage 35%, distances 4%): the object map, not the geometry, is the bottleneck |
-| 27 | detection decoupled from the LLM's keyframes: OWLv2 on the geometry frames (~1 fps), online object map; LLM at 8 and at 32 keyframes | I-02 | queued (M2) |
+| 27a | detection decoupled from the LLM's keyframes: OWLv2 on the geometry frames (~1 fps, median 82 detection frames per video), online object map, LLM at 8 keyframes | I-02 | done: **48.8** — +0.5 [−1.3, +2.3] vs keyframe detection, +1.5 [−0.8, +3.9] vs no facts; direction coverage 35% → 87% (type +4.6); distance facts worse (view count no longer means separate views) |
+| 27b | the same with the LLM at 32 keyframes — does dense detection lift the adopted 57.8? | I-02 | running (M2) |
 | 25 | I-35 encoder bake-off: VGGT window 8 behind the same maps (directions attached, metric facts logged) | I-35 | done: **CUT3R wins** — direction 76.4 vs 56.7 (72 vs 54 on common questions), room area MRA 65.8 vs 9.5 (scale-free 69.0 vs 16.2) |
 | 14 | **Sensenova-only baseline on 4 nodes x 8 H100**: zero-shot VSI (full); S1 and S2 (one epoch each) real vs control, two seeds; plain SFT (no geometry); S2 joint (no S1); the 2B pair; S2 learning curve; gate | I-12, I-16, I-18, I-22 | four-day run from 09-26 (docs/SERVER_WEEKEND.md) |
