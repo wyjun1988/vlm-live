@@ -153,6 +153,16 @@ times to the text. Also the basis for recency and decay (I-26).
   ~1 fps drift. So dense detection is necessary for long video but not sufficient: it needs the drift control and a
   view count that means separate views (row 30). The view count now uses real frame indices and `--view-gap`
   (frames apart) so that "3 views" can mean three views at least a second apart.
+- **Combined (row 30): 55.1**, −2.7 [−4.6, −0.9] vs keyframes only and no better than the dense map without the
+  fixes (55.4). A 1-second view separation is not enough: the dense map's distances beat the model only at ≥ 5–6
+  separated views (47–54% coverage, +3–4 on the type) and stay under-scaled (median measured/true 0.68 at ≥ 3
+  views) — many oblique, partial observations bias the merged point sets low. Directions at 86% coverage reach
+  69.9 (keyframes-only 76.4), the resets' cost. **State of the accumulation question**: on 1–3-minute videos,
+  keyframes-only geometry with keyframe detection (57.8) is the best measured configuration; every variant that
+  ingests more frames pays 2–3 points for scale drift and lower-quality observations, and buys coverage these
+  videos do not need. For the live system (10+ minutes) the coverage will matter and the price has to come down:
+  drift control that does not cost orientation (point-cloud alignment or direct scale correction of the state),
+  observation-quality weighting instead of view counts, and a long-video benchmark to measure it on.
 - Zero-shot form: every keyframe labelled `Frame k at t s:` (`--frame-labels`), on top of the format instruction
   (53.7) → **54.3, +0.7 [−2.4, +3.6]**. Not a gain: the labels change answers of every type (435 of 1,151), and
   the changes cancel — route planning +5.4 and counting +3.2 against relative distance −6.4 and room size −2.3.
@@ -659,6 +669,6 @@ timestamps (I-04), recency weighting / decay, possibly state windows (I-05).
 | 24b | long-video proxy done right: LLM sees 8 keyframes, maps from every 30th frame, routed facts | I-02 | done: **48.3** vs 47.3 without facts (+1.0 [−0.8, +2.8]); direction +8.0 where facts exist — but detection still ran on the 8 keyframes only (direction coverage 35%, distances 4%): the object map, not the geometry, is the bottleneck |
 | 27a | detection decoupled from the LLM's keyframes: OWLv2 on the geometry frames (~1 fps, median 82 detection frames per video), online object map, LLM at 8 keyframes | I-02 | done: **48.8** — +0.5 [−1.3, +2.3] vs keyframe detection, +1.5 [−0.8, +3.9] vs no facts; direction coverage 35% → 87% (type +4.6); distance facts worse (view count no longer means separate views) |
 | 27b | the same with the LLM at 32 keyframes — does dense detection lift the adopted 57.8? | I-02 | done: **55.4**, −2.4 [−4.0, −0.7] — direction coverage 77% → 86% but accuracy 76.4 → 75.6 (net 0); distances −8.0 (three near-duplicate "views"), room −10.8 (~1 fps drift) |
-| 30 | dense detection + time-separated view counting (`--view-gap 30`) + 40/3 resets, 32 keyframes — the combined fix | I-02, I-05, I-36 | running (M2, overnight) |
+| 30 | dense detection + time-separated view counting (`--view-gap 30`) + 40/3 resets, 32 keyframes — the combined fix | I-02, I-05, I-36 | done: **55.1**, −2.7 [−4.6, −0.9] vs keyframes only; −0.3 vs the dense map without the fixes. Distances beat the model only at ≥ 5–6 separated views; direction accuracy 69.9 (resets' cost); room ratio 1.10 |
 | 25 | I-35 encoder bake-off: VGGT window 8 behind the same maps (directions attached, metric facts logged) | I-35 | done: **CUT3R wins** — direction 76.4 vs 56.7 (72 vs 54 on common questions), room area MRA 65.8 vs 9.5 (scale-free 69.0 vs 16.2) |
 | 14 | **Sensenova-only baseline on 4 nodes x 8 H100**: zero-shot VSI (full); S1 and S2 (one epoch each) real vs control, two seeds; plain SFT (no geometry); S2 joint (no S1); the 2B pair; S2 learning curve; gate | I-12, I-16, I-18, I-22 | four-day run from 09-26 (docs/SERVER_WEEKEND.md) |
