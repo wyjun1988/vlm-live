@@ -155,9 +155,14 @@ and the maps inherit any drift because they live in the first frame's coordinate
   (type −10.8), distance MRA at ≥ 3 views 51.4 → 43.2 (type −2.3). Relative layout holds and improves with more
   views; the metric scale inflates ~10% over ~100 ingested frames. That is the recurrent state's scale drift,
   and the live system (thousands of frames) will see more of it — the ~3 fps run (row 25) shows the trend.
-- Mitigation to test next (I-36): reset the state every N ingested frames, re-feed the last k frames so the two
-  windows share cameras, and chain windows **rigidly** (each CUT3R window is metric on its own, so no scale is
-  propagated — unlike the VGGT chain, where the first window sets the scale).
+- **I-36, windowed state (reset every 40 ingested frames, 3 frames re-fed, rigid chaining), same ~1 fps input**
+  (row 28): overall 56.9 (= no resets; −0.9 [−2.6, +1.0] vs keyframes only). Metric facts recover part of the
+  way — room-area ratio 1.18 → 1.10 (keyframes 1.07), area MRA 55.5 → 58.7 (65.8), distance ratio at ≥ 3 views
+  0.82 → 0.86 (0.99) — but the direction gain is lost: measured accuracy 83.4 → 77.7 (keyframes 76.4), the type
+  75.0 → 71.7. The long recurrent baseline is what improved the relative layout; cutting it every 40 frames gives
+  that back while only halving the drift. Neither accumulation variant beats keyframes-only. Next refinements:
+  longer windows with a bigger overlap (80 / 6 — queued), or aligning windows on overlapping point clouds instead
+  of three camera poses.
 
 ### I-06 Halving-aware incremental prefill — **parked**
 Append keyframes to the LLM cache as they arrive and rebuild only on evictions. Not needed on H100 (full
@@ -620,7 +625,9 @@ timestamps (I-04), recency weighting / decay, possibly state windows (I-05).
 | 21 | I-33 direction facts on the 2B (60 videos) | I-33, I-22 | done: 43.5 vs 42.7, +0.9 [+0.2, +1.6]; the 2B follows the fact 50% of the time (4B 93%) |
 | 22 | I-34 closest-object rankings and route-planning turns from the map (diagnostic, 4B, 60 videos) | I-34, I-28 | done: **negative** — rankings 40.7–66.7 never above the model; routes 15% coverage, 1/5 right |
 | 23 | accumulation: CUT3R fed every 30th frame (~1 fps; maps from all of it) vs keyframes only, on the 57.8 configuration | I-02, I-05 | done: **56.9, −0.9 [−2.4, +0.8]** — directions +5.8 (83.4% measured), room −10.8 and distance −2.3 from a ~10% scale inflation |
-| 26 | accumulation at ~3 fps (every 10th frame): does the scale drift grow? | I-05 | queued (M2, after the bake-off) |
+| 26 | accumulation at ~3 fps (every 10th frame): does the scale drift grow? | I-05 | running (M2, 20 videos) |
+| 28 | I-36 windowed CUT3R state (reset 40 / overlap 3, rigid chaining) at ~1 fps | I-36, I-05 | done: 56.9 (= no resets) — metric facts half recovered (room ratio 1.10, area MRA 58.7), direction gain lost (83.4 → 77.7) |
+| 29 | I-36 with longer windows (reset 80 / overlap 6) | I-36 | queued (M2, overnight) |
 | 24 | sparse view AND sparse map: 8 keyframes for the LLM, geometry on those 8 only, with / without routed facts | I-02 | done: hint-only **47.3** (vs 53.7 at 32 keyframes, −6.4 [−9.8, −2.6]); + facts 47.2 (−0.1 [−1.8, +1.7]) — facts built from 8 frames cover 30% of direction questions (77% at 32) and add nothing |
 | 24b | long-video proxy done right: LLM sees 8 keyframes, maps from every 30th frame, routed facts | I-02 | done: **48.3** vs 47.3 without facts (+1.0 [−0.8, +2.8]); direction +8.0 where facts exist — but detection still ran on the 8 keyframes only (direction coverage 35%, distances 4%): the object map, not the geometry, is the bottleneck |
 | 27 | detection decoupled from the LLM's keyframes: OWLv2 on the geometry frames (~1 fps), online object map; LLM at 8 and at 32 keyframes | I-02 | queued (M2) |
