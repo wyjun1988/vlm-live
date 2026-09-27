@@ -419,7 +419,12 @@ class StreamingSession:
         map_size: int = 512,
         map_max_pixels: int = 512 * 512,
         map_image: bool = True,
+        on_geometry=None,
     ) -> None:
+        """on_geometry(frame_index, raw_frame, geom_output, is_keyframe): called for every frame the geometry
+        encoder ingests (every `geom_stride`-th frame and every keyframe) - the hook for an object map that is
+        built online from the geometry stream instead of from the LLM's keyframes afterwards (I-02: the maps'
+        coverage must not depend on how much of the video the LLM gets to see)."""
         if mode not in ("deferred", "incremental"):
             raise ValueError(f"모르는 모드 {mode}")
         if visual_mode not in ("image", "video"):
@@ -431,6 +436,7 @@ class StreamingSession:
             )
         self.model = model
         self.selector = selector
+        self.on_geometry = on_geometry
         self.geom_stride = max(1, geom_stride)
         self.mode = mode
         self.visual_mode = visual_mode
@@ -496,6 +502,8 @@ class StreamingSession:
             self.audit.geometry_state_bytes.append(m.geometry.state_bytes())
             if self.scene_map is not None and self._last_geom.pointmap is not None:
                 self.scene_map.add(self._last_geom, frame_index=i)
+            if self.on_geometry is not None:
+                self.on_geometry(i, raw, self._last_geom, keep)
 
         if evicted is not None:
             for e in (evicted if isinstance(evicted, (list, tuple, set)) else [evicted]):

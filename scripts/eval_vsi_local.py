@@ -393,6 +393,11 @@ def main() -> int:
                     help="with --scene-map: object-level cognitive map as text (VLM grounding on keyframes, "
                          "lifted to 3D with CUT3R). Uses the ORACLE vocabulary from the video's questions")
     ap.add_argument("--detect-every", type=int, default=2, help="--object-map: ground every N-th keyframe")
+    ap.add_argument("--detect-stride", type=int, default=0,
+                    help="--object-map: build the object map ONLINE from the geometry stream - detect on every N-th "
+                         "pushed frame (and every keyframe) with that frame's geometry, instead of on the LLM's "
+                         "keyframes afterwards. Decouples the map's coverage from the keyframe budget (I-02). "
+                         "Needs --geom-stride <= N so those frames have geometry")
     ap.add_argument("--detector", choices=["vlm", "owlv2"], default="vlm",
                     help="--object-map: the VLM's own grounding, or OWLv2 (open vocabulary, fixed indoor list)")
     ap.add_argument("--oracle-vocab", action=argparse.BooleanOptionalAction, default=None,
@@ -537,6 +542,21 @@ def main() -> int:
         qs = [d for d in todo if d["dataset"] == ds and d["scene_name"] == scene]
         total = count_frames(path)
         sessions = {}
+        online_om = None          # --detect-stride: the object map is built from the geometry stream as it arrives
+        if args.object_map and args.detect_stride and args.scene_map:
+            from live3r.serve.object_map import ObjectMap
+
+            online_om = ObjectMap()
+            det_count = {"frames": 0, "lifted": 0}
+            vocab_online = vsi_vocab([d["question"] for d in qs]) if oracle_vocab else None
+
+            def on_geometry(i, raw, geom, keep, _om=online_om, _c=det_count, _v=vocab_online):
+                if not (keep or i % args.detect_stride == 0):
+                    return
+                frame = raw.numpy()
+                dets = owl(frame, _v) if args.detector == "owlv2" else detect_objects(live, pb, frame, _v or [], dev)
+                _c["frames"] += 1
+                _c["lifted"] += _om.add(_c["frames"], dets, geom)
         for m in modes:
             sel_name, vmode = m.split("-")
             sel = HalvingSelector(args.budget) if sel_name == "halving" else UniformOracleSelector(args.budget, total)
@@ -544,7 +564,8 @@ def main() -> int:
             sessions[m] = StreamingSession(live, sel, geom_stride=args.geom_stride, visual_mode=vmode,
                                            device=dev, audit=StreamingAudit(),
                                            scene_map=SceneMap() if args.scene_map else None,
-                                           map_image=args.map_image)
+                                           map_image=args.map_image,
+                                           on_geometry=on_geometry if online_om is not None else None)
 
         t1 = time.time()
         with av.open(str(path)) as c:
@@ -573,7 +594,14 @@ def main() -> int:
                 labels = [f"Frame {k + 1} at {fi / fps:.1f} s: " for k, fi in enumerate(pre["frame_indices"])]
                 segs = [x for pair in zip(labels, segs[:n_img]) for x in pair] + segs[n_img:]
             om = None
-            if args.object_map and s.scene_map is not None:
+            if online_om is not None:      # built during the stream (--detect-stride); nothing to do after the fact
+                om = online_om
+                obj_text = om.text(to_map=s.scene_map.to_map, n_frames=det_count["frames"])
+                objects[f"{ds}/{scene}"] = {"vocab": vocab_online, "lifted": det_count["lifted"],
+                                            "detection_frames": det_count["frames"], "text": obj_text}
+                if obj_text and not args.route_objects:
+                    segs = (segs[:-1] + [obj_text, segs[-1]]) if pre.get("map_text") else segs + [obj_text]
+            elif args.object_map and s.scene_map is not None:
                 from live3r.serve.object_map import ObjectMap
 
                 t_det = time.time()
@@ -737,7 +765,7 @@ def main() -> int:
             "route_objects": args.route_objects, "min_frames": args.min_frames, "measurements": meas_log,
             "hint_after": args.hint_after, "order_facts": args.order_facts, "count_facts": args.count_facts,
             "direction_facts": args.direction_facts, "direction_min_frames": args.direction_min_frames,
-            "route_plan_facts": args.route_plan_facts,
+            "route_plan_facts": args.route_plan_facts, "detect_stride": args.detect_stride,
             "frame_labels": args.frame_labels, "thinking": args.thinking, "think_tokens": args.think_tokens,
             "thinking_log": think_log,
         }, indent=2, ensure_ascii=False))

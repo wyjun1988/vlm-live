@@ -128,8 +128,14 @@ Image-mode keyframes carry no time (order is only implicit). Add keyframe times 
 times to the text. Also the basis for recency and decay (I-26).
 - Long video, first measurement (row 24): with 8 keyframes instead of 32 the 4B loses 6.4 points (53.7 → 47.3)
   even on these 1–3 min videos, and facts computed from the same 8 frames give nothing back (47.2) — a map that
-  sees only what the LLM sees is as starved as the LLM. The live question is the other case, where the maps see
-  every frame and only the LLM's view shrinks (row 24b, queued).
+  sees only what the LLM sees is as starved as the LLM.
+- Long video, second measurement (row 24b): maps from ~1 fps geometry, LLM at 8 keyframes → 48.3 vs 47.3 without
+  facts (+1.0 [−0.8, +2.8]). Where facts exist they work (direction +8.0), but the object detector still ran only
+  on the 8 keyframes, so directions were covered for 35% of questions (77% at 32 keyframes) and distances for 4%.
+  The geometry is not the limit (room facts as good as the 1 fps run); the object map is, and it is tied to the
+  LLM's keyframe budget. For the live system detection has to run on the geometry stream, not on the LLM's
+  keyframes — an online object map (row 27, queued): then the maps' coverage no longer depends on how much of the
+  video the LLM gets to see.
 - Zero-shot form: every keyframe labelled `Frame k at t s:` (`--frame-labels`), on top of the format instruction
   (53.7) → **54.3, +0.7 [−2.4, +3.6]**. Not a gain: the labels change answers of every type (435 of 1,151), and
   the changes cancel — route planning +5.4 and counting +3.2 against relative distance −6.4 and room size −2.3.
@@ -616,6 +622,7 @@ timestamps (I-04), recency weighting / decay, possibly state windows (I-05).
 | 23 | accumulation: CUT3R fed every 30th frame (~1 fps; maps from all of it) vs keyframes only, on the 57.8 configuration | I-02, I-05 | done: **56.9, −0.9 [−2.4, +0.8]** — directions +5.8 (83.4% measured), room −10.8 and distance −2.3 from a ~10% scale inflation |
 | 26 | accumulation at ~3 fps (every 10th frame): does the scale drift grow? | I-05 | queued (M2, after the bake-off) |
 | 24 | sparse view AND sparse map: 8 keyframes for the LLM, geometry on those 8 only, with / without routed facts | I-02 | done: hint-only **47.3** (vs 53.7 at 32 keyframes, −6.4 [−9.8, −2.6]); + facts 47.2 (−0.1 [−1.8, +1.7]) — facts built from 8 frames cover 30% of direction questions (77% at 32) and add nothing |
-| 24b | long-video proxy done right: LLM sees 8 keyframes, maps from every 30th frame, routed facts | I-02 | queued (M2, after the bake-off) |
+| 24b | long-video proxy done right: LLM sees 8 keyframes, maps from every 30th frame, routed facts | I-02 | done: **48.3** vs 47.3 without facts (+1.0 [−0.8, +2.8]); direction +8.0 where facts exist — but detection still ran on the 8 keyframes only (direction coverage 35%, distances 4%): the object map, not the geometry, is the bottleneck |
+| 27 | detection decoupled from the LLM's keyframes: OWLv2 on the geometry frames (~1 fps), online object map; LLM at 8 and at 32 keyframes | I-02 | queued (M2) |
 | 25 | I-35 encoder bake-off: VGGT window 8 behind the same maps (directions attached, metric facts logged) | I-35 | done: **CUT3R wins** — direction 76.4 vs 56.7 (72 vs 54 on common questions), room area MRA 65.8 vs 9.5 (scale-free 69.0 vs 16.2) |
 | 14 | **Sensenova-only baseline on 4 nodes x 8 H100**: zero-shot VSI (full); S1 and S2 (one epoch each) real vs control, two seeds; plain SFT (no geometry); S2 joint (no S1); the 2B pair; S2 learning curve; gate | I-12, I-16, I-18, I-22 | four-day run from 09-26 (docs/SERVER_WEEKEND.md) |

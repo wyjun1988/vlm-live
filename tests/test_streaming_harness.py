@@ -264,3 +264,20 @@ class _NoPrompt:
     @staticmethod
     def image_segment(n):
         return f"<img:{n}>"
+
+
+def test_on_geometry_hook_fires_for_every_geometry_frame_with_the_keyframe_flag():
+    """The online object map (I-02) hangs on this hook: it must see every frame the encoder ingests - every
+    geom_stride-th frame and every keyframe - and know which ones the LLM will keep."""
+    m = make_model()
+    calls = []
+    s = StreamingSession(m, HalvingSelector(8), geom_stride=3, audit=StreamingAudit(),
+                         on_geometry=lambda i, raw, geom, keep: calls.append((i, keep, geom is not None)))
+    T = 40
+    for i in range(T):
+        s.push(i, torch.zeros(112, 112, 3, dtype=torch.uint8))
+    seen = {i for i, _, _ in calls}
+    assert all(i % 3 == 0 or k for i, k, _ in calls), "a call that is neither a stride frame nor a keyframe"
+    assert {i for i in range(T) if i % 3 == 0} <= seen and all(g for _, _, g in calls)
+    assert any(k for _, k, _ in calls), "keyframes must be flagged"
+    assert len(calls) == len(seen), "one call per frame"
