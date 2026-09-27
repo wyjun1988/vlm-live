@@ -154,7 +154,13 @@ and the maps inherit any drift because they live in the first frame's coordinate
   → 75.0 (+5.8). Metric facts got **worse**: room-area median measured/true 1.07 → 1.18, area MRA 65.8 → 55.5
   (type −10.8), distance MRA at ≥ 3 views 51.4 → 43.2 (type −2.3). Relative layout holds and improves with more
   views; the metric scale inflates ~10% over ~100 ingested frames. That is the recurrent state's scale drift,
-  and the live system (thousands of frames) will see more of it — the ~3 fps run (row 25) shows the trend.
+  and the live system (thousands of frames) will see more of it.
+- **Trend (row 26, the same 20 videos)**: room-area measured/true **1.03 with keyframes only → 1.23 at ~1 fps →
+  1.39 at ~3 fps**; area MRA 57.5 → 52.0 → 30.0; overall 59.1 → 56.9 → 54.7 (−4.3 [−6.5, −2.4] at 3 fps). The
+  inflation grows with the number of frames the state has ingested. Direction accuracy on these 20 videos is the
+  same in all three runs (85.4 on 41 questions) — the +7 seen on 60 videos came from the other 40. At live frame
+  rates the metric facts need a drift control: state resets (I-36), or a separate short-window state for the
+  metric path while the long state serves directions.
 - **I-36, windowed state (reset every 40 ingested frames, 3 frames re-fed, rigid chaining), same ~1 fps input**
   (row 28): overall 56.9 (= no resets; −0.9 [−2.6, +1.0] vs keyframes only). Metric facts recover part of the
   way — room-area ratio 1.18 → 1.10 (keyframes 1.07), area MRA 55.5 → 58.7 (65.8), distance ratio at ≥ 3 views
@@ -625,7 +631,7 @@ timestamps (I-04), recency weighting / decay, possibly state windows (I-05).
 | 21 | I-33 direction facts on the 2B (60 videos) | I-33, I-22 | done: 43.5 vs 42.7, +0.9 [+0.2, +1.6]; the 2B follows the fact 50% of the time (4B 93%) |
 | 22 | I-34 closest-object rankings and route-planning turns from the map (diagnostic, 4B, 60 videos) | I-34, I-28 | done: **negative** — rankings 40.7–66.7 never above the model; routes 15% coverage, 1/5 right |
 | 23 | accumulation: CUT3R fed every 30th frame (~1 fps; maps from all of it) vs keyframes only, on the 57.8 configuration | I-02, I-05 | done: **56.9, −0.9 [−2.4, +0.8]** — directions +5.8 (83.4% measured), room −10.8 and distance −2.3 from a ~10% scale inflation |
-| 26 | accumulation at ~3 fps (every 10th frame): does the scale drift grow? | I-05 | running (M2, 20 videos) |
+| 26 | accumulation at ~3 fps (every 10th frame): does the scale drift grow? | I-05 | done (20 videos): **yes** — room-area ratio 1.03 → 1.23 → 1.39 for keyframes / 1 fps / 3 fps; overall 54.7 vs 59.1 (−4.3 [−6.5, −2.4]) |
 | 28 | I-36 windowed CUT3R state (reset 40 / overlap 3, rigid chaining) at ~1 fps | I-36, I-05 | done: 56.9 (= no resets) — metric facts half recovered (room ratio 1.10, area MRA 58.7), direction gain lost (83.4 → 77.7) |
 | 29 | I-36 with longer windows (reset 80 / overlap 6) | I-36 | queued (M2, overnight) |
 | 24 | sparse view AND sparse map: 8 keyframes for the LLM, geometry on those 8 only, with / without routed facts | I-02 | done: hint-only **47.3** (vs 53.7 at 32 keyframes, −6.4 [−9.8, −2.6]); + facts 47.2 (−0.1 [−1.8, +1.7]) — facts built from 8 frames cover 30% of direction questions (77% at 32) and add nothing |
