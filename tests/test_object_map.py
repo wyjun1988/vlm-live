@@ -98,3 +98,16 @@ def test_size_from_full_box_not_inner_region():
     size = om.size_m("table", min_frames=3)
     assert 1.7 < size < 2.3, size            # true extent 2.0 m along x, not the 0.5 m inner region
     assert om.size_m("table", min_frames=5) is None
+
+
+
+def test_view_gap_counts_only_time_separated_observations():
+    """At ~1 fps three consecutive detection frames are one view, not three (2026-09-27)."""
+    from live3r.serve.object_map import ObjectMap
+
+    om = ObjectMap(view_gap=30)
+    inst = {"label": "chair", "frames": {100, 101, 102, 140, 171, 172}}
+    assert om.n_views(inst) == 3                         # 100 | 140 | 171 (101, 102, 172 are within the gap)
+    assert ObjectMap(view_gap=0).n_views(inst) == 6      # the keyframe convention: every frame is a view
+    om._inst.append(dict(inst, obs=[], pts=[], box_pts=[], first=100))
+    assert om.lookup("chair", min_frames=3) and not om.lookup("chair", min_frames=4)

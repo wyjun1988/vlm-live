@@ -393,6 +393,9 @@ def main() -> int:
                     help="with --scene-map: object-level cognitive map as text (VLM grounding on keyframes, "
                          "lifted to 3D with CUT3R). Uses the ORACLE vocabulary from the video's questions")
     ap.add_argument("--detect-every", type=int, default=2, help="--object-map: ground every N-th keyframe")
+    ap.add_argument("--view-gap", type=int, default=0,
+                    help="frames two observations must be apart to count as separate views (0 = every detection "
+                         "frame). With --detect-stride at ~1 fps use ~30 so that --min-frames means separate views")
     ap.add_argument("--detect-stride", type=int, default=0,
                     help="--object-map: build the object map ONLINE from the geometry stream - detect on every N-th "
                          "pushed frame (and every keyframe) with that frame's geometry, instead of on the LLM's "
@@ -546,7 +549,7 @@ def main() -> int:
         if args.object_map and args.detect_stride and args.scene_map:
             from live3r.serve.object_map import ObjectMap
 
-            online_om = ObjectMap()
+            online_om = ObjectMap(view_gap=args.view_gap)
             det_count = {"frames": 0, "lifted": 0}
             vocab_online = vsi_vocab([d["question"] for d in qs]) if oracle_vocab else None
 
@@ -556,7 +559,7 @@ def main() -> int:
                 frame = raw.numpy()
                 dets = owl(frame, _v) if args.detector == "owlv2" else detect_objects(live, pb, frame, _v or [], dev)
                 _c["frames"] += 1
-                _c["lifted"] += _om.add(_c["frames"], dets, geom)
+                _c["lifted"] += _om.add(i, dets, geom)          # the video frame index: time order and view gaps
         for m in modes:
             sel_name, vmode = m.split("-")
             sel = HalvingSelector(args.budget) if sel_name == "halving" else UniformOracleSelector(args.budget, total)
@@ -606,7 +609,7 @@ def main() -> int:
 
                 t_det = time.time()
                 vocab = vsi_vocab([d["question"] for d in qs]) if oracle_vocab else None
-                om = ObjectMap()
+                om = ObjectMap(view_gap=args.view_gap)
                 n_det = 0
                 for rank, fi in enumerate(pre["frame_indices"]):
                     if rank % args.detect_every:
@@ -616,7 +619,7 @@ def main() -> int:
                         dets = owl(frame, vocab)   # vocab None -> fixed indoor list (question-agnostic)
                     else:
                         dets = detect_objects(live, pb, frame, vocab or [], dev)
-                    n_det += om.add(rank + 1, dets, s._kept[fi].geom)
+                    n_det += om.add(fi, dets, s._kept[fi].geom)   # the video frame index (was the keyframe rank)
                 obj_text = om.text(to_map=s.scene_map.to_map, n_frames=len(pre["frame_indices"]))
                 timing["detect"] += time.time() - t_det
                 objects[f"{ds}/{scene}"] = {"vocab": vocab, "lifted": n_det, "text": obj_text}
@@ -765,7 +768,7 @@ def main() -> int:
             "route_objects": args.route_objects, "min_frames": args.min_frames, "measurements": meas_log,
             "hint_after": args.hint_after, "order_facts": args.order_facts, "count_facts": args.count_facts,
             "direction_facts": args.direction_facts, "direction_min_frames": args.direction_min_frames,
-            "route_plan_facts": args.route_plan_facts, "detect_stride": args.detect_stride,
+            "route_plan_facts": args.route_plan_facts, "detect_stride": args.detect_stride, "view_gap": args.view_gap,
             "frame_labels": args.frame_labels, "thinking": args.thinking, "think_tokens": args.think_tokens,
             "thinking_log": think_log,
         }, indent=2, ensure_ascii=False))

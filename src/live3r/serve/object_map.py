@@ -84,7 +84,12 @@ class ObjectMap:
     """
 
     def __init__(self, merge_dist: float = 0.8, inner: float = 0.5, min_points: int = 15,
-                 keep_points: int = 200) -> None:
+                 keep_points: int = 200, view_gap: int = 0) -> None:
+        # view_gap: two observations count as separate views only if their frame numbers are at least this far
+        # apart. 0 = every detection frame is a view (right when detection runs on sparse keyframes). With
+        # detection at ~1 fps "3 views" would otherwise be three near-duplicate frames (2026-09-27: distance MRA at
+        # >= 3 views fell from 51.4 to 21.6), so the live system passes video frame indices and a gap of ~1 s.
+        self.view_gap = int(view_gap)
         self.merge_dist = merge_dist
         self.inner = inner
         self.min_points = min_points
@@ -151,10 +156,22 @@ class ObjectMap:
             for key, new_pts in (("pts", pts), ("box_pts", box_pts)):
                 best[key] = _thin(np.concatenate([best[key], new_pts]), 4 * self.keep_points)
 
+    def n_views(self, inst: dict) -> int:
+        """Number of separate views of an instance: frames at least `view_gap` apart (greedy, in time order)."""
+        frames = sorted(inst["frames"])
+        if self.view_gap <= 0:
+            return len(frames)
+        n, last = 0, None
+        for f in frames:
+            if last is None or f - last >= self.view_gap:
+                n += 1
+                last = f
+        return n
+
     def lookup(self, name: str, min_frames: int = 2) -> list[dict]:
-        """Instances whose label matches `name` (synonyms, plural) and that were seen in >= min_frames keyframes."""
+        """Instances whose label matches `name` (synonyms, plural) and that were seen in >= min_frames separate views."""
         want = canon(name)
-        return [i for i in self._inst if i["label"] == want and len(i["frames"]) >= min_frames]
+        return [i for i in self._inst if i["label"] == want and self.n_views(i) >= min_frames]
 
     @staticmethod
     def closest_distance(a: dict, b: dict) -> float | None:
