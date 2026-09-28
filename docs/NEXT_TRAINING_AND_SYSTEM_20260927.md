@@ -82,7 +82,15 @@ measured/true 1.03 (keyframes) → 1.18–1.23 (~1 fps) → 1.39 (~3 fps, 54.7 o
 and lose the direction gain (83.4 → 77.7; 80/6 → 63.1, 55.3). So the fix must rescale without touching
 orientation: a scale anchor at the encoder's output (I-37; camera height / floor depth against the first frames),
 measured with an offline lab that replays variants on captured raw streams (`scripts/scale_anchor_lab.py`).
-Until it lands, the live design keeps the state but the metric facts are read from the keyframe-fed maps.
+
+**Resolved (09-28 evening).** The per-frame floor / camera-height anchors carry no signal (factor–ideal correlation
+≈ 0 over 24 variants; applied per frame they break the layout: 49.5). The drift does follow the number of frames
+ingested (corr +0.44): a two-parameter calibration, log(measured/true area) = 0.3224 log n − 1.3781, applied as one
+factor per video to the metric facts at read time (geometry untouched) gives room MRA 55.5 → 63.8 split-half, and the
+4B run at ~1 fps scores **58.0** — +1.1 [+0.3, +2.1] over the uncorrected stream, parity with keyframes only (57.8,
++0.2 [−1.3, +1.9]) while keeping the accumulation's direction gain (+5.8 on the type). The live design therefore
+keeps the state accumulating at ~1 fps with the calibrated read-time factor; the per-video estimator that could
+replace the calibration (CUT3R's self-view vs world-view distance ratio, `SelfViewScale`) is being measured.
 
 ### 2b. Long video — **measured by proxy: the facts compensate only partly, and need the scale fix first**
 VSI videos are 20 s – 3.6 min; the live setting is 10 minutes and more. What breaks first is the LLM's view:

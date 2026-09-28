@@ -68,6 +68,17 @@ time (I-21). The rule that held every time: attach geometry only for what the fr
 | CUT3R fed ~1 fps instead of the 32 keyframes (I-05) | −0.9 | angles improve (83 % direction facts), metric scale inflates ×1.18 |
 | Windowed state resets 40/3 · 80/6 (I-36) | −0.9 · −2.5 | half the scale back, the direction gain lost |
 | Per-frame camera-height scale anchor (I-37 v1) | **−8.3** | rescaling each frame by its own factor breaks the layout; the signal is wrong without a floor in view |
+
+### Adopted for the streaming path (~1 fps accumulation)
+
+| Step | Score | Δ | 95% CI |
+|---|---|---|---|
+| keyframes only (the table above) | 57.8 | — | |
+| CUT3R fed ~1 fps, maps from every frame (I-05) | 56.9 | −0.9 | [−2.2, +0.4] |
+| + frame-count scale calibration on the metric facts at read time (I-37) | **58.0** | +1.1 vs 56.9 | [+0.3, +2.1] |
+
+Directions 69.2 → 75.0 from the accumulation; room 67.0 → 65.7 and abs distance 42.1 → 39.3 remain the cost of the
+drift. Parity with keyframes on 1–3-minute videos (+0.2 [−1.3, +1.9]); the maps are the ones a long video needs.
 | Every computable distance, min_frames=1 (I-29 run 1) | −0.7 vs I-27 | 1-view 3D estimates are bad |
 | Object size from measured extent (I-30) | model 66.7 vs ours 40.3 | category prior beats measurement (L6) |
 | Repeat the instruction after the question (I-31) | 4B −0.7, 0.8B −1.0 | one copy is enough at both sizes |
@@ -447,7 +458,7 @@ window to the global frame rigidly through the shared cameras (`geometry.options
   orientation error.
 - Lesson: resets trade the accumulation gain (angles) for half the scale. Not the fix.
 
-### I-37 Metric scale anchor at the encoder's output — **v1 tested: strongly negative (2026-09-28); v2 in the lab**
+### I-37 Metric scale correction — **v1 (per-frame anchor) strongly negative; frame-count calibration at read time: 58.0 = parity with keyframes at ~1 fps (2026-09-28)**
 The state's scale inflates with the frames ingested (I-05: room area ×1.03 / ×1.18–1.23 / ×1.39 at keyframes /
 ~1 fps / ~3 fps) while the layout improves. v1: per frame, camera height above the frame's own floor (2nd
 percentile of its points along up) vs the first 10 frames; points and camera divided by the ratio about the origin.
@@ -471,7 +482,16 @@ percentile of its points along up) vs the first 10 frames; points and camera div
   curve applied per frame to the points scores 25.2 — so the drift is not a uniform inflation about the origin, and
   no per-frame rescaling of the geometry can be right. `FrameCountScale` (`scale_anchor: {mode: frame_count, a, b}`,
   read-time application via `CUT3RStream.metric_scale` → `SceneMap.facts(scale)` and the attached distances) is the
-  4B run in progress (`configs/m2_zeroshot_4b_anchor_v2.yaml`; caveat: a, b fitted on these 60 videos, 2 parameters).
+  4B run (`configs/m2_zeroshot_4b_anchor_v2.yaml`; caveat: a, b fitted on these 60 videos, 2 parameters — in-sample
+  room MRA 66.0 vs 63.8 split-half). By length, median measured/true: short videos (< 70 frames, n = 8) 1.00 → 1.03,
+  mid (70–149, n = 38) 1.17 → 0.99, long (≥ 150, n = 14) 1.30 → 0.92; videos within 50 % 85 → 90 %.
+- **Result (18:41): 58.0.** vs the same ~1 fps stream without the correction (56.9) **+1.1 [+0.3, +2.1]** — room type
+  56.2 → 65.7 (+9.5), everything else unchanged (abs distance −0.5, noise). vs keyframes only (57.8) +0.2 [−1.3, +1.9]:
+  room 65.7 vs 67.0, abs distance 39.3 vs 42.1 (the object positions still carry the within-video drift), direction
+  75.0 vs 69.2 (+5.8, the accumulation gain kept). Maps: room MRA 66.0, median ratio 0.97; the factors applied ran
+  0.82–1.06 (median 0.94). So **the live configuration — the state accumulating at ~1 fps, as a stream must — now
+  matches the best offline configuration** instead of paying 0.9 for it, and the maps it builds are the ones a long
+  video needs. Adopted for the ~1 fps path; the estimator that could beat a calibration (self-view ratio) is next.
 - Next estimator, plumbed and queued for a re-capture: **CUT3R's own two point maps.** The head predicts the frame's
   points in the camera frame (`pts3d_in_self_view`, monocular, metric-trained) and in the state's world frame; their
   distance ratio through the predicted pose is the state's scale per frame with no floor and no camera assumption
@@ -734,7 +754,7 @@ timestamps (I-04), recency weighting / decay, possibly state windows (I-05).
 | 30 | dense detection + time-separated view counting (`--view-gap 30`) + 40/3 resets, 32 keyframes — the combined fix | I-02, I-05, I-36 | done: **55.1**, −2.7 [−4.6, −0.9] vs keyframes only; −0.3 vs the dense map without the fixes. Distances beat the model only at ≥ 5–6 separated views; direction accuracy 69.9 (resets' cost); room ratio 1.10 |
 | 31 | I-37 v1 camera-height scale anchor, per-frame rescaling, ~1 fps | I-37, I-05 | done: **49.5**, −7.4 [−9.3, −5.4] vs no anchor — room MRA 14.3 (ratio 0.70), scale-free 21.7, direction facts 70.7 %: per-frame rescaling breaks the layout |
 | 32 | I-37 v2: raw-stream capture (60 videos) + offline lab over floor-level / camera-height × window × support × gate, per-frame vs global application | I-37 | done: **no signal** — factor–ideal correlation −0.11…+0.13 for all 24 variants; best per-frame MRA 55.0 = none 55.5; global ≤ 48. Frame-count calibration instead: split-half MRA 63.8 (ceiling 65.2) |
-| 33 | I-37 frame-count calibration applied at read time (`frame_count`, a 0.3224 / b −1.3781), 4B, ~1 fps, routed + directions | I-37 | running (chain 16) — vs no anchor 56.9 / keyframes 57.8; expect the room type back near the keyframe level with the direction gain kept |
+| 33 | I-37 frame-count calibration applied at read time (`frame_count`, a 0.3224 / b −1.3781), 4B, ~1 fps, routed + directions | I-37 | done: **58.0**, +1.1 [+0.3, +2.1] vs no correction (room 56.2 → 65.7); +0.2 [−1.3, +1.9] vs keyframes (direction +5.8, abs −2.8, room −1.3). Map room MRA 66.0, ratio 0.97. The ~1 fps stream is at parity with keyframes |
 | 34 | re-capture with the self-view points; `SelfViewScale` (relative / absolute, w5 / w15) in the lab next to the calibration | I-37 | queued (chain 17) — the per-video estimator the calibration cannot be |
 | 35 | I-38 question reading by the model (JSON → template), 4B and 0.8B, 160 VSI + 28 paraphrased/Korean | I-38 | done — 4B: type 100 % / roles 99 % / identical routing 100 % on VSI, 100 % / 100 % on the paraphrases, 4.9 s per reading (M2); **0.8B: 54 % / 29 % and 43 % / 32 %** — a small reader needs the LoRA, the 4B does not |
 | 25 | I-35 encoder bake-off: VGGT window 8 behind the same maps (directions attached, metric facts logged) | I-35 | done: **CUT3R wins** — direction 76.4 vs 56.7 (72 vs 54 on common questions), room area MRA 65.8 vs 9.5 (scale-free 69.0 vs 16.2) |
