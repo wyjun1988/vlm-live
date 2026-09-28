@@ -61,6 +61,7 @@ class CUT3RStream(GeometryStream):
         net=None,
         reset_every: int = 0,
         overlap: int = 3,
+        scale_anchor: str | None = None,
     ) -> None:
         """net 을 직접 주면 체크포인트 없이 쓴다 (구조 검증·테스트용).
 
@@ -102,6 +103,13 @@ class CUT3RStream(GeometryStream):
         # 장면 지도 프롬프트(serve/scene_map.py)용. 헤드(DPT)는 토큰만 쓸 때는 필요 없어서 기본은 끔.
         self.decode_points = False
         self.windowing = ResetChainer(reset_every, overlap) if reset_every > 0 else None
+        # scale_anchor="camera_height": undo the state's scale drift at the output (I-37) - metric facts only,
+        # angles untouched. Applied to the raw output, before any window chaining.
+        from .scale_anchor import CameraHeightAnchor
+
+        self.anchor = CameraHeightAnchor() if scale_anchor == "camera_height" else None
+        if scale_anchor not in (None, "", "none", "camera_height"):
+            raise ValueError(f"unknown scale_anchor {scale_anchor!r} (camera_height or none)")
         self.reset()
 
     # ------------------------------------------------------------------ 상태 관리
@@ -110,13 +118,30 @@ class CUT3RStream(GeometryStream):
         self._state = None
         if getattr(self, "windowing", None) is not None:
             self.windowing.reset()
+        if getattr(self, "anchor", None) is not None:
+            self.anchor.reset()
+
+    def _anchored(self, out: GeomOutput) -> GeomOutput:
+        """Rescale a raw output so the camera keeps its reference height above the floor (scale_anchor)."""
+        if self.anchor is None or out.pointmap is None or "c2w" not in out.extra:
+            return out
+        c2w = out.extra["c2w"][0].float().cpu().numpy()
+        pts = out.pointmap[0].permute(1, 2, 0).float().cpu().numpy()
+        conf = out.conf[0, 0].float().cpu().numpy() if out.conf is not None else None
+        f = self.anchor.update(c2w, pts, conf)
+        if f != 1.0:
+            c2w2, pts2 = self.anchor.apply(f, c2w, pts)
+            out.extra["c2w"] = torch.from_numpy(c2w2.astype(np.float32))[None].to(out.extra["c2w"].device)
+            out.pointmap = torch.from_numpy(pts2.astype(np.float32)).permute(2, 0, 1)[None].to(out.pointmap.device)
+        out.extra["scale_factor"] = f
+        return out
 
     @torch.no_grad()
     def ingest(self, frames: torch.Tensor) -> GeomOutput:
-        """프레임 1장 [B,3,H,W] → 잠재 토큰 (+ 점맵·포즈, decode_points 일 때). 윈도우 리셋은 여기서 처리한다."""
+        """프레임 1장 [B,3,H,W] → 잠재 토큰 (+ 점맵·포즈, decode_points 일 때). 윈도우 리셋·스케일 앵커는 여기서 처리한다."""
         wnd = self.windowing
         if wnd is None:
-            return self._ingest_raw(frames)
+            return self._anchored(self._ingest_raw(frames))
         if wnd.due():
             if not self.decode_points:
                 raise RuntimeError("windowed CUT3R (reset_every) needs decode_points=True - the alignment uses the poses")
@@ -129,7 +154,7 @@ class CUT3RStream(GeometryStream):
                 window_c2w.append(o.extra["c2w"][0].float().cpu().numpy())
             self._frame_index = keep
             wnd.rebase(window_c2w)
-        out = self._ingest_raw(frames)
+        out = self._anchored(self._ingest_raw(frames))
         wnd.apply(out)                     # window frame -> global frame, and remember this frame for the next overlap
         wnd.remember(frames, out.extra["c2w"][0].float().cpu().numpy())
         return out
@@ -387,4 +412,5 @@ def _build(cfg: GeometryConfig) -> CUT3RStream:
         repo_path=cfg.options.get("repo_path"),
         reset_every=int(cfg.options.get("reset_every", 0)),
         overlap=int(cfg.options.get("overlap", 3)),
+        scale_anchor=cfg.options.get("scale_anchor"),
     )
