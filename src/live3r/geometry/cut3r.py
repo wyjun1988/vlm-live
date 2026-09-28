@@ -138,7 +138,12 @@ class CUT3RStream(GeometryStream):
         c2w = out.extra["c2w"][0].float().cpu().numpy()
         pts = out.pointmap[0].permute(1, 2, 0).float().cpu().numpy()
         conf = out.conf[0, 0].float().cpu().numpy() if out.conf is not None else None
-        f = self.anchor.update(c2w, pts, conf)
+        kw = {}
+        if getattr(self.anchor, "uses_self_view", False) and "pointmap_self" in out.extra:
+            kw["pts_self"] = out.extra["pointmap_self"][0].permute(1, 2, 0).float().cpu().numpy()
+            cs = out.extra.get("conf_self")
+            kw["conf_self"] = cs[0, 0].float().cpu().numpy() if cs is not None else None
+        f = self.anchor.update(c2w, pts, conf, **kw)
         if self.anchor_apply == "per_frame" and f != 1.0:
             c2w2, pts2 = self.anchor.apply(f, c2w, pts)
             out.extra["c2w"] = torch.from_numpy(c2w2.astype(np.float32))[None].to(out.extra["c2w"].device)
@@ -263,6 +268,10 @@ class CUT3RStream(GeometryStream):
         out.pointmap = res["pts3d_in_other_view"].permute(0, 3, 1, 2)
         out.conf = res["conf"].unsqueeze(1)
         out.extra["c2w"] = pose_encoding_to_camera(res["camera_pose"])
+        if "pts3d_in_self_view" in res:   # the same points in the camera's own frame (monocular, metric-trained):
+            out.extra["pointmap_self"] = res["pts3d_in_self_view"].permute(0, 3, 1, 2)   # their distance ratio to
+            out.extra["conf_self"] = res["conf_self"].unsqueeze(1)                          # the world-frame points
+            # is the state's scale drift (SelfViewScale)
 
 
 # CUT3R 체크포인트 = {"args": omegaconf 학습 설정, "model": state_dict}.

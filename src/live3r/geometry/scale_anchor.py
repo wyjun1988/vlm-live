@@ -33,7 +33,7 @@ from collections import deque
 
 import numpy as np
 
-MODES = ("camera_height", "floor_level")
+MODES = ("camera_height", "floor_level")          # ScaleAnchor; build_anchor also knows frame_count and self_view
 
 
 class ScaleAnchor:
@@ -153,6 +153,113 @@ class ScaleAnchor:
         return out, pts * factor
 
 
+class FrameCountScale:
+    """The drift as a function of the frames ingested, calibrated once (scripts/scale_calibration.py, 2026-09-28):
+    log(measured / true room area) = a * log(n) + b over the 60 evaluation videos at ~1 fps (n = 51..250,
+    corr +0.44). One factor per stream, 1 / sqrt(exp(a * log n + b)), applied to the metric facts at read time;
+    split-half room-area MRA 55.5 -> 63.8 (ceiling 65.2). No per-frame signal is read at all - this is the
+    calibration the floor / camera-height anchors failed to beat (factor-ideal correlation ~0). Same interface as
+    ScaleAnchor so the encoder adapter and the lab treat it alike."""
+
+    def __init__(self, a: float = 0.3224, b: float = -1.3781, min_frames: int = 1) -> None:
+        self.a, self.b, self.min_frames = float(a), float(b), int(min_frames)
+        self.reset()
+
+    def reset(self) -> None:
+        self.frames = 0
+        self.skipped = 0
+        self.factor = 1.0
+        self.history: list[float] = []
+
+    def ratio(self, n: int) -> float:
+        """The predicted measured/true area ratio after n frames."""
+        return float(np.exp(self.a * np.log(max(1, n)) + self.b))
+
+    def update(self, c2w=None, pts=None, conf=None) -> float:
+        self.frames += 1
+        if self.frames >= self.min_frames:
+            self.factor = 1.0 / np.sqrt(self.ratio(self.frames))
+            self.history.append(self.factor)
+        return self.factor
+
+    def global_factor(self) -> float:
+        return self.factor
+
+    apply = staticmethod(ScaleAnchor.apply)
+
+
+class SelfViewScale:
+    """The state's scale read from CUT3R itself: the head predicts each frame's points twice - in the camera's own
+    frame (`pts3d_in_self_view`, a monocular, metric-trained estimate) and in the world frame that the recurrent
+    state defines. Brought into the same frame through the predicted pose, their per-pixel distance ratio is the
+    state's scale relative to the frame's own; its median over confident pixels is one number per frame that needs
+    no floor and no assumption about the camera. relative=True measures it against the first `ref_frames` (the
+    early stream is metric to ~3%), else the monocular scale is trusted outright. Per-frame values are only
+    aggregated (`global_factor`), never applied to the points."""
+
+    uses_self_view = True
+
+    def __init__(self, ref_frames: int = 10, window: int = 5, conf_quantile: float = 0.3, min_depth: float = 0.2,
+                 relative: bool = True, clamp: tuple[float, float] = (0.5, 2.0)) -> None:
+        self.ref_frames, self.window, self.conf_quantile = int(ref_frames), int(window), float(conf_quantile)
+        self.min_depth, self.relative, self.clamp = float(min_depth), bool(relative), (float(clamp[0]), float(clamp[1]))
+        self.reset()
+
+    def reset(self) -> None:
+        self.frames = self.skipped = 0
+        self.factor = 1.0
+        self.reference: float | None = None
+        self._ref: list[float] = []
+        self._recent: deque = deque(maxlen=self.window)
+        self.history: list[float] = []
+        self.ratios: list[float] = []      # the raw per-frame state/self scale, for inspection
+
+    def measure(self, c2w, pts, conf, pts_self, conf_self) -> float | None:
+        p = np.asarray(pts, dtype=np.float64).reshape(-1, 3)
+        q = np.asarray(pts_self, dtype=np.float64).reshape(-1, 3)
+        if len(p) != len(q):
+            return None
+        ok = np.isfinite(p).all(1) & np.isfinite(q).all(1)
+        c = conf_self if conf_self is not None else conf
+        if c is not None:
+            c = np.asarray(c, dtype=np.float64).reshape(-1)
+            fin = np.isfinite(c)
+            if fin.any():
+                ok &= c >= np.quantile(c[fin], self.conf_quantile)
+        m = np.asarray(c2w, dtype=np.float64)
+        pc = (p - m[:3, 3]) @ m[:3, :3]                       # world -> this camera's frame
+        dw, ds = np.linalg.norm(pc, axis=1), np.linalg.norm(q, axis=1)
+        ok &= (dw > self.min_depth) & (ds > self.min_depth)
+        if ok.sum() < 200:
+            return None
+        return float(np.median(dw[ok] / ds[ok]))
+
+    def update(self, c2w, pts, conf, pts_self=None, conf_self=None) -> float:
+        self.frames += 1
+        s = self.measure(c2w, pts, conf, pts_self, conf_self) if pts_self is not None else None
+        if s is None or s <= 0:
+            self.skipped += 1
+            return self.factor
+        self.ratios.append(s)
+        if self.relative:
+            if self.reference is None:
+                self._ref.append(s)
+                if len(self._ref) >= self.ref_frames:
+                    self.reference = float(np.median(self._ref))
+                return 1.0
+            s = s / self.reference
+        self._recent.append(s)
+        r = min(max(float(np.median(self._recent)), self.clamp[0]), self.clamp[1])
+        self.factor = 1.0 / r
+        self.history.append(self.factor)
+        return self.factor
+
+    def global_factor(self) -> float:
+        return float(np.exp(np.mean(np.log(self.history)))) if self.history else 1.0
+
+    apply = staticmethod(ScaleAnchor.apply)
+
+
 class CameraHeightAnchor(ScaleAnchor):
     """The first version (I-37, chain 13 on 2026-09-28): camera height, no support test, no reference floor."""
 
@@ -168,7 +275,13 @@ def build_anchor(spec) -> ScaleAnchor | None:
     if spec in (None, "", "none", False):
         return None
     if isinstance(spec, str):
-        return ScaleAnchor(mode=spec)
+        spec = {"mode": spec}
     if isinstance(spec, dict):
-        return ScaleAnchor(**spec)
-    raise ValueError(f"scale_anchor must be a mode name or a dict of ScaleAnchor arguments, got {spec!r}")
+        kw = dict(spec)
+        mode = kw.pop("mode", "camera_height")
+        if mode == "frame_count":
+            return FrameCountScale(**kw)
+        if mode == "self_view":
+            return SelfViewScale(**kw)
+        return ScaleAnchor(mode=mode, **kw)
+    raise ValueError(f"scale_anchor must be a mode name or a dict of arguments, got {spec!r}")

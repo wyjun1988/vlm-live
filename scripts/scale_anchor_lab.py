@@ -33,27 +33,36 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from vsi_room_facts_check import mra  # noqa: E402
 
-from live3r.geometry.scale_anchor import CameraHeightAnchor, ScaleAnchor  # noqa: E402
+from live3r.geometry.scale_anchor import CameraHeightAnchor, ScaleAnchor, build_anchor  # noqa: E402
 from live3r.serve.scene_map import SceneMap  # noqa: E402
 
 
 def load_capture(path: Path) -> dict:
     z = np.load(path, allow_pickle=False)
     d = {k: z[k] for k in ("idx", "key", "c2w", "pts", "conf")}
+    for k in ("pts_self", "conf_self"):
+        if k in z.files:
+            d[k] = z[k]
     d["meta"] = json.loads(str(z["meta"]))
     return d
 
 
-def replay(cap: dict, anchor: ScaleAnchor | None, scene_map_kw: dict | None = None) -> tuple[dict, ScaleAnchor | None]:
-    """Feed the captured frames through the anchor (if any) and a SceneMap exactly as the live pipeline does."""
+def replay(cap: dict, anchor, scene_map_kw: dict | None = None, per_frame: bool = True) -> tuple[dict, object]:
+    """Feed the captured frames through the anchor (if any) and a SceneMap exactly as the live pipeline does.
+    per_frame=False only measures (the global application: the caller rescales the facts by global_factor())."""
     sm = SceneMap(stride=1, **(scene_map_kw or {}))
     for f in range(len(cap["idx"])):
         c2w = cap["c2w"][f].astype(np.float64)
         pts = cap["pts"][f].astype(np.float64)
         conf = cap["conf"][f]
         if anchor is not None:
-            fac = anchor.update(c2w, pts, conf)
-            if fac != 1.0:
+            kw = {}
+            if getattr(anchor, "uses_self_view", False):
+                if "pts_self" not in cap:
+                    raise KeyError("this variant reads the self-view points; the capture has none (re-capture)")
+                kw = {"pts_self": cap["pts_self"][f], "conf_self": cap["conf_self"][f]}
+            fac = anchor.update(c2w, pts, conf, **kw)
+            if fac != 1.0 and per_frame:
                 c2w, pts = anchor.apply(fac, c2w, pts)
         out = SimpleNamespace(
             pointmap=torch.from_numpy(np.ascontiguousarray(pts.T.reshape(1, 3, 1, -1)).astype(np.float32)),
@@ -76,7 +85,12 @@ def parse_variant(text: str) -> dict:
 
 
 def variants(grid: str) -> dict[str, dict | None]:
-    out: dict[str, dict | None] = {"none": None, "v1 camera_height (chain 13)": {"_v1": True}}
+    out: dict[str, dict | None] = {"none": None, "v1 camera_height (chain 13)": {"_v1": True},
+                                   "frame_count calibration (in-sample fit)": {"mode": "frame_count"},
+                                   "self_view relative w5": {"mode": "self_view", "window": 5},
+                                   "self_view relative w15": {"mode": "self_view", "window": 15},
+                                   "self_view absolute w5": {"mode": "self_view", "window": 5, "relative": False},
+                                   "self_view absolute w15": {"mode": "self_view", "window": 15, "relative": False}}
     if grid == "none":
         return out
     full = grid == "full"
@@ -94,12 +108,12 @@ def variants(grid: str) -> dict[str, dict | None]:
     return out
 
 
-def make_anchor(spec: dict | None) -> ScaleAnchor | None:
+def make_anchor(spec: dict | None):
     if spec is None:
         return None
     if spec.get("_v1"):
         return CameraHeightAnchor()
-    return ScaleAnchor(**spec)
+    return build_anchor(spec)
 
 
 def score(pairs: list[tuple[float, float]]) -> dict:
@@ -149,7 +163,11 @@ def main() -> int:
     for name, spec in todo.items():
         pairs, gpairs, applied, ideal, skipped, frames, ref_diff = [], [], [], [], 0, 0, 0.0
         for vid, cap in caps.items():
-            facts, anchor = replay(cap, make_anchor(spec))
+            try:
+                facts, anchor = replay(cap, make_anchor(spec))
+            except KeyError as exc:          # a self-view variant on a capture without self-view points
+                print(f"  {name:<56} skipped: {exc}")
+                break
             if spec is None and facts.get("area_m2"):
                 none_area[vid] = facts["area_m2"]
             if anchor is not None:

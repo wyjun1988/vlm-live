@@ -1,0 +1,33 @@
+# M2 zero-shot, CUT3R at ~1 fps with the metric scale corrected at read time (I-37 v2, 2026-09-28).
+#   The state's scale drifts with the frames ingested (room area x1.18 at ~1 fps); the anchors that read a
+#   per-frame floor carried no signal (scripts/scale_anchor_lab.py), the calibration against the frame count does
+#   (scripts/scale_calibration.py: split-half room-area MRA 55.5 -> 63.8). One factor per video multiplies the room
+#   facts, distances and sizes the harness attaches; the geometry and the directions are untouched.
+#   Caveat: a, b were fitted on these same 60 videos (2 parameters; split-half 63.8 vs in-sample ~64.5).
+base_model: checkpoints/qwen3.5-4b
+dtype: bf16
+
+geometry:
+  name: cut3r
+  checkpoint: checkpoints/cut3r_512_dpt_4_64.pth
+  tap_layers: [6, 9, 12]
+  hidden_size: 768
+  image_size: 512
+  options:
+    repo_path: .refs/CUT3R
+    scale_anchor: {mode: frame_count, a: 0.3224, b: -1.3781}
+    scale_anchor_apply: global
+
+fusion:
+  mode: deepstack
+  inject_layers: [0, 1, 2]
+  merge_size: 2
+  zero_init: true
+
+lora:
+  enabled: false
+
+data:
+  max_pixels: 131072
+  max_images: 32
+  max_length: 8192

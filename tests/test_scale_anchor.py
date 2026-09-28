@@ -138,3 +138,44 @@ def test_global_factor_is_the_geometric_mean_of_the_per_frame_factors():
         a.update(*frame(s))
     assert a.history == pytest.approx([1 / 1.2, 1 / 1.5], rel=0.03)
     assert a.global_factor() == pytest.approx((1 / 1.2 * 1 / 1.5) ** 0.5, rel=0.03)
+
+
+def test_frame_count_scale_follows_the_calibration_curve():
+    from live3r.geometry.scale_anchor import FrameCountScale
+
+    fc = FrameCountScale(a=0.3224, b=-1.3781)
+    assert fc.global_factor() == 1.0
+    for _ in range(80):
+        f = fc.update()
+    assert fc.ratio(80) == pytest.approx(1.04, abs=0.01) and f == pytest.approx(1 / 1.04 ** 0.5, abs=0.01)
+    assert fc.global_factor() == f and len(fc.history) == 80
+    assert build_anchor({"mode": "frame_count", "a": 0.3, "b": -1.0}).a == 0.3
+
+
+def test_self_view_scale_reads_the_state_scale_from_the_two_point_maps():
+    """World-frame points inflated by s relative to the camera-frame points, through the pose: ratio s."""
+    from live3r.geometry.scale_anchor import SelfViewScale
+
+    rng = np.random.default_rng(0)
+    q = np.stack([rng.uniform(-2, 2, 3000), rng.uniform(-1, 1, 3000), rng.uniform(0.5, 6, 3000)], 1)   # camera frame
+    r = np.eye(3)
+    t = np.array([0.4, 0.0, 1.0])
+
+    def frame_pair(s):
+        c2w = np.eye(4)
+        c2w[:3, :3], c2w[:3, 3] = r, t * s
+        world = (q @ r.T) * s + t * s               # the state's world frame, inflated by s about its origin
+        return c2w, world, np.ones(len(q)), q, np.ones(len(q))
+
+    absolute = SelfViewScale(relative=False, window=1)
+    assert absolute.update(*frame_pair(1.3)) == pytest.approx(1 / 1.3, rel=1e-3)
+    assert absolute.ratios[-1] == pytest.approx(1.3, rel=1e-3)
+    rel = SelfViewScale(ref_frames=2, window=1)
+    for _ in range(2):
+        assert rel.update(*frame_pair(1.1)) == 1.0          # the early stream sets the reference
+    assert rel.update(*frame_pair(1.1 * 1.4)) == pytest.approx(1 / 1.4, rel=1e-3)
+    assert rel.global_factor() == pytest.approx(1 / 1.4, rel=1e-3)
+    # without the self-view points the factor is held and the frame counted as skipped
+    c2w, world, conf, _, _ = frame_pair(2.0)
+    assert rel.update(c2w, world, conf) == pytest.approx(1 / 1.4, rel=1e-3) and rel.skipped == 1
+    assert build_anchor({"mode": "self_view", "window": 9}).window == 9 and build_anchor("self_view").uses_self_view

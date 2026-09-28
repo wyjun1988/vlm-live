@@ -92,3 +92,20 @@ def test_per_frame_anchor_mode_rescales_the_output():
     out = s._anchored(_floor_frame(1.4))
     assert out.extra["c2w"][0, 2, 3].item() == pytest.approx(2.0, rel=0.03)
     assert out.pointmap[0, 1].max().item() == pytest.approx(1.5, rel=0.03)
+
+
+def test_anchored_passes_the_self_view_points_to_an_estimator_that_reads_them():
+    from live3r.geometry.cut3r import CUT3RStream
+    from live3r.geometry.scale_anchor import SelfViewScale
+
+    s = CUT3RStream.__new__(CUT3RStream)
+    s.anchor, s.anchor_apply = SelfViewScale(relative=False, window=1), "global"
+    out = _floor_frame(1.3)
+    world = out.pointmap[0].permute(1, 2, 0).numpy().reshape(-1, 3).astype(np.float64)
+    c2w = out.extra["c2w"][0].numpy().astype(np.float64)
+    cam = (world - c2w[:3, 3]) @ c2w[:3, :3] / 1.3                     # the camera-frame points at true scale
+    out.extra["pointmap_self"] = torch.from_numpy(cam.T.reshape(1, 3, 50, 100).astype(np.float32))
+    out.extra["conf_self"] = torch.ones(1, 1, 50, 100)
+    s._anchored(out)
+    assert s.metric_scale == pytest.approx(1 / 1.3, rel=1e-3) and out.extra["metric_scale"] == s.metric_scale
+    assert out.extra["c2w"][0, 2, 3].item() == pytest.approx(2.0 * 1.3)   # global mode: geometry untouched
