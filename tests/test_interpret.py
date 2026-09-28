@@ -94,3 +94,21 @@ def test_paraphrase_fixture_is_consistent_with_the_schema():
             assert back.type == r["type"] and all(back.roles[k] == v for k, v in r["roles"].items()), r
     with pytest.raises(KeyError):
         _ = I.REQUIRED["bogus"]
+
+
+def test_compact_prompt_and_reply_route_like_the_full_one():
+    text = I.PROMPT_COMPACT.format(question="침대의 가장 긴 변은 몇 센티미터야?")
+    assert text.rstrip().endswith("Q: 침대의 가장 긴 변은 몇 센티미터야?\nA:") and '"objects"' not in text
+    reply = '{"type": "size", "roles": {"object": "bed"}, "question_en": "What is the longest dimension of the bed in cm?"}'
+    seen = {}
+
+    def ask(p):
+        seen["prompt"] = p
+        return reply
+
+    it = I.interpret("침대의 가장 긴 변은 몇 센티미터야?", ask, compact=True)
+    assert seen["prompt"].startswith(I.PROMPT_COMPACT[:40]) and it.source == "llm"
+    assert it.type == "size" and it.objects == ["bed"]                    # objects derived from the roles
+    assert I.SIZE_RE.search(it.canonical()).group(1) == "bed"
+    it2 = I.interpret("x", lambda p: '{"type": "rel_distance", "roles": {"target": "tv", "options": ["sofa", "chair"]}}')
+    assert it2.objects == ["tv", "sofa", "chair"]

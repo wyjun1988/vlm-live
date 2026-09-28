@@ -159,6 +159,25 @@ Q: {question}
 A:"""
 
 
+PROMPT_COMPACT = """You read a question about a video of an indoor scene and extract what it asks. Reply with ONE line of JSON and nothing else:
+"type": one of room_size, abs_distance, rel_distance, rel_direction, count, size, order, route, other
+"roles": objects in English, lower-case, singular -
+  abs_distance {{"a", "b"}} · rel_distance {{"target", "options": [...]}} · rel_direction {{"standing", "facing", "target", "choices": "easy" (left/right) | "medium" (left/right/back) | "hard" (front-left/front-right/back-left/back-right)}}
+  count {{"object"}} · size {{"object"}} · order {{"names": [...]}} · route {{"start", "facing", "goal"}} · room_size {{}} · other {{}}
+"question_en": the question translated to English - ONLY when the question is not in English; omit it otherwise
+
+Q: How many chairs are in this room?
+A: {{"type": "count", "roles": {{"object": "chair"}}}}
+Q: 소파에서 TV까지 거리가 몇 미터야?
+A: {{"type": "abs_distance", "roles": {{"a": "sofa", "b": "tv"}}, "question_en": "What is the distance between the sofa and the tv in meters?"}}
+Q: If I am standing by the refrigerator and facing the door, is the bed to my left, right, or back?
+A: {{"type": "rel_direction", "roles": {{"standing": "refrigerator", "facing": "door", "target": "bed", "choices": "medium"}}}}
+Q: What material is the table made of?
+A: {{"type": "other", "roles": {{}}}}
+Q: {question}
+A:"""
+
+
 def parse_llm(text: str) -> dict | None:
     """The first {...} block of the reply that parses as JSON (the model may wrap it in prose or a code fence)."""
     start = text.find("{")
@@ -193,18 +212,25 @@ def from_llm_json(d: dict, question: str) -> Interpretation | None:
             roles[k] = _clean(v)
     if t == "rel_direction" and roles.get("choices") not in ("easy", "medium", "hard"):
         roles["choices"] = "medium"
-    objects = [_clean(o) for o in (d.get("objects") or []) if _clean(o)] if isinstance(d.get("objects"), list) else []
+    if isinstance(d.get("objects"), list):
+        objects = [_clean(o) for o in d["objects"] if _clean(o)]
+    else:                                   # the compact format carries no object list: the roles name them
+        objects = []
+        for k in REQUIRED.get(t, ()):
+            v = roles.get(k)
+            objects += [x for x in (v if isinstance(v, list) else [v]) if x and x not in objects]
     it = Interpretation(t, objects, roles, str(d.get("question_en") or question).strip(), question, "llm")
     return it if it.complete() else None
 
 
-def interpret(question: str, ask: Callable[[str], str] | None = None) -> Interpretation:
+def interpret(question: str, ask: Callable[[str], str] | None = None, compact: bool = False) -> Interpretation:
     """`ask(prompt) -> reply` is the model; None reads with the rules only. A reply that does not yield a complete
-    reading falls back to the rules (source "rules-fallback")."""
+    reading falls back to the rules (source "rules-fallback"). compact=True asks for the short reply (no object
+    list, the English rendering only for non-English questions): a third of the output tokens, the same routing."""
     if ask is None:
         return interpret_rules(question)
     try:
-        reply = ask(PROMPT.format(question=question.strip()))
+        reply = ask((PROMPT_COMPACT if compact else PROMPT).format(question=question.strip()))
     except Exception:  # noqa: BLE001 - the reading step must never take the answer down
         reply = ""
     d = parse_llm(reply or "")

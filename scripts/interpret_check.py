@@ -16,6 +16,7 @@ import argparse
 import collections
 import json
 import random
+import statistics
 import sys
 import time
 from pathlib import Path
@@ -44,10 +45,13 @@ def roles_match(got: dict, want: dict) -> bool:
 
 
 def make_ask(model_path: str, device: str, max_new_tokens: int):
+    """(ask, last): ask(prompt) -> reply; last["tokens"] / last["reply"] describe the most recent reply (the output
+    tokens are the live cost - the prompt's fixed part would be cached)."""
     from transformers import AutoTokenizer, Qwen3_5ForConditionalGeneration
 
     tok = AutoTokenizer.from_pretrained(model_path)
     model = Qwen3_5ForConditionalGeneration.from_pretrained(model_path, dtype=torch.bfloat16).to(device).eval()
+    last: dict = {}
 
     @torch.no_grad()
     def ask(prompt: str) -> str:
@@ -55,9 +59,12 @@ def make_ask(model_path: str, device: str, max_new_tokens: int):
         ids = torch.tensor(tok(text, add_special_tokens=False).input_ids).unsqueeze(0).to(device)
         out = model.generate(input_ids=ids, attention_mask=torch.ones_like(ids), max_new_tokens=max_new_tokens,
                              do_sample=False)
-        return tok.decode(out[0, ids.shape[1]:], skip_special_tokens=True)
+        last["tokens"] = int(out.shape[1] - ids.shape[1])
+        last["prompt_tokens"] = int(ids.shape[1])
+        last["reply"] = tok.decode(out[0, ids.shape[1]:], skip_special_tokens=True)
+        return last["reply"]
 
-    return ask
+    return ask, last
 
 
 def vsi_sample(root: Path, n: int, seed: int) -> list[dict]:
@@ -81,22 +88,25 @@ def main() -> int:
     ap.add_argument("--vsi-n", type=int, default=160, help="VSI questions, spread evenly over the types (0 = skip)")
     ap.add_argument("--fixture", default="tests/fixtures/question_paraphrases.jsonl")
     ap.add_argument("--max-new-tokens", type=int, default=160)
+    ap.add_argument("--compact", action="store_true", help="the short reply format (PROMPT_COMPACT)")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--out", required=True)
     args = ap.parse_args()
 
-    ask = make_ask(args.model, args.device, args.max_new_tokens)
+    ask, last = make_ask(args.model, args.device, args.max_new_tokens)
     rows = []
     t0 = time.time()
 
     def run(question: str, want_type: str, want_roles: dict, source: str) -> dict:
         t = time.time()
-        it = interpret(question, ask)
+        last.clear()
+        it = interpret(question, ask, compact=args.compact)
         ok_type = it.type == want_type
         ok_roles = ok_type and roles_match(it.roles, want_roles)
         return {"set": source, "question": question, "want_type": want_type, "want_roles": want_roles,
                 "type": it.type, "roles": it.roles, "objects": it.objects, "question_en": it.question_en,
-                "source": it.source, "ok_type": ok_type, "ok_roles": ok_roles, "seconds": time.time() - t}
+                "source": it.source, "ok_type": ok_type, "ok_roles": ok_roles, "seconds": time.time() - t,
+                "reply": last.get("reply"), "reply_tokens": last.get("tokens"), "prompt_tokens": last.get("prompt_tokens")}
 
     if args.vsi_n:
         for d in vsi_sample(Path(args.vsi_root), args.vsi_n, args.seed):
@@ -147,10 +157,14 @@ def main() -> int:
             report.append(f"  [{r['set']}] {r['question'][:90]}\n      want {r['want_type']} {r['want_roles']}\n"
                           f"      got  {r['type']} {r['roles']} ({r['source']})")
     sec = sum(r["seconds"] for r in rows) / max(1, len(rows))
-    report.append(f"\n{len(rows)} questions · {sec:.2f} s per reading on {args.device} · {args.model}")
+    toks = [r["reply_tokens"] for r in rows if r.get("reply_tokens") is not None]
+    ptoks = [r["prompt_tokens"] for r in rows if r.get("prompt_tokens") is not None]
+    report.append(f"\n{len(rows)} questions · {sec:.2f} s per reading on {args.device} · {args.model} · "
+                  f"{'compact' if args.compact else 'full'} format · reply {statistics.mean(toks) if toks else 0:.0f} tokens "
+                  f"(prompt {statistics.mean(ptoks) if ptoks else 0:.0f})")
     print("\n".join(report))
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
-    Path(args.out).write_text(json.dumps({"model": args.model, "device": args.device, "rows": rows,
+    Path(args.out).write_text(json.dumps({"model": args.model, "device": args.device, "compact": args.compact, "rows": rows,
                                           "report": "\n".join(report), "elapsed": time.time() - t0},
                                          ensure_ascii=False, indent=1))
     return 0
