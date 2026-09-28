@@ -77,10 +77,12 @@ time (I-21). The rule that held every time: attach geometry only for what the fr
 |---|---|---|---|
 | keyframes only (the table above) | 57.8 | — | |
 | CUT3R fed ~1 fps, maps from every frame (I-05) | 56.9 | −0.9 | [−2.2, +0.4] |
-| + frame-count scale calibration on the metric facts at read time (I-37) | **58.0** | +1.1 vs 56.9 | [+0.3, +2.1] |
+| + frame-count scale calibration on the metric facts at read time (I-37) | 58.0 | +1.1 vs 56.9 | [+0.3, +2.1] |
+| + a scale-prior hint for room size, object size and distance questions (I-40b) | **58.3** | +0.3 vs 58.0 | [−0.0, +0.6] |
 
-Directions 69.2 → 75.0 from the accumulation; room 67.0 → 65.7 and abs distance 42.1 → 39.3 remain the cost of the
-drift. Parity with keyframes on 1–3-minute videos (+0.2 [−1.3, +1.9]); the maps are the ones a long video needs.
+Directions 69.2 → 75.0 from the accumulation; room 67.0 → 66.2 and abs distance 42.1 → 39.8 remain the cost of the
+drift; size 65.3 → 66.8 from the prior. vs keyframes only +0.5 [−0.9, +2.1]: the best measured configuration, and
+the maps are the ones a long video needs.
 | Every computable distance, min_frames=1 (I-29 run 1) | −0.7 vs I-27 | 1-view 3D estimates are bad |
 | Object size from measured extent (I-30) | model 66.7 vs ours 40.3 | category prior beats measurement (L6) |
 | Repeat the instruction after the question (I-31) | 4B −0.7, 0.8B −1.0 | one copy is enough at both sizes |
@@ -550,8 +552,12 @@ but the types split cleanly:
   route −2.7.
 So the model does not lack a reasoning scaffold — telling it how to reason makes it worse — but it does use a stated
 scale prior, and it does so on exactly the types where measurement was weakest or unavailable (sizes, I-30). Default
-hint set is now the three priors (`--type-hints room_size,size,abs_distance`); I-40b (queued) puts them on the
-streaming stack (58.0) to see whether the size gain survives next to the measured facts.
+hint set is now the three priors (`--type-hints room_size,size,abs_distance`).
+- **I-40b (23:39): the three priors on the streaming stack (~1 fps + facts + calibration, 58.0) → 58.3**, +0.3
+  [−0.0, +0.6]: size +1.5 (the same gain as without facts — the size type has no measurement, the prior is all it
+  gets), abs distance +0.6, room +0.5 (the prior adds a little even next to the measured room facts). vs keyframes
+  only 57.8: +0.5 [−0.9, +2.1]. Small, consistent, free (one sentence, three types) — adopted into the streaming
+  stack, which is now the best measured configuration.
 
 ### I-41 The model places the named objects first (focused two-turn) — **tested: negative, −4.4 (2026-09-28)**
 I-20 (whole-scene cognitive map first) scored −4.8. The user's proposal narrowed: before the question, one or two
@@ -808,6 +814,6 @@ timestamps (I-04), recency weighting / decay, possibly state windows (I-05).
 | 38 | I-41 describe the named objects first, 4B, base + format hint, no geometry | I-41, I-20 | done: **49.3**, −4.4 [−6.6, −2.2] vs 53.7 — closest −8.7, order −8.8, direction −7.2, count −5.6; the self-description family is closed |
 | 39 | I-40 + measured facts + "use the measurement" hint on the **2B** — does a hint raise the copy rate (50 %)? | I-40, I-22 | planned (tomorrow) |
 | 40 | I-38 compact prompt v2 (+ rel_distance and Korean easy-direction examples), 4B re-check | I-38 | done: **100 % / 99 % / routing 100 %** on VSI, **100 % / 100 %** paraphrases, 29 tokens, 2.6 s — compact is the default now |
-| 41 | I-40b the three prior hints (room_size, size, abs_distance) on the streaming stack (~1 fps + facts + calibration, 58.0) | I-40, I-37 | queued (chain 21, after chain 20) — does size +1.5 survive next to the facts? |
+| 41 | I-40b the three prior hints (room_size, size, abs_distance) on the streaming stack (~1 fps + facts + calibration, 58.0) | I-40, I-37 | done: **58.3**, +0.3 [−0.0, +0.6] — size +1.5, abs +0.6, room +0.5; +0.5 [−0.9, +2.1] vs keyframes. Adopted |
 | 25 | I-35 encoder bake-off: VGGT window 8 behind the same maps (directions attached, metric facts logged) | I-35 | done: **CUT3R wins** — direction 76.4 vs 56.7 (72 vs 54 on common questions), room area MRA 65.8 vs 9.5 (scale-free 69.0 vs 16.2) |
 | 14 | **Sensenova-only baseline on 4 nodes x 8 H100**: zero-shot VSI (full); S1 and S2 (one epoch each) real vs control, two seeds; plain SFT (no geometry); S2 joint (no S1); the 2B pair; S2 learning curve; gate | I-12, I-16, I-18, I-22 | four-day run from 09-26 (docs/SERVER_WEEKEND.md) |
