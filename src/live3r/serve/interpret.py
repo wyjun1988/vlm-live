@@ -271,10 +271,12 @@ def from_llm_json(d: dict, question: str) -> Interpretation | None:
     return it if it.complete() else None
 
 
-def interpret(question: str, ask: Callable[[str], str] | None = None, compact: bool = False) -> Interpretation:
+def interpret(question: str, ask: Callable[[str], str] | None = None, compact: bool = True) -> Interpretation:
     """`ask(prompt) -> reply` is the model; None reads with the rules only. A reply that does not yield a complete
-    reading falls back to the rules (source "rules-fallback"). compact=True asks for the short reply (no object
-    list, the English rendering only for non-English questions): a third of the output tokens, the same routing."""
+    reading falls back to the rules (source "rules-fallback"). compact (default) asks for the short reply - no object
+    list, the English rendering only for non-English questions: 29 vs 74 output tokens at the same accuracy (4B,
+    2026-09-28: 100 % type / 99 % roles / identical routing on VSI, 100 % / 100 % on paraphrased and Korean
+    questions); compact=False is the original full-JSON prompt."""
     if ask is None:
         return interpret_rules(question)
     try:

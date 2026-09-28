@@ -88,7 +88,8 @@ def main() -> int:
     ap.add_argument("--vsi-n", type=int, default=160, help="VSI questions, spread evenly over the types (0 = skip)")
     ap.add_argument("--fixture", default="tests/fixtures/question_paraphrases.jsonl")
     ap.add_argument("--max-new-tokens", type=int, default=160)
-    ap.add_argument("--compact", action="store_true", help="the short reply format (PROMPT_COMPACT)")
+    ap.add_argument("--compact", action=argparse.BooleanOptionalAction, default=True,
+                    help="the short reply format (PROMPT_COMPACT, the default); --no-compact = the full JSON prompt")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--out", required=True)
     args = ap.parse_args()

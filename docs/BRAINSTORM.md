@@ -523,8 +523,10 @@ fallback when the JSON does not parse (`scripts/interpret_check.py`, `eval_vsi_l
   rendering only for non-English questions) **29 tokens, 2.4 s**, VSI agreement type 99 % / roles 98 % / identical
   routing 99 %, paraphrases 93 % / 86 %. Its misses were structural — no rel_distance example in the compact prompt
   (read as abs_distance / order), Korean object names ("bedside", 책상 → table), easy vs medium choices — so the
-  prompt gained a rel_distance and a Korean easy-direction example; re-check queued (row 40). On an H100 with the
-  prefix cached, ~30 output tokens is the difference between the reading fitting the 1 s budget or not.
+  prompt gained a rel_distance and a Korean easy-direction example. **Re-check (21:38): 100 % type / 99 % roles /
+  identical routing 100 % on VSI, 100 % / 100 % on the paraphrases, still 29 tokens** (the two remaining "misses"
+  are the model reading better than the regex). The compact format is now the default of the llm backend. On an
+  H100 with the prefix cached, ~30 output tokens is what lets the reading fit the 1 s budget.
 - What it buys is not a VSI point (the templates were already read exactly) but the live product: questions in any
   wording or language route to the same facts.
 
@@ -805,7 +807,7 @@ timestamps (I-04), recency weighting / decay, possibly state windows (I-05).
 | 37 | I-40 type hints (all types), 4B, base + format hint, no geometry | I-40 | done: **53.1**, −0.5 [−2.6, +1.4] vs 53.7 — room +6.3, size +1.5, abs +1.1 / direction −6.5, rel dist −4.1, route −2.7: prior hints help, procedural hints hurt |
 | 38 | I-41 describe the named objects first, 4B, base + format hint, no geometry | I-41, I-20 | done: **49.3**, −4.4 [−6.6, −2.2] vs 53.7 — closest −8.7, order −8.8, direction −7.2, count −5.6; the self-description family is closed |
 | 39 | I-40 + measured facts + "use the measurement" hint on the **2B** — does a hint raise the copy rate (50 %)? | I-40, I-22 | planned (tomorrow) |
-| 40 | I-38 compact prompt v2 (+ rel_distance and Korean easy-direction examples), 4B re-check | I-38 | queued (chain 20, after chain 19) |
+| 40 | I-38 compact prompt v2 (+ rel_distance and Korean easy-direction examples), 4B re-check | I-38 | done: **100 % / 99 % / routing 100 %** on VSI, **100 % / 100 %** paraphrases, 29 tokens, 2.6 s — compact is the default now |
 | 41 | I-40b the three prior hints (room_size, size, abs_distance) on the streaming stack (~1 fps + facts + calibration, 58.0) | I-40, I-37 | queued (chain 21, after chain 20) — does size +1.5 survive next to the facts? |
 | 25 | I-35 encoder bake-off: VGGT window 8 behind the same maps (directions attached, metric facts logged) | I-35 | done: **CUT3R wins** — direction 76.4 vs 56.7 (72 vs 54 on common questions), room area MRA 65.8 vs 9.5 (scale-free 69.0 vs 16.2) |
 | 14 | **Sensenova-only baseline on 4 nodes x 8 H100**: zero-shot VSI (full); S1 and S2 (one epoch each) real vs control, two seeds; plain SFT (no geometry); S2 joint (no S1); the 2B pair; S2 learning curve; gate | I-12, I-16, I-18, I-22 | four-day run from 09-26 (docs/SERVER_WEEKEND.md) |

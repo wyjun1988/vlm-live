@@ -134,3 +134,16 @@ def test_type_hints_default_to_the_prior_hints_only():
     assert I.type_hint(direction) == "" and I.type_hint(room).startswith("Hint: estimate the floor area")
     assert I.type_hint(direction, "all").startswith("Hint: first fix your pose")
     assert I.type_hint(direction, ("rel_direction",)) and I.type_hint(room, ("rel_direction",)) == ""
+
+
+def test_compact_is_the_default_prompt_of_the_llm_backend():
+    seen = {}
+
+    def ask(p):
+        seen["prompt"] = p
+        return '{"type": "count", "roles": {"object": "chair"}}'
+
+    assert I.interpret("How many chairs?", ask).type == "count"
+    assert seen["prompt"].startswith(I.PROMPT_COMPACT[:60]) and '"objects"' not in seen["prompt"]
+    I.interpret("How many chairs?", ask, compact=False)
+    assert seen["prompt"].startswith(I.PROMPT[:60])
