@@ -70,6 +70,7 @@ time (I-21). The rule that held every time: attach geometry only for what the fr
 | Per-frame camera-height scale anchor (I-37 v1) | **−8.3** | rescaling each frame by its own factor breaks the layout; the signal is wrong without a floor in view |
 | One reasoning hint per type, all types (I-40) | −0.5 | prior hints +6.3 / +1.5 / +1.1 on room / size / distance, procedural hints −6.5 / −4.1 / −2.7 on direction / closest / route — keep the priors only |
 | The model places the named objects first (I-41) | **−4.4** | its own placement is wrong often enough to cost on every relational type; same failure as I-20 (−4.8) |
+| "Trust the measurements" sentence, 2B (I-42) | +0.1 | copy rate 53 → 49 %: a small model's fact use is not an instruction problem |
 
 ### Adopted for the streaming path (~1 fps accumulation)
 
@@ -570,6 +571,14 @@ towards the description even on the types the description does not address (orde
 I-09 (−13.7) and I-21 (thinking, null): **the model must not write about the scene before answering**; what helps
 is a measured fact or a stated prior, never its own narration.
 
+### I-42 "Trust the measurements" hint for the 2B — **tested: null (2026-09-29, 01:01)**
+The 2B follows an attached direction fact 53 % of the time (the 4B 93 %). One sentence after the facts — "the
+measurements above come from a 3D reconstruction of the video; trust them over your own estimate" — on the 2B facts
+run (43.5): **43.6, +0.1 [−0.6, +0.8]**; copy rate 53 → 49 %, direction −0.9, room +1.5. Instruction does not make a
+small model use the facts; that is capacity or training. On the 157 direction questions with a fact, the 4B copies
+93 % and answers 80 % right against a fact that is right 83 % — it is already at the facts' ceiling. This is the
+precise case for I-39: teach fact use by training, not by prompt, and it matters for the small models only.
+
 ### Lessons so far (zero-shot, 4B)
 - **L6 Attach geometry only for scene-specific quantities; the model's prior already wins on canonical ones.**
   Object size is a property of the object category — a door is ~135 cm, a sofa ~180 cm — and the pretrained model
@@ -815,5 +824,7 @@ timestamps (I-04), recency weighting / decay, possibly state windows (I-05).
 | 39 | I-40 + measured facts + "use the measurement" hint on the **2B** — does a hint raise the copy rate (50 %)? | I-40, I-22 | planned (tomorrow) |
 | 40 | I-38 compact prompt v2 (+ rel_distance and Korean easy-direction examples), 4B re-check | I-38 | done: **100 % / 99 % / routing 100 %** on VSI, **100 % / 100 %** paraphrases, 29 tokens, 2.6 s — compact is the default now |
 | 41 | I-40b the three prior hints (room_size, size, abs_distance) on the streaming stack (~1 fps + facts + calibration, 58.0) | I-40, I-37 | done: **58.3**, +0.3 [−0.0, +0.6] — size +1.5, abs +0.6, room +0.5; +0.5 [−0.9, +2.1] vs keyframes. Adopted |
+| 42 | I-42 "trust the measurements" hint, 2B + routed facts (43.5, copy rate 53 %) | I-42, I-22 | done: **43.6**, +0.1 [−0.6, +0.8]; copy rate 49 % — null. Fact use in small models needs training (I-39) |
+| 43 | out-of-sample check of the adopted stacks on 60 *other* videos (seed 2): streaming stack (58.3 config) vs keyframes-only adopted (57.8 config) | I-37, I-40 | running (chain 23, overnight) — the calibration's coefficients were fitted on the seed-1 videos |
 | 25 | I-35 encoder bake-off: VGGT window 8 behind the same maps (directions attached, metric facts logged) | I-35 | done: **CUT3R wins** — direction 76.4 vs 56.7 (72 vs 54 on common questions), room area MRA 65.8 vs 9.5 (scale-free 69.0 vs 16.2) |
 | 14 | **Sensenova-only baseline on 4 nodes x 8 H100**: zero-shot VSI (full); S1 and S2 (one epoch each) real vs control, two seeds; plain SFT (no geometry); S2 joint (no S1); the 2B pair; S2 learning curve; gate | I-12, I-16, I-18, I-22 | four-day run from 09-26 (docs/SERVER_WEEKEND.md) |
