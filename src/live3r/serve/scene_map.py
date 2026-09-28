@@ -128,21 +128,25 @@ class SceneMap:
         p[:, 2] -= np.percentile(z, 2)
         return p
 
-    def facts(self) -> dict:
-        """측정값 — 방 크기(바닥 bbox 2~98 백분위), 천장 높이, 카메라 이동 거리."""
+    def facts(self, scale: float = 1.0) -> dict:
+        """측정값 — 방 크기(바닥 bbox 2~98 백분위), 천장 높이, 카메라 이동 거리.
+
+        scale: the stream's metric correction (CUT3RStream.metric_scale, I-37) - lengths x scale, the area x scale^2.
+        The points themselves are never rescaled (frames corrected by different factors break the layout)."""
         if self.n_points < 100 or not self._cams:
             return {}
         xy, z, R = self._frame()
         lo, hi = np.percentile(xy, 2, 0), np.percentile(xy, 98, 0)
-        w, l = float(hi[0] - lo[0]), float(hi[1] - lo[1])
+        w, l = float(hi[0] - lo[0]) * scale, float(hi[1] - lo[1]) * scale
         zl, zh = np.percentile(z, 2), np.percentile(z, 98)
         cams = np.stack([c for c, _, _ in (self._cams[k] for k in sorted(self._cams))])
-        path = float(np.linalg.norm(np.diff(cams, axis=0), axis=1).sum()) if len(cams) > 1 else 0.0
-        return {"width_m": w, "length_m": l, "area_m2": w * l, "height_m": float(zh - zl), "path_m": path}
+        path = float(np.linalg.norm(np.diff(cams, axis=0), axis=1).sum()) * scale if len(cams) > 1 else 0.0
+        return {"width_m": w, "length_m": l, "area_m2": w * l, "height_m": float(zh - zl) * scale, "path_m": path,
+                "scale": scale}
 
-    def room_facts(self) -> str:
+    def room_facts(self, scale: float = 1.0) -> str:
         """Room measurements only, one sentence — for question-time routing (I-27: attach to room questions)."""
-        f = self.facts()
+        f = self.facts(scale)
         if not f:
             return ""
         return (f"Measured from a 3D reconstruction of the video: the room is about {f['width_m']:.1f} m by "

@@ -1,6 +1,7 @@
 """Windowed CUT3R state (I-36): the reset bookkeeping keeps every window in one metric global frame."""
 
 import numpy as np
+import pytest
 import torch
 
 from live3r.geometry.base import GeomOutput
@@ -48,3 +49,46 @@ def test_reset_chainer_is_not_due_before_the_window_fills_or_without_an_overlap_
     assert not ch.due()
     ch.apply(GeomOutput(tokens={}, grid_hw=(1, 1), extra={"c2w": torch.eye(4)[None]}))
     assert ch.due()
+
+
+def _stream(apply: str):
+    """A CUT3RStream without its network: only the anchor bookkeeping of `_anchored` / `metric_scale` is under test."""
+    from live3r.geometry.cut3r import CUT3RStream
+    from live3r.geometry.scale_anchor import ScaleAnchor
+
+    s = CUT3RStream.__new__(CUT3RStream)
+    s.anchor = ScaleAnchor(mode="floor_level", ref_frames=2, window=1)
+    s.anchor_apply = apply
+    return s
+
+
+def _floor_frame(scale: float) -> GeomOutput:
+    rng = np.random.default_rng(0)
+    floor = np.stack([rng.uniform(-3, 3, 4000), np.full(4000, 1.5), rng.uniform(0, 6, 4000)], 1)
+    wall = np.stack([rng.uniform(-3, 3, 1000), rng.uniform(-1.0, 1.5, 1000), np.full(1000, 6.0)], 1)
+    pts = np.concatenate([floor, wall]) * scale
+    m = np.eye(4)
+    m[:3, 3] = [0.5 * scale, 0.0, 2.0 * scale]
+    return GeomOutput(tokens={}, grid_hw=(1, 1), pointmap=torch.from_numpy(pts.T.reshape(1, 3, 50, 100).astype(np.float32)),
+                      conf=torch.ones(1, 1, 50, 100), extra={"c2w": torch.from_numpy(m.astype(np.float32))[None]})
+
+
+def test_global_anchor_mode_leaves_the_geometry_alone_and_exposes_one_metric_scale():
+    s = _stream("global")
+    assert s.metric_scale == 1.0
+    for _ in range(2):
+        s._anchored(_floor_frame(1.0))
+    out = s._anchored(_floor_frame(1.4))
+    assert out.extra["scale_factor"] == pytest.approx(1 / 1.4, rel=0.03)
+    assert out.extra["c2w"][0, 2, 3].item() == pytest.approx(2.0 * 1.4)          # untouched
+    assert out.pointmap[0, 1].max().item() == pytest.approx(1.5 * 1.4, rel=0.01)  # untouched
+    assert s.metric_scale == pytest.approx(1 / 1.4, rel=0.03) and out.extra["metric_scale"] == s.metric_scale
+
+
+def test_per_frame_anchor_mode_rescales_the_output():
+    s = _stream("per_frame")
+    for _ in range(2):
+        s._anchored(_floor_frame(1.0))
+    out = s._anchored(_floor_frame(1.4))
+    assert out.extra["c2w"][0, 2, 3].item() == pytest.approx(2.0, rel=0.03)
+    assert out.pointmap[0, 1].max().item() == pytest.approx(1.5, rel=0.03)

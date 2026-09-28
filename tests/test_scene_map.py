@@ -7,6 +7,7 @@ CUT3R 규약: 월드 = 첫 프레임 카메라 좌표계 (OpenCV — x 오른쪽
 import math
 
 import numpy as np
+import pytest
 import torch
 
 from live3r.geometry.base import GeomOutput
@@ -94,3 +95,22 @@ def test_room_facts_sentence_for_question_time_routing():
     t = _map().room_facts()
     assert "square meters" in t and "m high" in t and "Answer" not in t and t.endswith("\n")
     assert SceneMap().room_facts() == ""
+
+
+def test_facts_scale_multiplies_lengths_and_squares_the_area_without_touching_the_points():
+    """The stream's metric correction (I-37) is applied at read time only."""
+    rng = np.random.default_rng(3)
+    sm = SceneMap(stride=1)
+    for i in range(4):
+        pts = _room_points(3000, rng)
+        pm = torch.from_numpy(pts.T.reshape(1, 3, 30, 100).copy())
+        c2w = torch.eye(4)
+        c2w[0, 3] = -1.0 + 0.5 * i
+        sm.add(GeomOutput(tokens={}, grid_hw=(1, 1), pointmap=pm, conf=torch.ones(1, 1, 30, 100),
+                          extra={"c2w": c2w[None]}), frame_index=i)
+    raw, twice = sm.facts(), sm.facts(scale=2.0)
+    assert twice["width_m"] == pytest.approx(2 * raw["width_m"]) and twice["length_m"] == pytest.approx(2 * raw["length_m"])
+    assert twice["area_m2"] == pytest.approx(4 * raw["area_m2"]) and twice["height_m"] == pytest.approx(2 * raw["height_m"])
+    assert twice["path_m"] == pytest.approx(2 * raw["path_m"]) and (raw["scale"], twice["scale"]) == (1.0, 2.0)
+    assert sm.n_points == sm.n_points and sm.facts() == raw                     # nothing was rescaled in place
+    assert "about %.0f square meters" % twice["area_m2"] in sm.room_facts(scale=2.0)

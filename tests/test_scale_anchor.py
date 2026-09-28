@@ -126,3 +126,15 @@ def test_build_anchor_from_config_values():
         build_anchor("altitude")
     with pytest.raises(ValueError):
         build_anchor(3)
+
+
+def test_global_factor_is_the_geometric_mean_of_the_per_frame_factors():
+    a = ScaleAnchor(mode="floor_level", ref_frames=3, window=1)
+    assert a.global_factor() == 1.0
+    for _ in range(3):
+        a.update(*frame(1.0))
+    assert a.global_factor() == 1.0                              # no history yet, only the reference
+    for s in (1.2, 1.5):
+        a.update(*frame(s))
+    assert a.history == pytest.approx([1 / 1.2, 1 / 1.5], rel=0.03)
+    assert a.global_factor() == pytest.approx((1 / 1.2 * 1 / 1.5) ** 0.5, rel=0.03)

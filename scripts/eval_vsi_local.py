@@ -249,7 +249,8 @@ def rank_closest(options: list[str], target: str, om, min_frames: int, strict: b
 def object_facts_for(question: str, om, min_frames: int = 2, rel_distance: bool = False,
                      size_facts: bool = False, log: list | None = None, order_facts: bool = False,
                      count_facts: bool = False, direction_facts: bool = False, to_map=None,
-                     direction_min_frames: int | None = None, route_plan_facts: bool = False) -> str:
+                     direction_min_frames: int | None = None, route_plan_facts: bool = False,
+                     scale: float = 1.0) -> str:
     """I-28: at question time, look up only the objects the question names and attach measured closest-point
     distances — or nothing if an object is missing / seen in fewer than 2 keyframes. No counts (the model counts
     better from the images). NOTE: the names are read with VSI's question templates (benchmark-specific); a
@@ -260,8 +261,10 @@ def object_facts_for(question: str, om, min_frames: int = 2, rel_distance: bool 
     if m:
         a, b = m.group(1), m.group(2)
         d = om.pair_distance(a, b, min_frames=min_frames)
+        if d is not None:
+            d *= scale                     # the stream's metric correction (I-37): lengths only, never the layout
         if log is not None:  # record what each filter setting would have produced, from one run
-            log.append({"kind": "abs", "a": a, "b": b,
+            log.append({"kind": "abs", "a": a, "b": b, "scale": scale,
                         "views": [max((len(i["frames"]) for i in om.lookup(n, 1)), default=0) for n in (a, b)],
                         **{f"d{k}": om.pair_distance(a, b, min_frames=k) for k in (1, 2, 3, 4, 5, 6)}})
         if d is None:
@@ -272,8 +275,10 @@ def object_facts_for(question: str, om, min_frames: int = 2, rel_distance: bool 
     if m and size_facts:
         name = m.group(1)
         sz = om.size_m(name, min_frames=min_frames)
+        if sz is not None:
+            sz *= scale
         if log is not None:
-            log.append({"kind": "size", "a": name,
+            log.append({"kind": "size", "a": name, "scale": scale,
                         "views": max((len(i["frames"]) for i in om.lookup(name, 1)), default=0),
                         **{f"s{k}": om.size_m(name, min_frames=k) for k in (1, 2, 3, 4, 5, 6)}})
         if sz is not None:
@@ -353,7 +358,7 @@ def object_facts_for(question: str, om, min_frames: int = 2, rel_distance: bool 
         target = m.group(2)
         opts = [o.strip() for o in m.group(1).split(",") if o.strip() and o.strip() != target]
         meas = [(o, om.pair_distance(o, target, min_frames=min_frames)) for o in opts]
-        meas = [(o, d) for o, d in meas if d is not None]
+        meas = [(o, d * scale) for o, d in meas if d is not None]
         if len(meas) >= 2:
             return ("Measured from a 3D reconstruction of the video, closest-point distances to the " + target
                     + ": " + ", ".join(f"{o} {d:.1f} m" for o, d in meas) + ".\n")
@@ -541,6 +546,7 @@ def main() -> int:
 
     scored = {m: [] for m in modes}
     maps: dict[str, dict] = {}
+    metric_scales: dict[str, float] = {}
     oracle_vocab = args.oracle_vocab if args.oracle_vocab is not None else (args.detector == "vlm")
     owl = None
     if args.object_map and args.detector == "owlv2":
@@ -597,8 +603,12 @@ def main() -> int:
         for m, s in sessions.items():
             t2 = time.time()
             pre = s.prefill()
+            # the stream's metric correction (I-37, scale anchor in its global mode): one factor per video, applied
+            # to the room facts and distances at read time; the maps themselves stay as reconstructed
+            g = float(getattr(live.geometry, "metric_scale", 1.0))
+            metric_scales[f"{ds}/{scene}"] = g
             if s.scene_map is not None and s.scene_map.n_frames:
-                maps[f"{ds}/{scene}"] = s.scene_map.facts()
+                maps[f"{ds}/{scene}"] = s.scene_map.facts(scale=g)
                 if pre.get("map_tokens") and len(maps) <= args.save_maps and args.out:
                     mdir = Path(args.out).with_suffix("").parent / (Path(args.out).stem + "_maps")
                     mdir.mkdir(parents=True, exist_ok=True)
@@ -649,7 +659,7 @@ def main() -> int:
                 timing["selfmap"] += time.time() - t_sm
             room_facts = ""
             if (args.route_facts or args.route_objects) and s.scene_map is not None:
-                room_facts = s.scene_map.room_facts() if args.route_facts else ""
+                room_facts = s.scene_map.room_facts(scale=g) if args.route_facts else ""
                 if pre.get("map_text") and segs and segs[-1] == pre["map_text"]:
                     segs = segs[:-1]          # no always-on facts in the cached prefix
                 segs = segs + ["Answer directly in the requested format without explanation.\n"]
@@ -681,7 +691,7 @@ def main() -> int:
                                                 direction_facts=args.direction_facts,
                                                 direction_min_frames=args.direction_min_frames,
                                                 route_plan_facts=args.route_plan_facts,
-                                                to_map=s.scene_map.to_map) + attached
+                                                to_map=s.scene_map.to_map, scale=g) + attached
                     if len(meas_log) > n_before:   # only when THIS question added an entry
                         meas_log[-1].update(id=d["id"], gt=d["ground_truth"])
                 text = attached + text
@@ -788,7 +798,7 @@ def main() -> int:
             "oracle_vocab": bool(args.object_map and oracle_vocab), "objects": objects,
             "self_map": args.self_map, "self_maps": self_maps, "route_facts": args.route_facts,
             "route_objects": args.route_objects, "min_frames": args.min_frames, "measurements": meas_log,
-            "interpret": args.interpret, "interpretations": interp_log,
+            "interpret": args.interpret, "interpretations": interp_log, "metric_scales": metric_scales,
             "hint_after": args.hint_after, "order_facts": args.order_facts, "count_facts": args.count_facts,
             "direction_facts": args.direction_facts, "direction_min_frames": args.direction_min_frames,
             "route_plan_facts": args.route_plan_facts, "detect_stride": args.detect_stride, "view_gap": args.view_gap,

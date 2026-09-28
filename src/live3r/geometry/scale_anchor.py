@@ -137,6 +137,14 @@ class ScaleAnchor:
         self.history.append(self.factor)
         return self.factor
 
+    def global_factor(self) -> float:
+        """One factor for the whole stream so far: the geometric mean of the per-frame factors (1.0 before any).
+        This is the correction applied at read time to the metric facts - never to the geometry itself: frames
+        rescaled by different factors shift relative to each other and break the layout (I-37 v1, 2026-09-28)."""
+        if not self.history:
+            return 1.0
+        return float(np.exp(np.mean(np.log(self.history))))
+
     @staticmethod
     def apply(factor: float, c2w: np.ndarray, pts: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """Scale a camera pose and points about the world origin (rotation untouched)."""

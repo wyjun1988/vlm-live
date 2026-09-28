@@ -62,6 +62,7 @@ class CUT3RStream(GeometryStream):
         reset_every: int = 0,
         overlap: int = 3,
         scale_anchor=None,
+        scale_anchor_apply: str = "global",
     ) -> None:
         """net 을 직접 주면 체크포인트 없이 쓴다 (구조 검증·테스트용).
 
@@ -109,6 +110,11 @@ class CUT3RStream(GeometryStream):
         from .scale_anchor import build_anchor
 
         self.anchor = build_anchor(scale_anchor)
+        # "global": the anchor only measures; `metric_scale` is one factor per stream for the map readers (default).
+        # "per_frame": every output rescaled by its own factor - the v1 that broke the layout; kept for the record.
+        if scale_anchor_apply not in ("global", "per_frame"):
+            raise ValueError(f"scale_anchor_apply must be 'global' or 'per_frame', got {scale_anchor_apply!r}")
+        self.anchor_apply = scale_anchor_apply
         self.reset()
 
     # ------------------------------------------------------------------ 상태 관리
@@ -120,19 +126,25 @@ class CUT3RStream(GeometryStream):
         if getattr(self, "anchor", None) is not None:
             self.anchor.reset()
 
+    @property
+    def metric_scale(self) -> float:
+        """The factor the map readers multiply metric facts by (1.0 without an anchor or before it has a reference)."""
+        return self.anchor.global_factor() if self.anchor is not None else 1.0
+
     def _anchored(self, out: GeomOutput) -> GeomOutput:
-        """Rescale a raw output so the camera keeps its reference height above the floor (scale_anchor)."""
+        """Feed a raw output to the scale anchor; rescale it only in the per_frame mode (see `anchor_apply`)."""
         if self.anchor is None or out.pointmap is None or "c2w" not in out.extra:
             return out
         c2w = out.extra["c2w"][0].float().cpu().numpy()
         pts = out.pointmap[0].permute(1, 2, 0).float().cpu().numpy()
         conf = out.conf[0, 0].float().cpu().numpy() if out.conf is not None else None
         f = self.anchor.update(c2w, pts, conf)
-        if f != 1.0:
+        if self.anchor_apply == "per_frame" and f != 1.0:
             c2w2, pts2 = self.anchor.apply(f, c2w, pts)
             out.extra["c2w"] = torch.from_numpy(c2w2.astype(np.float32))[None].to(out.extra["c2w"].device)
             out.pointmap = torch.from_numpy(pts2.astype(np.float32)).permute(2, 0, 1)[None].to(out.pointmap.device)
         out.extra["scale_factor"] = f
+        out.extra["metric_scale"] = self.metric_scale
         return out
 
     @torch.no_grad()
@@ -412,4 +424,5 @@ def _build(cfg: GeometryConfig) -> CUT3RStream:
         reset_every=int(cfg.options.get("reset_every", 0)),
         overlap=int(cfg.options.get("overlap", 3)),
         scale_anchor=cfg.options.get("scale_anchor"),
+        scale_anchor_apply=cfg.options.get("scale_anchor_apply", "global"),
     )

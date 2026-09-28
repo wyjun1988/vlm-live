@@ -154,3 +154,21 @@ def test_rank_closest_strict_needs_every_option():
     assert ev.rank_closest(["chair", "stool", "stove", "sofa"], "tv", om, 2, strict=True) == "stool"
     assert ev.rank_closest(["chair", "stool", "stove", "sofa"], "tv", om, 3, strict=True) is None   # sofa unmeasured
     assert ev.rank_closest(["chair", "stool", "stove", "sofa"], "tv", om, 3, strict=False) == "stool"
+
+
+def test_object_facts_apply_the_streams_metric_scale_to_distances_only():
+    class DistMap(FakeMap):
+        def pair_distance(self, a, b, min_frames=2):
+            return 2.0
+
+        def size_m(self, name, min_frames=3):
+            return 0.8
+
+    om = DistMap({"sofa": [(0, 5)], "stove": [(1, 5)]})
+    q = "Measuring from the closest point of each object, what is the distance between the sofa and the stove (in meters)?"
+    log = []
+    text = ev.object_facts_for(q, om, min_frames=2, log=log, scale=1.5)
+    assert "about 3.0 m apart" in text and log[-1]["scale"] == 1.5 and log[-1]["d2"] == 2.0   # the log stays raw
+    assert "about 2.0 m apart" in ev.object_facts_for(q, om, min_frames=2)
+    size_q = "What is the length of the longest dimension (length, width, or height) of the sofa, measured in centimeters?"
+    assert "about 120 centimeters" in ev.object_facts_for(size_q, om, min_frames=2, size_facts=True, scale=1.5)
