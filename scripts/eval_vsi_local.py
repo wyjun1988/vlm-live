@@ -183,7 +183,7 @@ def object_xy(om, name: str, min_frames: int, to_map=None):
 
 # the VSI templates live in one place (live3r.serve.interpret); the LLM reading renders back to them
 from live3r.serve.interpret import (  # noqa: E402
-    ABS_RE, COUNT_RE, ORDER_RE, SIZE_RE, interpret, interpret_rules,
+    ABS_RE, COUNT_RE, ORDER_RE, SIZE_RE, describe_prompt, interpret, interpret_rules, type_hint,
     DIRECTION_RE as _DIRECTION_RE, REL_DIST_RE as _REL_DIST_RE, ROUTE_HEAD_RE as _ROUTE_HEAD_RE,
 )
 
@@ -456,6 +456,14 @@ def main() -> int:
     ap.add_argument("--interpret", choices=("rules", "llm"), default="rules",
                     help="how the question is read for routing: the VSI templates, or the model's own reading "
                          "(live3r.serve.interpret) rendered back to a template - any phrasing, any language")
+    ap.add_argument("--type-hints", action="store_true",
+                    help="I-40: one reasoning hint per question type (live3r.serve.interpret.HINTS), attached at "
+                         "question time to that type only - no measurement in it")
+    ap.add_argument("--describe-first", action="store_true",
+                    help="I-41: before the question the model describes, in one or two sentences, where the objects "
+                         "the question names are; that text goes in front of the question (the focused version of "
+                         "I-20, which had the whole scene described and scored -4.8)")
+    ap.add_argument("--describe-tokens", type=int, default=60)
     ap.add_argument("--thinking", action="store_true",
                     help="I-21 probe: thinking ON at question time (reason, then answer after </think>)")
     ap.add_argument("--think-tokens", type=int, default=512, help="--thinking: generation budget per question")
@@ -543,6 +551,7 @@ def main() -> int:
                                  do_sample=False)
         return live.tokenizer.decode(out[0, ids.shape[1]:], skip_special_tokens=True)
     interp_log: list = []
+    describe_log: list = []
 
     scored = {m: [] for m in modes}
     maps: dict[str, dict] = {}
@@ -694,6 +703,16 @@ def main() -> int:
                                                 to_map=s.scene_map.to_map, scale=g) + attached
                     if len(meas_log) > n_before:   # only when THIS question added an entry
                         meas_log[-1].update(id=d["id"], gt=d["ground_truth"])
+                if args.type_hints:                # I-40: one reasoning hint for this question's type, no measurement
+                    attached += type_hint(interp)
+                if args.describe_first and pc is not None:   # I-41: the model first places the named objects itself
+                    dq = describe_prompt(interp)
+                    if dq:
+                        t_desc = time.time()
+                        desc, _ = pc.answer(dq, max_new_tokens=args.describe_tokens, do_sample=False)
+                        timing["describe"] += time.time() - t_desc
+                        describe_log.append({"id": d["id"], "prompt": dq, "description": desc.strip()})
+                        attached = f"Your own notes on the video: {desc.strip()}\n" + attached
                 text = attached + text
                 if args.hint_after:
                     text = text + "\nAnswer directly in the requested format without explanation."
@@ -799,6 +818,7 @@ def main() -> int:
             "self_map": args.self_map, "self_maps": self_maps, "route_facts": args.route_facts,
             "route_objects": args.route_objects, "min_frames": args.min_frames, "measurements": meas_log,
             "interpret": args.interpret, "interpretations": interp_log, "metric_scales": metric_scales,
+            "type_hints": args.type_hints, "describe_first": args.describe_first, "descriptions": describe_log,
             "hint_after": args.hint_after, "order_facts": args.order_facts, "count_facts": args.count_facts,
             "direction_facts": args.direction_facts, "direction_min_frames": args.direction_min_frames,
             "route_plan_facts": args.route_plan_facts, "detect_stride": args.detect_stride, "view_gap": args.view_gap,

@@ -112,3 +112,17 @@ def test_compact_prompt_and_reply_route_like_the_full_one():
     assert I.SIZE_RE.search(it.canonical()).group(1) == "bed"
     it2 = I.interpret("x", lambda p: '{"type": "rel_distance", "roles": {"target": "tv", "options": ["sofa", "chair"]}}')
     assert it2.objects == ["tv", "sofa", "chair"]
+
+
+def test_type_hints_and_describe_prompt_follow_the_reading():
+    it = I.interpret_rules(TEMPLATES["rel_direction_medium"])
+    hint = I.type_hint(it)
+    assert hint.startswith("Hint: first fix your pose - you stand at the stove and face the sofa") and "tv" in hint
+    assert hint.endswith("\n")
+    assert I.type_hint(I.interpret_rules("What color is the sofa?")) == ""
+    assert "distinct chairs" in I.type_hint(I.interpret_rules(TEMPLATES["count"]))
+    for k, q in TEMPLATES.items():
+        assert isinstance(I.type_hint(I.interpret_rules(q)), str)
+    dq = I.describe_prompt(it)
+    assert dq.startswith("In one or two sentences, where are the stove, sofa, tv")
+    assert I.describe_prompt(I.interpret_rules("Describe the room.")) == ""

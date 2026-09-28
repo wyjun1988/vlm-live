@@ -518,6 +518,28 @@ fallback when the JSON does not parse (`scripts/interpret_check.py`, `eval_vsi_l
 - What it buys is not a VSI point (the templates were already read exactly) but the live product: questions in any
   wording or language route to the same facts.
 
+### I-39 Learn the scaffold — the pre-prompt as a training target — **planned (user direction, 2026-09-28)**
+Everything the harness attaches at question time (format instruction, routed facts, and now the type hints of I-40)
+is a hand-written prefix the base model reads zero-shot; the 4B follows a direction fact 93 % of the time, the 2B
+50 %. Two ways to make the model itself better at using it: (1) **fact-conditioned SFT** — train with the same
+routed facts in the prompt so the answer learns to rely on them (the "B" item of the 09-27 plan; it needs maps over
+the training videos); (2) **prompt tuning** — learn the pre-prompt's embeddings (a soft prefix, a few hundred
+parameters × hidden) on the same data, which touches no LLM weight beyond LoRA and can be swapped per question
+type. Order: measure I-40/I-41 first (do hand-written scaffolds move anything?), then train the one that does.
+
+### I-40 One reasoning hint per question type, no measurement — **running (2026-09-28 night)**
+The interpreter knows the type and the named objects, so a hint can go to that type only, a sentence long, after
+the cached prefix ("first fix your pose - you stand at the {a} and face the {b}; then decide on which side ... the
+{c} lies"; scale anchors for distances and sizes; count once per object; order = first visibility). It separates two
+explanations of the model's errors: a missing scaffold vs missing metric information. Base + format hint (53.7) with
+and without the hints, no geometry.
+
+### I-41 The model places the named objects first (focused two-turn) — **running (2026-09-28 night)**
+I-20 (whole-scene cognitive map first) scored −4.8. The user's proposal narrowed: before the question, one or two
+sentences on where only the objects the question names are, relative to each other and to the camera's path; the
+text goes in front of the question. Whether I-20 failed for describing everything, or for the model describing at
+all. Same reference (53.7). Cost: one extra ~60-token decode per question — only acceptable live if it pays.
+
 ### Lessons so far (zero-shot, 4B)
 - **L6 Attach geometry only for scene-specific quantities; the model's prior already wins on canonical ones.**
   Object size is a property of the object category — a door is ~135 cm, a sofa ~180 cm — and the pretrained model
@@ -757,5 +779,9 @@ timestamps (I-04), recency weighting / decay, possibly state windows (I-05).
 | 33 | I-37 frame-count calibration applied at read time (`frame_count`, a 0.3224 / b −1.3781), 4B, ~1 fps, routed + directions | I-37 | done: **58.0**, +1.1 [+0.3, +2.1] vs no correction (room 56.2 → 65.7); +0.2 [−1.3, +1.9] vs keyframes (direction +5.8, abs −2.8, room −1.3). Map room MRA 66.0, ratio 0.97. The ~1 fps stream is at parity with keyframes |
 | 34 | re-capture with the self-view points; `SelfViewScale` (relative / absolute, w5 / w15) in the lab next to the calibration | I-37 | queued (chain 17) — the per-video estimator the calibration cannot be |
 | 35 | I-38 question reading by the model (JSON → template), 4B and 0.8B, 160 VSI + 28 paraphrased/Korean | I-38 | done — 4B: type 100 % / roles 99 % / identical routing 100 % on VSI, 100 % / 100 % on the paraphrases, 4.9 s per reading (M2); **0.8B: 54 % / 29 % and 43 % / 32 %** — a small reader needs the LoRA, the 4B does not |
+| 36 | I-38 compact reply format vs full, 4B, accuracy and output tokens | I-38 | running (chain 18) |
+| 37 | I-40 type hints, 4B, base + format hint, no geometry | I-40 | queued (chain 19) — vs 53.7 |
+| 38 | I-41 describe the named objects first, 4B, base + format hint, no geometry | I-41, I-20 | queued (chain 19) — vs 53.7; I-20 was −4.8 |
+| 39 | I-40 + measured facts + "use the measurement" hint on the **2B** — does a hint raise the copy rate (50 %)? | I-40, I-22 | planned (tomorrow) |
 | 25 | I-35 encoder bake-off: VGGT window 8 behind the same maps (directions attached, metric facts logged) | I-35 | done: **CUT3R wins** — direction 76.4 vs 56.7 (72 vs 54 on common questions), room area MRA 65.8 vs 9.5 (scale-free 69.0 vs 16.2) |
 | 14 | **Sensenova-only baseline on 4 nodes x 8 H100**: zero-shot VSI (full); S1 and S2 (one epoch each) real vs control, two seeds; plain SFT (no geometry); S2 joint (no S1); the 2B pair; S2 learning curve; gate | I-12, I-16, I-18, I-22 | four-day run from 09-26 (docs/SERVER_WEEKEND.md) |

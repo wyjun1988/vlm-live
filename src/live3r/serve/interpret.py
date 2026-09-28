@@ -178,6 +178,40 @@ Q: {question}
 A:"""
 
 
+# One reasoning hint per question type, attached at question time to that type only (I-40). No measurement in it -
+# it tests whether the model lacks a scaffold or the metric information (the routed facts say the latter).
+HINTS = {
+    "rel_direction": "Hint: first fix your pose - you stand at the {standing} and face the {facing}; then decide on "
+                     "which side of that line of sight the {target} lies.",
+    "abs_distance": "Hint: estimate in meters, using typical object sizes as a scale (a door is about 2 m tall, "
+                    "a chair seat about 0.45 m high).",
+    "rel_distance": "Hint: compare the closest point of each candidate to the {target}; the nearest one wins.",
+    "count": "Hint: count distinct {object}s; the same one seen in several frames counts once.",
+    "size": "Hint: give the longest side in centimeters, judged against typical objects (a door is about 200 cm "
+            "tall, a chair seat about 45 cm high).",
+    "room_size": "Hint: estimate the floor area in square meters from the room's width and length.",
+    "order": "Hint: answer in the order in which the objects first become visible in the video.",
+    "route": "Hint: keep track of your heading along the path; at each turn decide left, right or back relative to "
+             "the direction you were walking.",
+}
+
+
+def type_hint(it: Interpretation) -> str:
+    """The hint for this reading, with the named objects filled in; "" for `other` or an incomplete reading."""
+    if it.type not in HINTS or not it.complete():
+        return ""
+    return HINTS[it.type].format(**{k: (", ".join(v) if isinstance(v, list) else v) for k, v in it.roles.items()}) + "\n"
+
+
+def describe_prompt(it: Interpretation) -> str:
+    """The first turn of the focused two-turn variant (I-41): the model describes only the objects the question
+    names, before the question is asked; "" when the reading names nothing."""
+    if not it.objects:
+        return ""
+    return ("In one or two sentences, where are the " + ", ".join(it.objects)
+            + " in the room relative to each other and to where the camera moved?")
+
+
 def parse_llm(text: str) -> dict | None:
     """The first {...} block of the reply that parses as JSON (the model may wrap it in prose or a code fence)."""
     start = text.find("{")
