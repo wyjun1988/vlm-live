@@ -68,6 +68,8 @@ time (I-21). The rule that held every time: attach geometry only for what the fr
 | CUT3R fed ~1 fps instead of the 32 keyframes (I-05) | −0.9 | angles improve (83 % direction facts), metric scale inflates ×1.18 |
 | Windowed state resets 40/3 · 80/6 (I-36) | −0.9 · −2.5 | half the scale back, the direction gain lost |
 | Per-frame camera-height scale anchor (I-37 v1) | **−8.3** | rescaling each frame by its own factor breaks the layout; the signal is wrong without a floor in view |
+| One reasoning hint per type, all types (I-40) | −0.5 | prior hints +6.3 / +1.5 / +1.1 on room / size / distance, procedural hints −6.5 / −4.1 / −2.7 on direction / closest / route — keep the priors only |
+| The model places the named objects first (I-41) | **−4.4** | its own placement is wrong often enough to cost on every relational type; same failure as I-20 (−4.8) |
 
 ### Adopted for the streaming path (~1 fps accumulation)
 
@@ -549,11 +551,16 @@ scale prior, and it does so on exactly the types where measurement was weakest o
 hint set is now the three priors (`--type-hints room_size,size,abs_distance`); I-40b (queued) puts them on the
 streaming stack (58.0) to see whether the size gain survives next to the measured facts.
 
-### I-41 The model places the named objects first (focused two-turn) — **running (2026-09-28 night)**
+### I-41 The model places the named objects first (focused two-turn) — **tested: negative, −4.4 (2026-09-28)**
 I-20 (whole-scene cognitive map first) scored −4.8. The user's proposal narrowed: before the question, one or two
 sentences on where only the objects the question names are, relative to each other and to the camera's path; the
-text goes in front of the question. Whether I-20 failed for describing everything, or for the model describing at
-all. Same reference (53.7). Cost: one extra ~60-token decode per question — only acceptable live if it pays.
+text goes in front of the question. **49.3 vs 53.7, −4.4 [−6.6, −2.2]**, 1,088 descriptions: closest object −8.7,
+appearance order −8.8, direction −7.2, counting −5.6, size −2.0; distances and room unchanged. So I-20 did not fail
+for describing *everything* — it fails whenever the model describes at all: its own placement ("the door is to the
+left of the mirror") is wrong often enough that reading it back costs more than it gives, and it drags the answer
+towards the description even on the types the description does not address (order, counting). Together with I-20,
+I-09 (−13.7) and I-21 (thinking, null): **the model must not write about the scene before answering**; what helps
+is a measured fact or a stated prior, never its own narration.
 
 ### Lessons so far (zero-shot, 4B)
 - **L6 Attach geometry only for scene-specific quantities; the model's prior already wins on canonical ones.**
@@ -796,7 +803,7 @@ timestamps (I-04), recency weighting / decay, possibly state windows (I-05).
 | 35 | I-38 question reading by the model (JSON → template), 4B and 0.8B, 160 VSI + 28 paraphrased/Korean | I-38 | done — 4B: type 100 % / roles 99 % / identical routing 100 % on VSI, 100 % / 100 % on the paraphrases, 4.9 s per reading (M2); **0.8B: 54 % / 29 % and 43 % / 32 %** — a small reader needs the LoRA, the 4B does not |
 | 36 | I-38 compact reply format vs full, 4B, accuracy and output tokens | I-38 | done: full 74 tokens / 4.9 s (100 % / 99 %); compact **29 tokens / 2.4 s**, 99 % / 98 % on VSI (routing 99 % identical), 93 % / 86 % on the paraphrases |
 | 37 | I-40 type hints (all types), 4B, base + format hint, no geometry | I-40 | done: **53.1**, −0.5 [−2.6, +1.4] vs 53.7 — room +6.3, size +1.5, abs +1.1 / direction −6.5, rel dist −4.1, route −2.7: prior hints help, procedural hints hurt |
-| 38 | I-41 describe the named objects first, 4B, base + format hint, no geometry | I-41, I-20 | queued (chain 19) — vs 53.7; I-20 was −4.8 |
+| 38 | I-41 describe the named objects first, 4B, base + format hint, no geometry | I-41, I-20 | done: **49.3**, −4.4 [−6.6, −2.2] vs 53.7 — closest −8.7, order −8.8, direction −7.2, count −5.6; the self-description family is closed |
 | 39 | I-40 + measured facts + "use the measurement" hint on the **2B** — does a hint raise the copy rate (50 %)? | I-40, I-22 | planned (tomorrow) |
 | 40 | I-38 compact prompt v2 (+ rel_distance and Korean easy-direction examples), 4B re-check | I-38 | queued (chain 20, after chain 19) |
 | 41 | I-40b the three prior hints (room_size, size, abs_distance) on the streaming stack (~1 fps + facts + calibration, 58.0) | I-40, I-37 | queued (chain 21, after chain 20) — does size +1.5 survive next to the facts? |
