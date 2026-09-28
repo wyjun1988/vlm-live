@@ -61,7 +61,7 @@ class CUT3RStream(GeometryStream):
         net=None,
         reset_every: int = 0,
         overlap: int = 3,
-        scale_anchor: str | None = None,
+        scale_anchor=None,
     ) -> None:
         """net 을 직접 주면 체크포인트 없이 쓴다 (구조 검증·테스트용).
 
@@ -103,13 +103,12 @@ class CUT3RStream(GeometryStream):
         # 장면 지도 프롬프트(serve/scene_map.py)용. 헤드(DPT)는 토큰만 쓸 때는 필요 없어서 기본은 끔.
         self.decode_points = False
         self.windowing = ResetChainer(reset_every, overlap) if reset_every > 0 else None
-        # scale_anchor="camera_height": undo the state's scale drift at the output (I-37) - metric facts only,
-        # angles untouched. Applied to the raw output, before any window chaining.
-        from .scale_anchor import CameraHeightAnchor
+        # scale_anchor: undo the state's scale drift at the output (I-37) - metric facts only, angles untouched.
+        # A mode name ("camera_height" / "floor_level") or a dict of ScaleAnchor arguments; applied to the raw
+        # output, before any window chaining.
+        from .scale_anchor import build_anchor
 
-        self.anchor = CameraHeightAnchor() if scale_anchor == "camera_height" else None
-        if scale_anchor not in (None, "", "none", "camera_height"):
-            raise ValueError(f"unknown scale_anchor {scale_anchor!r} (camera_height or none)")
+        self.anchor = build_anchor(scale_anchor)
         self.reset()
 
     # ------------------------------------------------------------------ 상태 관리
