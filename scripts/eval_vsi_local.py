@@ -183,7 +183,7 @@ def object_xy(om, name: str, min_frames: int, to_map=None):
 
 # the VSI templates live in one place (live3r.serve.interpret); the LLM reading renders back to them
 from live3r.serve.interpret import (  # noqa: E402
-    ABS_RE, COUNT_RE, ORDER_RE, SIZE_RE, describe_prompt, interpret, interpret_rules, type_hint,
+    ABS_RE, COUNT_RE, FACTS_HINT, ORDER_RE, SIZE_RE, describe_prompt, interpret, interpret_rules, type_hint,
     DIRECTION_RE as _DIRECTION_RE, REL_DIST_RE as _REL_DIST_RE, ROUTE_HEAD_RE as _ROUTE_HEAD_RE,
 )
 
@@ -466,6 +466,9 @@ def main() -> int:
                          "the question names are; that text goes in front of the question (the focused version of "
                          "I-20, which had the whole scene described and scored -4.8)")
     ap.add_argument("--describe-tokens", type=int, default=60)
+    ap.add_argument("--facts-hint", action="store_true",
+                    help="I-42: after attached measurements, one sentence telling the model to trust them over its "
+                         "own estimate (the 2B follows direction facts only 50%% of the time, the 4B 93%%)")
     ap.add_argument("--thinking", action="store_true",
                     help="I-21 probe: thinking ON at question time (reason, then answer after </think>)")
     ap.add_argument("--think-tokens", type=int, default=512, help="--thinking: generation budget per question")
@@ -706,6 +709,8 @@ def main() -> int:
                                                 to_map=s.scene_map.to_map, scale=g) + attached
                     if len(meas_log) > n_before:   # only when THIS question added an entry
                         meas_log[-1].update(id=d["id"], gt=d["ground_truth"])
+                if args.facts_hint and attached:   # I-42: tell the model to trust the attached measurements
+                    attached += FACTS_HINT
                 if args.type_hints:                # I-40: one reasoning hint for this question's type, no measurement
                     attached += type_hint(interp, hint_types)
                 if args.describe_first and pc is not None:   # I-41: the model first places the named objects itself
@@ -822,6 +827,7 @@ def main() -> int:
             "route_objects": args.route_objects, "min_frames": args.min_frames, "measurements": meas_log,
             "interpret": args.interpret, "interpretations": interp_log, "metric_scales": metric_scales,
             "type_hints": args.type_hints, "describe_first": args.describe_first, "descriptions": describe_log,
+            "facts_hint": args.facts_hint,
             "hint_after": args.hint_after, "order_facts": args.order_facts, "count_facts": args.count_facts,
             "direction_facts": args.direction_facts, "direction_min_frames": args.direction_min_frames,
             "route_plan_facts": args.route_plan_facts, "detect_stride": args.detect_stride, "view_gap": args.view_gap,

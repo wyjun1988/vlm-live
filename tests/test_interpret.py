@@ -147,3 +147,7 @@ def test_compact_is_the_default_prompt_of_the_llm_backend():
     assert seen["prompt"].startswith(I.PROMPT_COMPACT[:60]) and '"objects"' not in seen["prompt"]
     I.interpret("How many chairs?", ask, compact=False)
     assert seen["prompt"].startswith(I.PROMPT[:60])
+
+
+def test_facts_hint_is_one_line_about_the_measurements():
+    assert I.FACTS_HINT.startswith("Hint: the measurements above") and I.FACTS_HINT.endswith("\n")

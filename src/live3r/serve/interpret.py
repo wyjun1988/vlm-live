@@ -207,6 +207,12 @@ HINTS = {
 HINT_DEFAULT = ("room_size", "size", "abs_distance")
 
 
+# Appended after attached measurements (I-42): does telling the model to trust them raise the copy rate of a model
+# that follows them only half the time (2B: 50 %, 4B: 93 % on the direction facts)?
+FACTS_HINT = ("Hint: the measurements above come from a 3D reconstruction of the video; trust them over your own "
+              "estimate.\n")
+
+
 def type_hint(it: Interpretation, only=HINT_DEFAULT) -> str:
     """The hint for this reading, with the named objects filled in; "" for `other`, an incomplete reading, or a type
     outside `only` (None or "all" = every type that has a hint)."""
