@@ -200,9 +200,19 @@ HINTS = {
 }
 
 
-def type_hint(it: Interpretation) -> str:
-    """The hint for this reading, with the named objects filled in; "" for `other` or an incomplete reading."""
+# Measured 2026-09-28 (4B, base + format hint, no geometry, 60 videos): the hints that supply a *prior* help -
+# room_size +6.3, size +1.5, abs_distance +1.1 on their types - and the ones that prescribe a *procedure* hurt -
+# rel_direction -6.5, rel_distance -4.1, route -2.7. Overall -0.5 [-2.6, +1.4] with all of them; the default set is
+# the three that helped.
+HINT_DEFAULT = ("room_size", "size", "abs_distance")
+
+
+def type_hint(it: Interpretation, only=HINT_DEFAULT) -> str:
+    """The hint for this reading, with the named objects filled in; "" for `other`, an incomplete reading, or a type
+    outside `only` (None or "all" = every type that has a hint)."""
     if it.type not in HINTS or not it.complete():
+        return ""
+    if only not in (None, "all") and it.type not in only:
         return ""
     return HINTS[it.type].format(**{k: (", ".join(v) if isinstance(v, list) else v) for k, v in it.roles.items()}) + "\n"
 

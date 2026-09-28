@@ -535,12 +535,19 @@ the training videos); (2) **prompt tuning** — learn the pre-prompt's embedding
 parameters × hidden) on the same data, which touches no LLM weight beyond LoRA and can be swapped per question
 type. Order: measure I-40/I-41 first (do hand-written scaffolds move anything?), then train the one that does.
 
-### I-40 One reasoning hint per question type, no measurement — **running (2026-09-28 night)**
+### I-40 One reasoning hint per question type, no measurement — **tested: priors help, procedures hurt (2026-09-28)**
 The interpreter knows the type and the named objects, so a hint can go to that type only, a sentence long, after
-the cached prefix ("first fix your pose - you stand at the {a} and face the {b}; then decide on which side ... the
-{c} lies"; scale anchors for distances and sizes; count once per object; order = first visibility). It separates two
-explanations of the model's errors: a missing scaffold vs missing metric information. Base + format hint (53.7) with
-and without the hints, no geometry.
+the cached prefix. Base + format hint (53.7) with a hint for every type, no geometry: **53.1, −0.5 [−2.6, +1.4]** —
+but the types split cleanly:
+- hints that supply a **prior** helped: room size +6.3 ("estimate the floor area from the room's width and length"),
+  object size +1.5 ("judged against typical objects - a door is about 200 cm"), abs distance +1.1 (the same scale
+  anchors in meters);
+- hints that prescribe a **procedure** hurt: relative direction −6.5 ("first fix your pose ..."), closest object −4.1,
+  route −2.7.
+So the model does not lack a reasoning scaffold — telling it how to reason makes it worse — but it does use a stated
+scale prior, and it does so on exactly the types where measurement was weakest or unavailable (sizes, I-30). Default
+hint set is now the three priors (`--type-hints room_size,size,abs_distance`); I-40b (queued) puts them on the
+streaming stack (58.0) to see whether the size gain survives next to the measured facts.
 
 ### I-41 The model places the named objects first (focused two-turn) — **running (2026-09-28 night)**
 I-20 (whole-scene cognitive map first) scored −4.8. The user's proposal narrowed: before the question, one or two
@@ -788,9 +795,10 @@ timestamps (I-04), recency weighting / decay, possibly state windows (I-05).
 | 34 | re-capture with the self-view points; `SelfViewScale` (relative / absolute, w5 / w15) in the lab next to the calibration | I-37 | done: **no signal** — self-view / world-view distance ratio 1.00 on every frame (corr −0.06…+0.01); the calibration's in-sample global MRA 66.0 confirmed in the same table |
 | 35 | I-38 question reading by the model (JSON → template), 4B and 0.8B, 160 VSI + 28 paraphrased/Korean | I-38 | done — 4B: type 100 % / roles 99 % / identical routing 100 % on VSI, 100 % / 100 % on the paraphrases, 4.9 s per reading (M2); **0.8B: 54 % / 29 % and 43 % / 32 %** — a small reader needs the LoRA, the 4B does not |
 | 36 | I-38 compact reply format vs full, 4B, accuracy and output tokens | I-38 | done: full 74 tokens / 4.9 s (100 % / 99 %); compact **29 tokens / 2.4 s**, 99 % / 98 % on VSI (routing 99 % identical), 93 % / 86 % on the paraphrases |
-| 37 | I-40 type hints, 4B, base + format hint, no geometry | I-40 | queued (chain 19) — vs 53.7 |
+| 37 | I-40 type hints (all types), 4B, base + format hint, no geometry | I-40 | done: **53.1**, −0.5 [−2.6, +1.4] vs 53.7 — room +6.3, size +1.5, abs +1.1 / direction −6.5, rel dist −4.1, route −2.7: prior hints help, procedural hints hurt |
 | 38 | I-41 describe the named objects first, 4B, base + format hint, no geometry | I-41, I-20 | queued (chain 19) — vs 53.7; I-20 was −4.8 |
 | 39 | I-40 + measured facts + "use the measurement" hint on the **2B** — does a hint raise the copy rate (50 %)? | I-40, I-22 | planned (tomorrow) |
 | 40 | I-38 compact prompt v2 (+ rel_distance and Korean easy-direction examples), 4B re-check | I-38 | queued (chain 20, after chain 19) |
+| 41 | I-40b the three prior hints (room_size, size, abs_distance) on the streaming stack (~1 fps + facts + calibration, 58.0) | I-40, I-37 | queued (chain 21, after chain 20) — does size +1.5 survive next to the facts? |
 | 25 | I-35 encoder bake-off: VGGT window 8 behind the same maps (directions attached, metric facts logged) | I-35 | done: **CUT3R wins** — direction 76.4 vs 56.7 (72 vs 54 on common questions), room area MRA 65.8 vs 9.5 (scale-free 69.0 vs 16.2) |
 | 14 | **Sensenova-only baseline on 4 nodes x 8 H100**: zero-shot VSI (full); S1 and S2 (one epoch each) real vs control, two seeds; plain SFT (no geometry); S2 joint (no S1); the 2B pair; S2 learning curve; gate | I-12, I-16, I-18, I-22 | four-day run from 09-26 (docs/SERVER_WEEKEND.md) |

@@ -456,9 +456,11 @@ def main() -> int:
     ap.add_argument("--interpret", choices=("rules", "llm"), default="rules",
                     help="how the question is read for routing: the VSI templates, or the model's own reading "
                          "(live3r.serve.interpret) rendered back to a template - any phrasing, any language")
-    ap.add_argument("--type-hints", action="store_true",
+    ap.add_argument("--type-hints", default=None,
                     help="I-40: one reasoning hint per question type (live3r.serve.interpret.HINTS), attached at "
-                         "question time to that type only - no measurement in it")
+                         "question time to that type only - no measurement in it. A comma list of types, or 'all' "
+                         "(measured 09-28: the prior-type hints room_size,size,abs_distance help, the procedural "
+                         "ones hurt)")
     ap.add_argument("--describe-first", action="store_true",
                     help="I-41: before the question the model describes, in one or two sentences, where the objects "
                          "the question names are; that text goes in front of the question (the focused version of "
@@ -552,6 +554,7 @@ def main() -> int:
         return live.tokenizer.decode(out[0, ids.shape[1]:], skip_special_tokens=True)
     interp_log: list = []
     describe_log: list = []
+    hint_types = "all" if args.type_hints in ("all", "*") else tuple(t for t in (args.type_hints or "").split(",") if t)
 
     scored = {m: [] for m in modes}
     maps: dict[str, dict] = {}
@@ -704,7 +707,7 @@ def main() -> int:
                     if len(meas_log) > n_before:   # only when THIS question added an entry
                         meas_log[-1].update(id=d["id"], gt=d["ground_truth"])
                 if args.type_hints:                # I-40: one reasoning hint for this question's type, no measurement
-                    attached += type_hint(interp)
+                    attached += type_hint(interp, hint_types)
                 if args.describe_first and pc is not None:   # I-41: the model first places the named objects itself
                     dq = describe_prompt(interp)
                     if dq:

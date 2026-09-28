@@ -116,13 +116,21 @@ def test_compact_prompt_and_reply_route_like_the_full_one():
 
 def test_type_hints_and_describe_prompt_follow_the_reading():
     it = I.interpret_rules(TEMPLATES["rel_direction_medium"])
-    hint = I.type_hint(it)
+    hint = I.type_hint(it, "all")
     assert hint.startswith("Hint: first fix your pose - you stand at the stove and face the sofa") and "tv" in hint
     assert hint.endswith("\n")
-    assert I.type_hint(I.interpret_rules("What color is the sofa?")) == ""
-    assert "distinct chairs" in I.type_hint(I.interpret_rules(TEMPLATES["count"]))
+    assert I.type_hint(I.interpret_rules("What color is the sofa?"), "all") == ""
+    assert "distinct chairs" in I.type_hint(I.interpret_rules(TEMPLATES["count"]), "all")
     for k, q in TEMPLATES.items():
-        assert isinstance(I.type_hint(I.interpret_rules(q)), str)
+        assert isinstance(I.type_hint(I.interpret_rules(q), "all"), str)
     dq = I.describe_prompt(it)
     assert dq.startswith("In one or two sentences, where are the stove, sofa, tv")
     assert I.describe_prompt(I.interpret_rules("Describe the room.")) == ""
+
+
+def test_type_hints_default_to_the_prior_hints_only():
+    direction = I.interpret_rules(TEMPLATES["rel_direction_medium"])
+    room = I.interpret_rules(TEMPLATES["room_size"])
+    assert I.type_hint(direction) == "" and I.type_hint(room).startswith("Hint: estimate the floor area")
+    assert I.type_hint(direction, "all").startswith("Hint: first fix your pose")
+    assert I.type_hint(direction, ("rel_direction",)) and I.type_hint(room, ("rel_direction",)) == ""
