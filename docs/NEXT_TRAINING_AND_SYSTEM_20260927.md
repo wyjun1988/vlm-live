@@ -62,7 +62,9 @@ D. **Orientation-carrying geometry tokens** only if A shows scale-only again: to
 
 ## 2. System — measured tonight, and designs
 
-### 2a. Accumulating CUT3R before the question: is the result the same? (measuring tonight)
+*Updated 2026-09-28 with the results; the numbers are in docs/BRAINSTORM.md §7 (rows 24b–30) and docs/M2_LOCAL_20260924.md §10.*
+
+### 2a. Accumulating CUT3R before the question: is the result the same? — **measured: no (scale drift)**
 In every VSI run so far the encoder ingested only the 32 keyframes. Live, it ingests every frame (or every k-th)
 and the maps accumulate all of them; the state at a keyframe has seen 30× more frames. Two effects pull against
 each other: more points and views (better maps), and state dilution/drift (I-05). Running now on the adopted
@@ -72,7 +74,17 @@ direction accuracy — the same three facts, so a change is attributable to the 
 are worse, the live system needs windowed state resets or I-11 (register per-frame geometry ourselves); if
 better, accumulation is free accuracy.
 
-### 2b. Long video (measuring tonight, by proxy)
+**Measured (09-27/28).** Geometry every 30th frame (~1 fps): 56.9 vs 57.8 with the keyframes only (−0.9 [−2.2,
++0.4]). The two effects are both real: the direction facts get *better* with more views (accuracy 76.4 → 83.4 %),
+the metric facts get *worse* because the state's scale inflates with the number of frames ingested — room area
+measured/true 1.03 (keyframes) → 1.18–1.23 (~1 fps) → 1.39 (~3 fps, 54.7 on 20 videos), area MRA 65.8 → 55.5 →
+30.0. Windowed state resets (I-36) recover half the scale (ratio 1.10, 40/3 → 56.9) but re-align to drifted poses
+and lose the direction gain (83.4 → 77.7; 80/6 → 63.1, 55.3). So the fix must rescale without touching
+orientation: a scale anchor at the encoder's output (I-37; camera height / floor depth against the first frames),
+measured with an offline lab that replays variants on captured raw streams (`scripts/scale_anchor_lab.py`).
+Until it lands, the live design keeps the state but the metric facts are read from the keyframe-fed maps.
+
+### 2b. Long video — **measured by proxy: the facts compensate only partly, and need the scale fix first**
 VSI videos are 20 s – 3.6 min; the live setting is 10 minutes and more. What breaks first is the LLM's view:
 32 keyframes over 10 minutes is one frame per 19 s. The maps do not have that problem — they see every frame.
 Proxy tonight: the LLM sees **8** keyframes (as if the video were 4× longer than the budget allows) with and
@@ -82,7 +94,15 @@ from the LLM's window, what they contributed stays in the maps and is routed as 
 already how the system works; the open part is text *memory* beyond the maps (events, "last seen" per object),
 which needs a long/streaming benchmark (OVO-Bench or a long-video spatial set) — none is local.
 
-### 2c. Other encoders
+**Measured (09-27).** LLM at 8 keyframes: format hint 47.3 → facts from a keyframe-detected map 48.3 → facts from a
+map built online over the whole stream (detection every 30th frame, geometry ~1 fps) 48.8 (+1.5 [−0.8, +3.9]).
+The online map fixes coverage (direction facts on 35 → 87 % of the questions, distances 4 → 71 %), but dense
+detections dilute the view-count filter (`view_gap` now counts separated views) and inherit the scale drift of
+§2a. With the LLM at 32 keyframes the combined online configuration scores 55.1 vs 57.8: on 1–3-minute videos the
+keyframes already see everything, so the accumulated map only adds its errors. The long-video case is exactly
+where the map must carry the load, which makes the scale anchor (§2a) the prerequisite.
+
+### 2c. Other encoders — **first bake-off done: CUT3R wins clearly**
 The registry reserves `anchor3r`, `lingbot`, `vggt_window`; only `cut3r` and `dummy` are implemented. The routed-
 measurement harness is now an **encoder bake-off harness that needs no training**: any encoder that gives poses
 and point maps plugs into SceneMap/ObjectMap, and its quality is read directly as room-area MRA, distance MRA and
@@ -90,6 +110,12 @@ direction accuracy against VSI ground truth (today: 76% direction at ≥ 1 view,
 candidate: a sliding-window VGGT (the in-house system's encoder, `vggt_window`), because it removes the recurrent-
 state question of §2a at the cost of a window; then any streaming reconstruction model with the same outputs.
 This is a day of adapter work per encoder plus one 60-video run each, on the M2.
+
+**Measured (09-27).** `vggt_window` (VGGT-1B on a sliding window of 8 keyframes, windows chained by their shared
+cameras, 0.8B as the LLM since the facts do not depend on it): direction accuracy 56.7 % vs CUT3R's 76.4 % on the
+same questions, room-area MRA 9.5 vs 65.8, scale-free 16.2 vs 69.0. Each window's normalised scale does not chain
+consistently (VGGT/CUT3R area ratio IQR 0.24–3.85). Keep CUT3R; a candidate has to beat these three numbers in
+the same harness before any training.
 
 ### 2d. Dynamic scenes
 Everything assumes a static scene: CUT3R's state, the point maps, the instance merging. A moving person or a
