@@ -459,12 +459,24 @@ percentile of its points along up) vs the first 10 frames; points and camera div
   hand-held camera also moves up and down. (2) **Rescaling each frame by its own factor destroys the layout**:
   frames scaled differently shift relative to each other about the origin, so the room's shape and the angles
   between objects seen in different frames break. Angles do not need a scale at all.
-- v2 (`live3r.geometry.scale_anchor.ScaleAnchor`): floor depth below the first camera instead of camera height,
-  a support test, a gate that looks for the floor only where the current estimate predicts it; and the factor is to
-  be applied **once per video to the metric facts at read time** (geometric mean of the per-frame factors), the
-  geometry untouched. Chosen offline: `scripts/capture_geometry.py` records the raw stream of the 60 videos once,
-  `scripts/scale_anchor_lab.py` replays the variants against the room-area truth in seconds (per-frame and global
-  application side by side, and the correlation between the applied and the ideal factor as the signal check).
+- v2 lab (16:18, `scripts/capture_geometry.py` + `scripts/scale_anchor_lab.py` on the captured raw streams; the
+  capture reproduces the reference run's maps exactly): **every floor-reading variant carries no signal.** Camera
+  height or floor depth, windows 5–15, support test, gate — the correlation across videos between the factor applied
+  and the ideal one (sqrt(truth / measured area)) is −0.11…+0.13; the best variant equals `none` (55.0 vs 55.5)
+  while skipping half the frames; the global application never beats 48. The per-frame floor says nothing about how
+  far the state has inflated.
+- What does: **the number of frames ingested** (`scripts/scale_calibration.py`; corr(log area ratio, log n) = +0.44
+  over the 60 videos, n = 51–250). log(measured/true) = 0.3224 log n − 1.3781; applied as one factor per video to
+  the facts at read time, **split-half room-area MRA 55.5 → 63.8** (ceiling, the median-ratio oracle, 65.2). The same
+  curve applied per frame to the points scores 25.2 — so the drift is not a uniform inflation about the origin, and
+  no per-frame rescaling of the geometry can be right. `FrameCountScale` (`scale_anchor: {mode: frame_count, a, b}`,
+  read-time application via `CUT3RStream.metric_scale` → `SceneMap.facts(scale)` and the attached distances) is the
+  4B run in progress (`configs/m2_zeroshot_4b_anchor_v2.yaml`; caveat: a, b fitted on these 60 videos, 2 parameters).
+- Next estimator, plumbed and queued for a re-capture: **CUT3R's own two point maps.** The head predicts the frame's
+  points in the camera frame (`pts3d_in_self_view`, monocular, metric-trained) and in the state's world frame; their
+  distance ratio through the predicted pose is the state's scale per frame with no floor and no camera assumption
+  (`SelfViewScale`, relative to the first frames or absolute). If it correlates with the ideal factor, it replaces the
+  calibration (which cannot know a fast scan from a slow one).
 
 ### Lessons so far (zero-shot, 4B)
 - **L6 Attach geometry only for scene-specific quantities; the model's prior already wins on canonical ones.**
@@ -701,6 +713,8 @@ timestamps (I-04), recency weighting / decay, possibly state windows (I-05).
 | 27b | the same with the LLM at 32 keyframes — does dense detection lift the adopted 57.8? | I-02 | done: **55.4**, −2.4 [−4.0, −0.7] — direction coverage 77% → 86% but accuracy 76.4 → 75.6 (net 0); distances −8.0 (three near-duplicate "views"), room −10.8 (~1 fps drift) |
 | 30 | dense detection + time-separated view counting (`--view-gap 30`) + 40/3 resets, 32 keyframes — the combined fix | I-02, I-05, I-36 | done: **55.1**, −2.7 [−4.6, −0.9] vs keyframes only; −0.3 vs the dense map without the fixes. Distances beat the model only at ≥ 5–6 separated views; direction accuracy 69.9 (resets' cost); room ratio 1.10 |
 | 31 | I-37 v1 camera-height scale anchor, per-frame rescaling, ~1 fps | I-37, I-05 | done: **49.5**, −7.4 [−9.3, −5.4] vs no anchor — room MRA 14.3 (ratio 0.70), scale-free 21.7, direction facts 70.7 %: per-frame rescaling breaks the layout |
-| 32 | I-37 v2: raw-stream capture (60 videos) + offline lab over floor-level / camera-height × window × support × gate, per-frame vs global application | I-37 | running (chain 14) — pick by global MRA and factor–ideal correlation, then one 4B run of the winner |
+| 32 | I-37 v2: raw-stream capture (60 videos) + offline lab over floor-level / camera-height × window × support × gate, per-frame vs global application | I-37 | done: **no signal** — factor–ideal correlation −0.11…+0.13 for all 24 variants; best per-frame MRA 55.0 = none 55.5; global ≤ 48. Frame-count calibration instead: split-half MRA 63.8 (ceiling 65.2) |
+| 33 | I-37 frame-count calibration applied at read time (`frame_count`, a 0.3224 / b −1.3781), 4B, ~1 fps, routed + directions | I-37 | running (chain 16) — vs no anchor 56.9 / keyframes 57.8; expect the room type back near the keyframe level with the direction gain kept |
+| 34 | re-capture with the self-view points; `SelfViewScale` (relative / absolute, w5 / w15) in the lab next to the calibration | I-37 | queued (chain 17) — the per-video estimator the calibration cannot be |
 | 25 | I-35 encoder bake-off: VGGT window 8 behind the same maps (directions attached, metric facts logged) | I-35 | done: **CUT3R wins** — direction 76.4 vs 56.7 (72 vs 54 on common questions), room area MRA 65.8 vs 9.5 (scale-free 69.0 vs 16.2) |
 | 14 | **Sensenova-only baseline on 4 nodes x 8 H100**: zero-shot VSI (full); S1 and S2 (one epoch each) real vs control, two seeds; plain SFT (no geometry); S2 joint (no S1); the 2B pair; S2 learning curve; gate | I-12, I-16, I-18, I-22 | four-day run from 09-26 (docs/SERVER_WEEKEND.md) |
