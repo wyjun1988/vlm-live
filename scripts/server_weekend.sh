@@ -44,6 +44,7 @@ SFT_HOURS="${SFT_HOURS:-18}"                                      # plain SFT an
 SEEDS="${SEEDS:-2}"            # training seeds for the 4B real/control pair (seed 0, then 1, ...)
 EFF_BATCH=128
 SAVE_EVERY="${SAVE_EVERY:-500}"  # steps between checkpoints: resume point + learning-curve weights
+PROBE_EVERY="${PROBE_EVERY:-500}" # steps between holdout probes (train.py HoldoutProbe -> <arm>/probe.jsonl)
 LR=3e-5                        # projector (M2: 1e-3 made the injection 15-30x the vision signal)
 LORA_LR=1e-4
 VSI=(--videos 288 --seed 1)    # all of VSI-Bench: 288 videos, 5,130 questions
@@ -238,7 +239,9 @@ train_arm() {   # nproc accum gpus port cfg name hours epochs args...
       --config "$cfg" --ann data/sensenova.jsonl --media-root "$MEDIA" --grad-checkpointing \
       --output "$OUT/$name" --resume --epochs "$epochs" \
       --max-hours "$(awk -v h="$hours" 'BEGIN { print h * 1.25 }')" \
-      --grad-accum "$accum" --log-every 20 --save-every "$SAVE_EVERY" --lr "$LR" "$@" >> "$OUT/$name.log" 2>&1
+      --grad-accum "$accum" --log-every 20 --save-every "$SAVE_EVERY" --lr "$LR" \
+      --probe-ann data/sensenova.holdout.jsonl --probe-every "$PROBE_EVERY" --probe-n 32 --probe-gen 6 \
+      "$@" >> "$OUT/$name.log" 2>&1
   [[ -f "$OUT/$name/final.pt" ]] || { fail "$name - $OUT/$name.log"; return 1; }
   mark "$name"
 }

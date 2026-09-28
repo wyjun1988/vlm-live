@@ -124,6 +124,9 @@ the relative-direction facts found on 09-26 (I-33, → 57.8) go into the next ru
 7. **Learning curve**: VSI at 25 / 50 / 75 / 100 % of S2. Flat or falling after 25 % = the recipe, not the amount,
    is the limit.
 8. **Is S1 needed**: `s2_joint − s2_real`. **Size**: `s2_real_2b − s2_real`, and 2B real − control.
+9. **The path, not just the endpoint** (probe table): the step at which `shuffled − real` leaves 0 is when the
+   model starts reading the geometry's content; if it never does, the recipe is the problem before the amount is.
+   The greedy answers show whether the numeric answers collapse to one value (M2: "1.1") and when.
 
 ## Outputs (`outputs/weekend/`)
 
@@ -137,6 +140,7 @@ the relative-direction facts found on 09-26 (I-33, → 57.8) go into the next ru
 | `<arm>.log` | training logs (loss, `inj`, samples/s, memory, `sync OK`); every attempt appended |
 | `budget.env`, `budget.sft.env`, `budget.2b.env` | steps per arm and the speeds behind them |
 | `p7_ablation_s2.json`, `p7_ablation_2b.json` | holdout-loss ablations |
+| `<arm>/probe.jsonl` | the holdout probe during training (every 500 steps, 32 held-out samples): loss with real / shuffled / no geometry, 6 greedy answers; the report tabulates it |
 | `vsi/<run>.json` | VSI per run, with per-question scores (the report's bootstrap reads these) |
 | `gate/{base,base_video,trained}/`, `gate/general.env`, `gate_check.txt` | lmms-eval results, which general task was used, the verdict |
 | `latency_stream.json`, `latency_live.log` | gate 3 |

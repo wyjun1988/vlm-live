@@ -207,6 +207,139 @@ class GeomDonors:
                 f"기증자 없어 주입 없이 {self.no_donor}")
 
 
+class HoldoutProbe:
+    """Every --probe-every steps: the loss on a fixed set of held-out samples with real geometry, with another
+    sample's geometry (GeomDonors) and with none, plus a few greedy answers - the training-time view of what the
+    ablation (scripts/eval_geometry_ablation.py) measures once at the end.
+
+    Why: the weekend runs came back with final numbers only, and the questions they left open were about the path,
+    not the endpoint - when (if ever) real geometry starts beating shuffled geometry (the content signal), and
+    whether the numeric answers collapse to one value ("1.1") early or late. Rank 0 only, no_grad, eval mode
+    (LoRA dropout off), and never fatal: a failing probe logs a warning and training goes on. Rows are appended to
+    <output>/probe.jsonl; the log carries a one-line summary and the first generations."""
+
+    PIX = ("pixel_values", "image_grid_thw", "pixel_values_videos", "video_grid_thw")
+
+    def __init__(self, args, live: Live3RModel, prompt: PromptBuilder, cfg: Live3RConfig, device, out_dir: Path,
+                 is_main: bool) -> None:
+        self.enabled = bool(getattr(args, "probe_ann", None)) and is_main
+        if not self.enabled:
+            return
+        self.args, self.live, self.device = args, live, device
+        self.tok = prompt.tok
+        self.path = out_dir / "probe.jsonl"
+        self.no_geometry = bool(getattr(args, "no_geometry", False))
+        self.ds = SpatialVQADataset(
+            ann_path=args.probe_ann, media_root=args.media_root, prompt=prompt, spec=live.spec,
+            geom_long_side=cfg.geometry.image_size, geom_unit=getattr(live.geometry, "patch_size", 16),
+            data_cfg=cfg.data, max_samples=args.probe_n, seed=args.seed, require_media=True)
+        self.items: list[dict] | None = None
+        self.last_step: int | None = None
+
+    def _load(self) -> list[dict]:
+        if self.items is None:
+            self.items = []
+            for i in range(len(self.ds)):
+                try:
+                    self.items.append(self.ds[i])
+                except Exception as exc:  # noqa: BLE001 - a broken holdout record is not worth a crash
+                    logger.warning("probe: holdout sample %d skipped (%s)", i, exc)
+        return self.items
+
+    def _pix(self, it: dict) -> dict:
+        return {k: it[k].to(self.device) for k in self.PIX if k in it}
+
+    def _loss(self, it: dict, geo) -> float:
+        out = self.live(
+            input_ids=it["input_ids"].to(self.device), attention_mask=it["attention_mask"].to(self.device),
+            labels=it["labels"].to(self.device), mm_token_type_ids=it["mm_token_type_ids"].to(self.device),
+            geom_outs=geo, llm_grids=it.get("llm_grids") if geo is not None else None,
+            pool_temporal=it.get("pool_temporal", False), **self._pix(it))
+        return float(out.loss)
+
+    def _generate(self, it: dict, geo) -> tuple[str, str] | None:
+        """Greedy answer to the first supervised turn (prompt = everything before the first label), and its truth."""
+        labels = it["labels"][0]
+        sup = (labels != -100).nonzero().flatten()
+        if len(sup) == 0:
+            return None
+        p = int(sup[0])
+        tail = labels[p:]
+        end = (tail == -100).nonzero().flatten()
+        truth = self.tok.decode(tail[: int(end[0]) if len(end) else len(tail)], skip_special_tokens=True)
+        ids = it["input_ids"][:, :p].to(self.device)
+        kw = dict(input_ids=ids, attention_mask=torch.ones_like(ids), mm_token_type_ids=it["mm_token_type_ids"][:, :p].to(self.device),
+                  max_new_tokens=self.args.probe_max_new_tokens, do_sample=False, **self._pix(it))
+        if geo is not None and self.live.injector is not None:
+            geometry = self.live.build_geometry_embeds(geo, it.get("llm_grids"), it.get("pool_temporal", False))
+            with self.live.injector.primed(list(geometry.embeds), self.live.visual_pos_mask(ids)):
+                out = self.live.base.generate(**kw)
+        else:
+            out = self.live.base.generate(**kw)
+        return self.tok.decode(out[0, ids.shape[1]:], skip_special_tokens=True).strip(), truth.strip()
+
+    @torch.no_grad()
+    def run(self, step: int) -> dict | None:
+        if not self.enabled or step == self.last_step:
+            return None
+        self.last_step = step
+        t0 = time.perf_counter()
+        was_training = self.live.training
+        self.live.eval()
+        try:
+            items = self._load()
+            if not items:
+                logger.warning("probe: no usable holdout samples")
+                return None
+            geos = [self.live.run_geometry(it["geom_frames"]) if it["geom_frames"] and not self.no_geometry else None
+                    for it in items]
+            donors = GeomDonors(capacity=len(items) + 1)
+            for it, g in zip(items[-1:], geos[-1:]):
+                if g is not None:
+                    donors.prime(it["cache_key"], g)
+            loss: dict[str, list[float]] = {"real": [], "shuffled": [], "none": []}
+            gens = []
+            for k, (it, g) in enumerate(zip(items, geos)):
+                loss["none"].append(self._loss(it, None))
+                if g is not None:
+                    loss["real"].append(self._loss(it, g))
+                    sw = donors.swap(it["cache_key"], g)
+                    if sw is not None:
+                        loss["shuffled"].append(self._loss(it, sw))
+                if k < self.args.probe_gen:
+                    got = self._generate(it, g)
+                    if got is not None:
+                        gens.append({"id": it.get("id"), "truth": got[1], "answer": got[0]})
+            self.live.injector.clear()
+            mean = {k: (sum(v) / len(v) if v else None) for k, v in loss.items()}
+            paired = list(zip(loss["real"], loss["shuffled"]))
+            row = {"step": step, "n": len(items), "loss": mean,
+                   "shuffled_minus_real": (sum(s - r for r, s in paired) / len(paired)) if paired else None,
+                   "none_minus_real": (mean["none"] - mean["real"]) if mean["real"] is not None else None,
+                   "real_wins": (sum(r < s for r, s in paired) / len(paired)) if paired else None,
+                   "generations": gens, "seconds": time.perf_counter() - t0}
+            with open(self.path, "a") as f:
+                f.write(json.dumps(row, ensure_ascii=False) + "\n")
+            fmt = lambda v: "-" if v is None else f"{v:.4f}"  # noqa: E731
+            logger.info("probe step %d (n=%d, %.0fs): loss real %s shuffled %s none %s | shuffled-real %s (real wins %s) "
+                        "| none-real %s | answers: %s", step, len(items), row["seconds"], fmt(mean["real"]),
+                        fmt(mean["shuffled"]), fmt(mean["none"]), fmt(row["shuffled_minus_real"]),
+                        "-" if row["real_wins"] is None else f"{100 * row['real_wins']:.0f}%",
+                        fmt(row["none_minus_real"]),
+                        " · ".join(f"{g['answer'][:40]!r} (truth {g['truth'][:40]!r})" for g in gens[:3]) or "-")
+            return row
+        except Exception as exc:  # noqa: BLE001 - the probe must never take the run down
+            logger.warning("probe at step %d failed: %r", step, exc)
+            try:
+                self.live.injector.clear()
+            except Exception:  # noqa: BLE001
+                pass
+            return None
+        finally:
+            if was_training:
+                self.live.train()
+
+
 @torch.no_grad()
 def check_rank_sync(params, world: int, device) -> float:
     """모든 랭크의 학습 파라미터가 같은지 — DDP 가 기울기를 제대로 동기화하고 있다는 직접 증거.
@@ -440,6 +573,11 @@ def train(args) -> int:
                     total_steps, warmup, world, args.grad_accum, world * args.grad_accum, f"{len(ds):,}")
         if donors is not None:
             logger.info("⚠️ 대조 프로젝터 모드 — 각 샘플에 **다른 샘플의 기하**를 준다 (--geom-control shuffled)")
+    probe = HoldoutProbe(args, live, prompt, cfg, device, out_dir, is_main)
+    if probe.enabled:
+        logger.info("probe: %d holdout samples from %s every %d steps (+ %d greedy answers)", len(probe.ds),
+                    args.probe_ann, args.probe_every, args.probe_gen)
+        probe.run(step)                      # the starting point (zero-init projector: real == shuffled)
 
     micro = 0
     stop_early = False
@@ -576,6 +714,8 @@ def train(args) -> int:
                 t_last = time.perf_counter()
                 samples_since = 0
 
+            if probe.enabled and args.probe_every and step % args.probe_every == 0:
+                probe.run(step)
             if is_main and args.save_every and step % args.save_every == 0:
                 _save(live, out_dir / f"step{step}.pt")
                 save_resume(resume_path, live, opt, sched, step, micro_seen)
@@ -596,6 +736,7 @@ def train(args) -> int:
             break
 
     if is_main:
+        probe.run(step)                      # the endpoint (skipped when this step was just probed)
         _save(live, out_dir / "final.pt")
         if args.save_every:
             save_resume(resume_path, live, opt, sched, step, micro_seen)
@@ -661,6 +802,13 @@ def main() -> int:
     ap.add_argument("--geom-control", choices=["none", "shuffled"], default="none",
                     help="shuffled = 대조 프로젝터: 다른 샘플의 기하로 학습한다 (같은 데이터·시드로 진짜 기하 "
                          "학습과 나란히 돌려 차이를 기하 내용의 가치로 본다. GeomDonors 참고)")
+    ap.add_argument("--probe-ann", default=None,
+                    help="held-out annotations for the periodic probe (HoldoutProbe): loss with real / shuffled / no "
+                         "geometry and a few greedy answers, appended to <output>/probe.jsonl. Off when unset")
+    ap.add_argument("--probe-every", type=int, default=500, help="probe every N optimizer steps (also at start and end)")
+    ap.add_argument("--probe-n", type=int, default=32, help="held-out samples per probe")
+    ap.add_argument("--probe-gen", type=int, default=6, help="of those, how many get a greedy answer generated")
+    ap.add_argument("--probe-max-new-tokens", type=int, default=24)
     ap.add_argument("--weight-decay", type=float, default=0.0)
     ap.add_argument("--warmup-ratio", type=float, default=0.03)
     ap.add_argument("--grad-accum", type=int, default=16)

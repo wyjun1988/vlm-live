@@ -291,6 +291,53 @@ def section_training(out: Path) -> list[str]:
     return lines
 
 
+# -------------------------------------------------------------------------------------------------- probe
+def load_probe(path: Path) -> list[dict]:
+    rows = []
+    for ln in path.read_text(errors="replace").splitlines():
+        try:
+            rows.append(json.loads(ln))
+        except json.JSONDecodeError:
+            continue
+    return rows
+
+
+def section_probe(out: Path) -> list[str]:
+    """The holdout probe train.py runs every --probe-every steps (HoldoutProbe): when, if ever, real geometry starts
+    beating shuffled geometry, and what the answers look like along the way - the path, not just the endpoint."""
+    files = sorted(out.glob("s[12]_*/probe.jsonl"))
+    if not files:
+        return []
+    lines = ["## Holdout probe during training (loss, lower is better)", "",
+             "`shuffled - real` > 0 and growing = the model reads the geometry's content; `none - real` = the value "
+             "of the whole injection path; `real wins` = share of samples where real beats shuffled. Answers are "
+             "greedy, on the first probe samples.", ""]
+
+    def f4(v):
+        return "-" if v is None else f"{v:.4f}"
+
+    for f in files:
+        rows = load_probe(f)
+        if not rows:
+            continue
+        lines += [f"### {f.parent.name}", "",
+                  "| step | real | shuffled | none | shuffled - real | real wins | none - real | s |",
+                  "|---|---|---|---|---|---|---|---|"]
+        for r in rows:
+            loss = r.get("loss", {})
+            wins = r.get("real_wins")
+            lines.append(f"| {r.get('step')} | {f4(loss.get('real'))} | {f4(loss.get('shuffled'))} | "
+                         f"{f4(loss.get('none'))} | {f4(r.get('shuffled_minus_real'))} | "
+                         f"{'-' if wins is None else f'{100 * wins:.0f}%'} | {f4(r.get('none_minus_real'))} | "
+                         f"{r.get('seconds', 0):.0f} |")
+        gens = rows[-1].get("generations") or []
+        if gens:
+            lines += ["", f"Answers at step {rows[-1].get('step')}: " + " · ".join(
+                f"`{g.get('answer', '')[:30]}` (truth `{g.get('truth', '')[:30]}`)" for g in gens[:6])]
+        lines.append("")
+    return lines
+
+
 # ------------------------------------------------------------------------------------------------ ablation
 def verdict(mean: float, ci: float, pos: str, neg: str, none: str) -> str:
     return pos if mean - ci > 0 else neg if mean + ci < 0 else none
@@ -419,8 +466,8 @@ def main() -> int:
     parts = ["# Weekend run report - Sensenova-only baseline", "",
              f"Generated {datetime.now():%Y-%m-%d %H:%M} from `{out}`. Plan and reading guide: "
              "docs/SERVER_WEEKEND.md.", ""]
-    for section in (section_status, section_training, section_ablation, section_vsi, section_curve, section_gate,
-                    section_latency):
+    for section in (section_status, section_training, section_probe, section_ablation, section_vsi, section_curve,
+                    section_gate, section_latency):
         try:
             parts += section(out)
         except Exception as exc:  # noqa: BLE001 - one broken section must not hide the others

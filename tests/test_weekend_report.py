@@ -95,3 +95,18 @@ def test_vsi_outputs_without_per_question_scores_are_not_paired(tmp_path):
         (tmp_path / "vsi" / f"{name}.json").write_text(json.dumps(old))
     text = "\n".join(wr.section_vsi(tmp_path))
     assert "| s2_real | oracle-image | **50.0**" in text and "S2: real - control" not in text
+
+
+def test_probe_section_lists_every_probe_row_and_the_last_answers(tmp_path):
+    (tmp_path / "s2_real").mkdir()
+    rows = [{"step": 0, "n": 32, "loss": {"real": 1.5, "shuffled": 1.5, "none": 1.52}, "shuffled_minus_real": 0.0,
+             "none_minus_real": 0.02, "real_wins": 0.5, "generations": [], "seconds": 40.0},
+            {"step": 500, "n": 32, "loss": {"real": 0.9, "shuffled": 0.95, "none": 1.0}, "shuffled_minus_real": 0.05,
+             "none_minus_real": 0.1, "real_wins": 0.72, "seconds": 41.0,
+             "generations": [{"id": "7", "truth": "1.8 m", "answer": "1.1"}]}]
+    (tmp_path / "s2_real" / "probe.jsonl").write_text("\n".join(json.dumps(r) for r in rows) + "\n")
+    text = "\n".join(wr.section_probe(tmp_path))
+    assert "### s2_real" in text and "| 0 | 1.5000 | 1.5000 | 1.5200 | 0.0000 | 50% | 0.0200 | 40 |" in text
+    assert "| 500 | 0.9000 | 0.9500 | 1.0000 | 0.0500 | 72% | 0.1000 | 41 |" in text
+    assert "Answers at step 500: `1.1` (truth `1.8 m`)" in text
+    assert wr.section_probe(tmp_path / "nothing") == []

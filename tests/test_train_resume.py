@@ -163,3 +163,19 @@ def test_build_model_accepts_the_evaluations_minimal_namespace():
     model = build_model(argparse.Namespace(stage="sft", init_from=None, tokenizer=TOK), cfg, True)
     assert any("lora" in n.lower() for n, _ in model.named_parameters())
     build_model(argparse.Namespace(stage="align", init_from=None, tokenizer=TOK), cfg, True)
+
+
+@needs_tok
+def test_holdout_probe_writes_rows_at_start_every_n_and_at_the_end(monkeypatch, tmp_path):
+    """--probe-ann: loss with real / shuffled / no geometry and a few greedy answers on held-out samples, at step 0,
+    every --probe-every steps and at the end; the zero-init projector makes real and shuffled identical at step 0."""
+    out = tmp_path / "p"
+    _run(monkeypatch, tmp_path, out, "--max-steps", "3", "--save-every", "0", "--probe-ann", str(tmp_path / "ann.json"),
+         "--probe-every", "2", "--probe-n", "3", "--probe-gen", "2", "--probe-max-new-tokens", "4")
+    rows = [json.loads(ln) for ln in (out / "probe.jsonl").read_text().splitlines()]
+    assert [r["step"] for r in rows] == [0, 2, 3]
+    first = rows[0]
+    assert first["n"] == 3 and all(isinstance(first["loss"][k], float) for k in ("real", "shuffled", "none"))
+    assert first["shuffled_minus_real"] == pytest.approx(0.0, abs=1e-5)
+    assert len(first["generations"]) == 2 and all(set(g) >= {"answer", "truth"} for g in first["generations"])
+    assert all(g["truth"] for g in first["generations"])
