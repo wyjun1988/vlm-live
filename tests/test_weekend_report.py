@@ -110,3 +110,25 @@ def test_probe_section_lists_every_probe_row_and_the_last_answers(tmp_path):
     assert "| 500 | 0.9000 | 0.9500 | 1.0000 | 0.0500 | 72% | 0.1000 | 41 |" in text
     assert "Answers at step 500: `1.1` (truth `1.8 m`)" in text
     assert wr.section_probe(tmp_path / "nothing") == []
+
+
+def test_learning_curve_lists_checkpoints_with_per_type_scores(tmp_path):
+    (tmp_path / "vsi").mkdir()
+
+    def run(overall, count, room, preds_score):
+        preds = [{"id": i, "type": "object_counting" if i % 2 else "room_size_estimation", "video": f"v{i // 2}",
+                  "score": preds_score} for i in range(6)]
+        return {"scores": {"oracle-image": {"overall": overall, "object_counting_MRA:.5:.95:.05": count,
+                                            "room_size_estimation_MRA:.5:.95:.05": room,
+                                            "object_rel_direction_accuracy": 0.7}},
+                "predictions": {"oracle-image": preds}}
+
+    (tmp_path / "vsi" / "base_hint.json").write_text(json.dumps(run(0.50, 0.60, 0.40, 0.5)))
+    (tmp_path / "vsi" / "s2_real_step500.json").write_text(json.dumps(run(0.52, 0.61, 0.45, 0.5)))
+    (tmp_path / "vsi" / "s2_real.json").write_text(json.dumps(run(0.55, 0.62, 0.50, 0.6)))
+    text = "\n".join(wr.section_curve(tmp_path))
+    assert "| base + format hint | 50.0 | — |" in text
+    assert "| step 500 | 52.0 |" in text and "| final | 55.0 | +10.0 [" in text
+    row = next(ln for ln in text.splitlines() if ln.startswith("| final"))
+    assert row.count("|") == 3 + len(wr.TYPE_SHORT) + 1 and "| 62.0 |" in row and "| 50.0 |" in row and "| 70.0 |" in row
+    assert wr.section_curve(tmp_path / "nothing") == []

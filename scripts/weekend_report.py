@@ -145,6 +145,16 @@ def vsi_preds(runs: dict, spec: str) -> tuple[str, list[dict] | None]:
     return spec, preds
 
 
+def per_type_scores(sc: dict) -> dict[str, float | None]:
+    """The 8 VSI types from a scores dict (metric suffixes stripped; the direction difficulties already averaged)."""
+    per: dict[str, float | None] = {c: None for c in TYPE_SHORT}
+    for k, v in sc.items():
+        t = k.split("_MRA")[0].removesuffix("_accuracy")
+        if t in per:
+            per[t] = v
+    return per
+
+
 def section_vsi(out: Path) -> list[str]:
     runs = load_vsi(out)
     lines = ["## VSI-Bench (local harness, live path: 32 uniform keyframes)", ""]
@@ -155,11 +165,7 @@ def section_vsi(out: Path) -> list[str]:
               "|---|---|---|" + "---|" * len(cols) + "---|---|"]
     for name, r in runs.items():
         for mode, sc in r.get("scores", {}).items():
-            per = {c: None for c in cols}
-            for k, v in sc.items():
-                t = k.split("_MRA")[0].removesuffix("_accuracy")
-                if t in per:
-                    per[t] = v
+            per = per_type_scores(sc)
             ff = r.get("format_fail", {}).get(mode)
             cells = " | ".join("-" if per[c] is None else f"{100 * per[c]:.1f}" for c in cols)
             lines.append(f"| {name} | {mode} | **{100 * sc['overall']:.1f}** | {cells} | "
@@ -190,19 +196,28 @@ def section_curve(out: Path) -> list[str]:
     pts = sorted((int(m.group(1)), name) for name in runs for m in [re.match(r"s2_real_step(\d+)$", name)] if m)
     if not pts:
         return []
-    lines = ["## S2 learning curve (VSI, image mode, real arm)", "", "| checkpoint | overall | Δ vs base + format hint |",
-             "|---|---|---|"]
+    cols = list(TYPE_SHORT)
+    lines = ["## S2 learning curve (VSI, image mode, real arm)", "",
+             "| checkpoint | overall | Δ vs base + format hint | " + " | ".join(TYPE_SHORT[c] for c in cols) + " |",
+             "|---|---|---|" + "---|" * len(cols)]
     _, hint = vsi_preds(runs, "base_hint:oracle-image")
-    rows = pts + ([(None, "s2_real")] if "s2_real" in runs else [])
+    rows = [(0, "base_hint")] if "base_hint" in runs else []
+    rows += pts + ([(None, "s2_real")] if "s2_real" in runs else [])
     for step, name in rows:
         sc = runs[name].get("scores", {}).get("oracle-image")
         if not sc:
             continue
+        per = per_type_scores(sc)
+        cells = " | ".join("-" if per[c] is None else f"{100 * per[c]:.1f}" for c in cols)
+        if name == "base_hint":
+            lines.append(f"| base + format hint | {100 * sc['overall']:.1f} | — | {cells} |")
+            continue
         _, preds = vsi_preds(runs, f"{name}:oracle-image")
         d = paired_bootstrap(preds, hint) if preds and hint else None
         delta = f"{d[0]:+.1f} [{d[1]:+.1f}, {d[2]:+.1f}]" if d else "-"
-        lines.append(f"| {'step ' + str(step) if step else 'final'} | {100 * sc['overall']:.1f} | {delta} |")
-    return lines + [""]
+        lines.append(f"| {'step ' + str(step) if step else 'final'} | {100 * sc['overall']:.1f} | {delta} | {cells} |")
+    return lines + ["", "Per type along the curve: where more Sensenova helps and where it hurts - the numeric types "
+                    "(abs dist, obj size, room size) are where the M2 pilot's answers collapsed.", ""]
 
 
 # ------------------------------------------------------------------------------------------------ training
