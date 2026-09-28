@@ -1,0 +1,28 @@
+{"question": "Count the chairs in this room.", "type": "count", "roles": {"object": "chair"}}
+{"question": "이 방에 의자가 몇 개 있어?", "type": "count", "roles": {"object": "chair"}}
+{"question": "How many lamps can you see in the room?", "type": "count", "roles": {"object": "lamp"}}
+{"question": "How long is the sofa's longest side, in centimeters?", "type": "size", "roles": {"object": "sofa"}}
+{"question": "침대의 가장 긴 변은 몇 센티미터야?", "type": "size", "roles": {"object": "bed"}}
+{"question": "What is the largest dimension of the table in cm?", "type": "size", "roles": {"object": "table"}}
+{"question": "Roughly how many square meters is this room?", "type": "room_size", "roles": {}}
+{"question": "이 방 넓이가 몇 제곱미터쯤 돼?", "type": "room_size", "roles": {}}
+{"question": "Estimate the floor area of the room.", "type": "room_size", "roles": {}}
+{"question": "How far apart are the tv and the sofa, in meters?", "type": "abs_distance", "roles": {"a": "tv", "b": "sofa"}}
+{"question": "냉장고와 문 사이 거리는 몇 미터야?", "type": "abs_distance", "roles": {"a": "refrigerator", "b": "door"}}
+{"question": "What is the distance from the bed to the desk?", "type": "abs_distance", "roles": {"a": "bed", "b": "desk"}}
+{"question": "Which is nearest to the bed: the lamp, the chair, or the table?", "type": "rel_distance", "roles": {"target": "bed", "options": ["lamp", "chair", "table"]}}
+{"question": "소파, 의자, 테이블 중에서 tv에 가장 가까운 것은?", "type": "rel_distance", "roles": {"target": "tv", "options": ["sofa", "chair", "table"]}}
+{"question": "Of the stove, the sink and the refrigerator, which one is closest to the door?", "type": "rel_distance", "roles": {"target": "door", "options": ["stove", "sink", "refrigerator"]}}
+{"question": "Standing at the stove and looking toward the sink, is the refrigerator on my left or my right?", "type": "rel_direction", "roles": {"standing": "stove", "facing": "sink", "target": "refrigerator", "choices": "easy"}}
+{"question": "침대 옆에 서서 창문을 보고 있으면 문은 내 왼쪽, 오른쪽, 아니면 뒤쪽이야?", "type": "rel_direction", "roles": {"standing": "bed", "facing": "window", "target": "door", "choices": "medium"}}
+{"question": "If I stand by the desk facing the door, is the bookshelf to my front-left, front-right, back-left or back-right?", "type": "rel_direction", "roles": {"standing": "desk", "facing": "door", "target": "bookshelf", "choices": "hard"}}
+{"question": "책상 앞에 서서 tv를 보면 소파는 왼쪽인가 오른쪽인가?", "type": "rel_direction", "roles": {"standing": "desk", "facing": "tv", "target": "sofa", "choices": "easy"}}
+{"question": "In what order do the following first appear in the video: door, lamp, chair?", "type": "order", "roles": {"names": ["door", "lamp", "chair"]}}
+{"question": "영상에서 침대, 문, 의자가 처음 등장하는 순서는?", "type": "order", "roles": {"names": ["bed", "door", "chair"]}}
+{"question": "Which shows up first in the video, the sink, the toilet, or the mirror?", "type": "order", "roles": {"names": ["sink", "toilet", "mirror"]}}
+{"question": "You start at the bed facing the tv and want to reach the toilet; which turns do you take along the way?", "type": "route", "roles": {"start": "bed", "facing": "tv", "goal": "toilet"}}
+{"question": "소파에서 문을 바라보고 출발해서 냉장고까지 가려면 어디서 어느 쪽으로 돌아야 해?", "type": "route", "roles": {"start": "sofa", "facing": "door", "goal": "refrigerator"}}
+{"question": "What color is the sofa?", "type": "other", "roles": {}}
+{"question": "이 방은 어떤 용도의 방이야?", "type": "other", "roles": {}}
+{"question": "Is the window open or closed?", "type": "other", "roles": {}}
+{"question": "Describe the room in one sentence.", "type": "other", "roles": {}}

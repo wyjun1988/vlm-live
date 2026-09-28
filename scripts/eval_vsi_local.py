@@ -141,8 +141,7 @@ COGMAP_PROMPT = (
 
 def wants_room_facts(question: str) -> bool:
     """I-27 routing rule: attach the measured room facts only to questions about the room's size."""
-    q = question.lower()
-    return "room" in q and any(k in q for k in ("size", "square meter", "area"))
+    return interpret_rules(question).type == "room_size"
 
 
 def first_seen(om, names: list[str], min_frames: int) -> dict[str, int | None]:
@@ -182,9 +181,11 @@ def object_xy(om, name: str, min_frames: int, to_map=None):
     return (to_map(xyz) if to_map is not None else xyz)[0, :2]
 
 
-_DIRECTION_RE = re.compile(r"standing by the (.+?) and facing the (.+?), is the (.+?) to ")
-_ROUTE_HEAD_RE = re.compile(r"beginning at the (.+?) (?:and )?facing the (.+?)\. You want to navigate to the (.+?)\.")
-_REL_DIST_RE = re.compile(r"which of these objects \((.+?)\) is the closest to the (.+?)\?")
+# the VSI templates live in one place (live3r.serve.interpret); the LLM reading renders back to them
+from live3r.serve.interpret import (  # noqa: E402
+    ABS_RE, COUNT_RE, ORDER_RE, SIZE_RE, interpret, interpret_rules,
+    DIRECTION_RE as _DIRECTION_RE, REL_DIST_RE as _REL_DIST_RE, ROUTE_HEAD_RE as _ROUTE_HEAD_RE,
+)
 
 
 def parse_route(question: str):
@@ -255,7 +256,7 @@ def object_facts_for(question: str, om, min_frames: int = 2, rel_distance: bool 
     general system would have the LLM extract them."""
     import re
 
-    m = re.search(r"distance between the (.+?) and the (.+?) \(in meters\)", question)
+    m = ABS_RE.search(question)
     if m:
         a, b = m.group(1), m.group(2)
         d = om.pair_distance(a, b, min_frames=min_frames)
@@ -267,7 +268,7 @@ def object_facts_for(question: str, om, min_frames: int = 2, rel_distance: bool 
             return ""
         return (f"Measured from a 3D reconstruction of the video: the closest points of the {a} and the "
                 f"{b} are about {d:.1f} m apart.\n")
-    m = re.search(r"dimension \(length, width, or height\) of the (.+?), measured in centimeters", question)
+    m = SIZE_RE.search(question)
     if m and size_facts:
         name = m.group(1)
         sz = om.size_m(name, min_frames=min_frames)
@@ -280,7 +281,7 @@ def object_facts_for(question: str, om, min_frames: int = 2, rel_distance: bool 
                     f"about {100 * sz:.0f} centimeters.\n")
         return ""
 
-    m = re.search(r"first-time appearance order of the following categories in the video: (.+?)\?", question)
+    m = ORDER_RE.search(question)
     if m:   # I-32: the object map knows when each object was first seen - route that to the order question
         names = [n.strip() for n in m.group(1).split(",") if n.strip()]
         seen = first_seen(om, names, min_frames)
@@ -293,7 +294,7 @@ def object_facts_for(question: str, om, min_frames: int = 2, rel_distance: bool 
                     + ", ".join(f"{n} (frame {seen[n]})" for n in order)
                     + f"; so the first-time appearance order is {', '.join(order)}.\n")
         return ""
-    m = re.search(r"How many (.+?)\(s\) are in this room", question)
+    m = COUNT_RE.search(question)
     if m:   # counting: log what the map's instance count would say (attached only with --count-facts)
         name = m.group(1)
         if log is not None:
@@ -347,7 +348,7 @@ def object_facts_for(question: str, om, min_frames: int = 2, rel_distance: bool 
                     f"the {c} is to your {lab}.\n")
         return ""
 
-    m = re.search(r"which of these objects \((.+?)\) is the closest to the (.+?)\?", question) if rel_distance else None
+    m = _REL_DIST_RE.search(question) if rel_distance else None
     if m:
         target = m.group(2)
         opts = [o.strip() for o in m.group(1).split(",") if o.strip() and o.strip() != target]
@@ -447,6 +448,9 @@ def main() -> int:
                          "keyframes (question-agnostic); the text goes into the prompt for every question")
     ap.add_argument("--frame-labels", action="store_true",
                     help="I-04: label every keyframe with its number and time ('Frame 3 at 41.2 s:') in image mode")
+    ap.add_argument("--interpret", choices=("rules", "llm"), default="rules",
+                    help="how the question is read for routing: the VSI templates, or the model's own reading "
+                         "(live3r.serve.interpret) rendered back to a template - any phrasing, any language")
     ap.add_argument("--thinking", action="store_true",
                     help="I-21 probe: thinking ON at question time (reason, then answer after </think>)")
     ap.add_argument("--think-tokens", type=int, default=512, help="--thinking: generation budget per question")
@@ -526,6 +530,14 @@ def main() -> int:
             print(f"가중치 로드 (unexpected {len(res.unexpected_keys)})")
     pb = PromptBuilder.from_model(live)
     print(f"모델 로드 {time.time() - t0:.1f}s ({args.model}, {args.device} {args.dtype})")
+
+    @torch.no_grad()
+    def ask_llm(prompt: str) -> str:   # --interpret llm: the model reads the question (text only, no geometry)
+        ids = pb.build_query(prompt, []).to(dev)
+        out = live.base.generate(input_ids=ids, attention_mask=torch.ones_like(ids), max_new_tokens=160,
+                                 do_sample=False)
+        return live.tokenizer.decode(out[0, ids.shape[1]:], skip_special_tokens=True)
+    interp_log: list = []
 
     scored = {m: [] for m in modes}
     maps: dict[str, dict] = {}
@@ -648,11 +660,21 @@ def main() -> int:
             for d in qs:
                 text = vsibench_doc_to_text(dict(d), LMMS_KWARGS)
                 attached = ""
-                if room_facts and wants_room_facts(d["question"]):
+                # what is asked: the rules (VSI templates) or the model's own reading rendered back to a template
+                t_int = time.time()
+                interp = interpret(d["question"], ask_llm if args.interpret == "llm" else None)
+                routing_q = interp.canonical()
+                if args.interpret == "llm":
+                    rules = interpret_rules(d["question"])
+                    interp_log.append({"id": d["id"], "type": interp.type, "source": interp.source,
+                                       "agrees": interp.type == rules.type and interpret_rules(routing_q).roles == rules.roles,
+                                       "seconds": time.time() - t_int})
+                    timing["interpret"] += time.time() - t_int
+                if room_facts and wants_room_facts(routing_q):
                     attached += room_facts        # question-time routing: a few tokens after the cached prefix
                 if args.route_objects and om is not None:
                     n_before = len(meas_log)
-                    attached = object_facts_for(d["question"], om, min_frames=args.min_frames,
+                    attached = object_facts_for(routing_q, om, min_frames=args.min_frames,
                                                 rel_distance=args.rel_distance_facts,
                                                 size_facts=args.size_facts, log=meas_log,
                                                 order_facts=args.order_facts, count_facts=args.count_facts,
@@ -766,6 +788,7 @@ def main() -> int:
             "oracle_vocab": bool(args.object_map and oracle_vocab), "objects": objects,
             "self_map": args.self_map, "self_maps": self_maps, "route_facts": args.route_facts,
             "route_objects": args.route_objects, "min_frames": args.min_frames, "measurements": meas_log,
+            "interpret": args.interpret, "interpretations": interp_log,
             "hint_after": args.hint_after, "order_facts": args.order_facts, "count_facts": args.count_facts,
             "direction_facts": args.direction_facts, "direction_min_frames": args.direction_min_frames,
             "route_plan_facts": args.route_plan_facts, "detect_stride": args.detect_stride, "view_gap": args.view_gap,
