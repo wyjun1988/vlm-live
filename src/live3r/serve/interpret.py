@@ -172,6 +172,10 @@ Q: 소파에서 TV까지 거리가 몇 미터야?
 A: {{"type": "abs_distance", "roles": {{"a": "sofa", "b": "tv"}}, "question_en": "What is the distance between the sofa and the tv in meters?"}}
 Q: If I am standing by the refrigerator and facing the door, is the bed to my left, right, or back?
 A: {{"type": "rel_direction", "roles": {{"standing": "refrigerator", "facing": "door", "target": "bed", "choices": "medium"}}}}
+Q: 책상 앞에 서서 창문을 보면 침대는 왼쪽이야 오른쪽이야?
+A: {{"type": "rel_direction", "roles": {{"standing": "desk", "facing": "window", "target": "bed", "choices": "easy"}}, "question_en": "Standing by the desk and facing the window, is the bed to the left or the right?"}}
+Q: Which of the lamp, the chair and the stool is closest to the sofa?
+A: {{"type": "rel_distance", "roles": {{"target": "sofa", "options": ["lamp", "chair", "stool"]}}}}
 Q: What material is the table made of?
 A: {{"type": "other", "roles": {{}}}}
 Q: {question}

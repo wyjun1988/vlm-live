@@ -514,9 +514,15 @@ fallback when the JSON does not parse (`scripts/interpret_check.py`, `eval_vsi_l
 - Cost: 4.9 s per reading on the M2 (≈100 JSON tokens, 4B) — an H100 makes that ~0.3–0.5 s, still a large share of
   the 1 s budget. **The 0.8B cannot do it zero-shot**: type 54 % / roles 29 % on VSI (it copies the prompt's
   "count / chair" example for order, size and route questions), 43 % / 32 % on the paraphrases, 2.0 s per reading.
-  So the levers are: a compact output format for the 4B (a third of the tokens), and — the case the user's LoRA
-  suggestion fits — a reading LoRA on the 0.8B trained from (question → JSON) pairs, which the 4B's own readings
-  can generate (the check's JSON keeps every reply). The zero-shot 4B itself needs no training for this.
+  So the levers are: a compact output format for the 4B, and — the case the user's LoRA suggestion fits — a reading
+  LoRA on the 0.8B trained from (question → JSON) pairs, which the 4B's own readings can generate (the check's JSON
+  keeps every reply). The zero-shot 4B itself needs no training for this.
+- **Compact format (20:03):** the full reply is 74 tokens (4.9 s on the M2); the compact one (no object list, English
+  rendering only for non-English questions) **29 tokens, 2.4 s**, VSI agreement type 99 % / roles 98 % / identical
+  routing 99 %, paraphrases 93 % / 86 %. Its misses were structural — no rel_distance example in the compact prompt
+  (read as abs_distance / order), Korean object names ("bedside", 책상 → table), easy vs medium choices — so the
+  prompt gained a rel_distance and a Korean easy-direction example; re-check queued (row 40). On an H100 with the
+  prefix cached, ~30 output tokens is the difference between the reading fitting the 1 s budget or not.
 - What it buys is not a VSI point (the templates were already read exactly) but the live product: questions in any
   wording or language route to the same facts.
 
@@ -781,9 +787,10 @@ timestamps (I-04), recency weighting / decay, possibly state windows (I-05).
 | 33 | I-37 frame-count calibration applied at read time (`frame_count`, a 0.3224 / b −1.3781), 4B, ~1 fps, routed + directions | I-37 | done: **58.0**, +1.1 [+0.3, +2.1] vs no correction (room 56.2 → 65.7); +0.2 [−1.3, +1.9] vs keyframes (direction +5.8, abs −2.8, room −1.3). Map room MRA 66.0, ratio 0.97. The ~1 fps stream is at parity with keyframes |
 | 34 | re-capture with the self-view points; `SelfViewScale` (relative / absolute, w5 / w15) in the lab next to the calibration | I-37 | done: **no signal** — self-view / world-view distance ratio 1.00 on every frame (corr −0.06…+0.01); the calibration's in-sample global MRA 66.0 confirmed in the same table |
 | 35 | I-38 question reading by the model (JSON → template), 4B and 0.8B, 160 VSI + 28 paraphrased/Korean | I-38 | done — 4B: type 100 % / roles 99 % / identical routing 100 % on VSI, 100 % / 100 % on the paraphrases, 4.9 s per reading (M2); **0.8B: 54 % / 29 % and 43 % / 32 %** — a small reader needs the LoRA, the 4B does not |
-| 36 | I-38 compact reply format vs full, 4B, accuracy and output tokens | I-38 | running (chain 18) |
+| 36 | I-38 compact reply format vs full, 4B, accuracy and output tokens | I-38 | done: full 74 tokens / 4.9 s (100 % / 99 %); compact **29 tokens / 2.4 s**, 99 % / 98 % on VSI (routing 99 % identical), 93 % / 86 % on the paraphrases |
 | 37 | I-40 type hints, 4B, base + format hint, no geometry | I-40 | queued (chain 19) — vs 53.7 |
 | 38 | I-41 describe the named objects first, 4B, base + format hint, no geometry | I-41, I-20 | queued (chain 19) — vs 53.7; I-20 was −4.8 |
 | 39 | I-40 + measured facts + "use the measurement" hint on the **2B** — does a hint raise the copy rate (50 %)? | I-40, I-22 | planned (tomorrow) |
+| 40 | I-38 compact prompt v2 (+ rel_distance and Korean easy-direction examples), 4B re-check | I-38 | queued (chain 20, after chain 19) |
 | 25 | I-35 encoder bake-off: VGGT window 8 behind the same maps (directions attached, metric facts logged) | I-35 | done: **CUT3R wins** — direction 76.4 vs 56.7 (72 vs 54 on common questions), room area MRA 65.8 vs 9.5 (scale-free 69.0 vs 16.2) |
 | 14 | **Sensenova-only baseline on 4 nodes x 8 H100**: zero-shot VSI (full); S1 and S2 (one epoch each) real vs control, two seeds; plain SFT (no geometry); S2 joint (no S1); the 2B pair; S2 learning curve; gate | I-12, I-16, I-18, I-22 | four-day run from 09-26 (docs/SERVER_WEEKEND.md) |
