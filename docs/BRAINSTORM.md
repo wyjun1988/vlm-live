@@ -478,6 +478,26 @@ percentile of its points along up) vs the first 10 frames; points and camera div
   (`SelfViewScale`, relative to the first frames or absolute). If it correlates with the ideal factor, it replaces the
   calibration (which cannot know a fast scan from a slow one).
 
+### I-38 The model reads the question first — routing for any phrasing, any language — **4B: reads perfectly (2026-09-28)**
+The routed facts were keyed on VSI's templates with regular expressions — exact on the benchmark, useless for a real
+question. `live3r.serve.interpret`: the model returns one line of JSON (type, objects, roles, English rendering),
+which is rendered back to a VSI-style template so the existing fact router runs unchanged; the rules are the
+fallback when the JSON does not parse (`scripts/interpret_check.py`, `eval_vsi_local.py --interpret llm`).
+- 4B, 160 VSI questions (16 per type): type 100 %, roles 99 %, **routes identically to the rules on 100 %**; the
+  two "misses" are the model being more right than the regex ("facing the door and to the left of the trash bin" →
+  facing *door*; "the farthest sofa" → *sofa*).
+- 28 paraphrased / Korean questions (hand-written readings, no template): **type 100 %, roles 100 %** — e.g. "냉장고
+  옆에 서서 문을 바라보면 침대는 왼쪽이야 오른쪽이야?" → rel_direction {standing refrigerator, facing door, target
+  bed, easy}. 96 % of replies parsed; the rest fell back to the rules and were still right.
+- Cost: 4.9 s per reading on the M2 (≈100 JSON tokens, 4B) — an H100 makes that ~0.3–0.5 s, still a large share of
+  the 1 s budget. **The 0.8B cannot do it zero-shot**: type 54 % / roles 29 % on VSI (it copies the prompt's
+  "count / chair" example for order, size and route questions), 43 % / 32 % on the paraphrases, 2.0 s per reading.
+  So the levers are: a compact output format for the 4B (a third of the tokens), and — the case the user's LoRA
+  suggestion fits — a reading LoRA on the 0.8B trained from (question → JSON) pairs, which the 4B's own readings
+  can generate (the check's JSON keeps every reply). The zero-shot 4B itself needs no training for this.
+- What it buys is not a VSI point (the templates were already read exactly) but the live product: questions in any
+  wording or language route to the same facts.
+
 ### Lessons so far (zero-shot, 4B)
 - **L6 Attach geometry only for scene-specific quantities; the model's prior already wins on canonical ones.**
   Object size is a property of the object category — a door is ~135 cm, a sofa ~180 cm — and the pretrained model
@@ -716,5 +736,6 @@ timestamps (I-04), recency weighting / decay, possibly state windows (I-05).
 | 32 | I-37 v2: raw-stream capture (60 videos) + offline lab over floor-level / camera-height × window × support × gate, per-frame vs global application | I-37 | done: **no signal** — factor–ideal correlation −0.11…+0.13 for all 24 variants; best per-frame MRA 55.0 = none 55.5; global ≤ 48. Frame-count calibration instead: split-half MRA 63.8 (ceiling 65.2) |
 | 33 | I-37 frame-count calibration applied at read time (`frame_count`, a 0.3224 / b −1.3781), 4B, ~1 fps, routed + directions | I-37 | running (chain 16) — vs no anchor 56.9 / keyframes 57.8; expect the room type back near the keyframe level with the direction gain kept |
 | 34 | re-capture with the self-view points; `SelfViewScale` (relative / absolute, w5 / w15) in the lab next to the calibration | I-37 | queued (chain 17) — the per-video estimator the calibration cannot be |
+| 35 | I-38 question reading by the model (JSON → template), 4B and 0.8B, 160 VSI + 28 paraphrased/Korean | I-38 | done — 4B: type 100 % / roles 99 % / identical routing 100 % on VSI, 100 % / 100 % on the paraphrases, 4.9 s per reading (M2); **0.8B: 54 % / 29 % and 43 % / 32 %** — a small reader needs the LoRA, the 4B does not |
 | 25 | I-35 encoder bake-off: VGGT window 8 behind the same maps (directions attached, metric facts logged) | I-35 | done: **CUT3R wins** — direction 76.4 vs 56.7 (72 vs 54 on common questions), room area MRA 65.8 vs 9.5 (scale-free 69.0 vs 16.2) |
 | 14 | **Sensenova-only baseline on 4 nodes x 8 H100**: zero-shot VSI (full); S1 and S2 (one epoch each) real vs control, two seeds; plain SFT (no geometry); S2 joint (no S1); the 2B pair; S2 learning curve; gate | I-12, I-16, I-18, I-22 | four-day run from 09-26 (docs/SERVER_WEEKEND.md) |
