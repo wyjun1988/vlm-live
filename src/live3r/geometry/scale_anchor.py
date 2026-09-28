@@ -39,13 +39,18 @@ MODES = ("camera_height", "floor_level")
 class ScaleAnchor:
     def __init__(self, mode: str = "camera_height", ref_frames: int = 10, window: int = 5, floor_pct: float = 2.0,
                  conf_quantile: float = 0.3, support: float = 0.0, band: float = 0.08, gate: float = 0.0,
-                 min_ref: float = 0.3, clamp: tuple[float, float] = (0.5, 2.0)) -> None:
+                 min_ref: float = 0.3, ref_quantile: float = 0.5, clamp: tuple[float, float] = (0.5, 2.0)) -> None:
+        """ref_quantile: which quantile of the first frames' measurements is the reference. 0.5 = median; higher
+        prefers the frames that saw deeper, i.e. the true floor rather than a table top, when the scan starts
+        pointing at furniture (the floor is the lowest surface; only noise is lower, and the support test drops
+        sparse tails)."""
         if mode not in MODES:
             raise ValueError(f"unknown scale anchor mode {mode!r} (one of {MODES})")
         self.mode = mode
         self.ref_frames, self.window = int(ref_frames), int(window)
         self.floor_pct, self.conf_quantile = float(floor_pct), float(conf_quantile)
         self.support, self.band, self.gate, self.min_ref = float(support), float(band), float(gate), float(min_ref)
+        self.ref_quantile = float(ref_quantile)
         self.clamp = (float(clamp[0]), float(clamp[1]))
         self.reset()
 
@@ -57,7 +62,8 @@ class ScaleAnchor:
         self.disabled = False      # the reference is too small to divide by (first camera at floor level)
         self.factor = 1.0          # the last correction applied (1/ratio)
         self.frames = 0
-        self.skipped = 0           # frames without a floor in view (support test)
+        self.skipped = 0           # frames without a floor in view (support / gate)
+        self.history: list[float] = []   # the factor returned for every frame after the reference exists
 
     def up(self) -> np.ndarray:
         u = -np.mean(np.stack(self._downs), axis=0)
@@ -119,7 +125,7 @@ class ScaleAnchor:
         if self.reference is None:
             self._ref.append(v)
             if len(self._ref) >= self.ref_frames:
-                self.reference = float(np.median(self._ref))
+                self.reference = float(np.quantile(self._ref, self.ref_quantile))
                 self.disabled = self.reference < self.min_ref
             return 1.0
         if self.disabled:
@@ -128,6 +134,7 @@ class ScaleAnchor:
         ratio = float(np.median(self._recent)) / self.reference
         ratio = min(max(ratio, self.clamp[0]), self.clamp[1])
         self.factor = 1.0 / ratio
+        self.history.append(self.factor)
         return self.factor
 
     @staticmethod

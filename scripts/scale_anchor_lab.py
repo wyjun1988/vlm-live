@@ -6,7 +6,9 @@ each variant's scene map measures against VSI's ground truth - the metric probe 
 
 Per variant: the median measured/true area ratio (1.0 = metric), the spread of log ratios across videos, MRA (the
 VSI room-size metric), MRA after the median ratio is divided out (shape only), the share of videos within 50%, the
-median final correction factor, and the share of frames the support test skipped. `none` must reproduce the
+median correction applied, the correlation across videos between the correction applied and the ideal one
+(sqrt(truth / uncorrected area) - the signal check: a variant can be biased yet track the drift), and the share of
+frames the support / gate test skipped. `none` must reproduce the
 reference run's areas (--ref-run prints the largest relative difference) - that check validates the capture.
 A single variant: --variant "mode=floor_level,window=9,support=0.05".
 """
@@ -73,13 +75,18 @@ def variants(grid: str) -> dict[str, dict | None]:
     out: dict[str, dict | None] = {"none": None, "v1 camera_height (chain 13)": {"_v1": True}}
     if grid == "none":
         return out
-    windows = (5, 9, 15) if grid != "smoke" else (5,)
-    supports = (0.0, 0.05, 0.10) if grid != "smoke" else (0.0,)
-    refs = (10, 20) if grid == "full" else (10,)
-    pcts = (1.0, 2.0, 5.0) if grid == "full" else (2.0,)
-    for mode, w, sup, ref, pct in itertools.product(("camera_height", "floor_level"), windows, supports, refs, pcts):
-        name = f"{mode} w{w} sup{sup:.2f} ref{ref} pct{pct:g}"
-        out[name] = {"mode": mode, "window": w, "support": sup, "ref_frames": ref, "floor_pct": pct}
+    full = grid == "full"
+    windows = (5,) if grid == "smoke" else (5, 9, 15)
+    supports = (0.0,) if grid == "smoke" else ((0.0, 0.05, 0.10) if full else (0.0, 0.05))
+    gates = (0.0,) if grid == "smoke" else ((0.0, 0.25, 0.4) if full else (0.0, 0.25))
+    refs = (10, 20) if full else (10,)
+    pcts = (1.0, 2.0, 5.0) if full else (2.0,)
+    rqs = (0.5, 0.8) if full else (0.5,)
+    for mode, w, sup, gate, ref, pct, rq in itertools.product(("camera_height", "floor_level"), windows, supports,
+                                                              gates, refs, pcts, rqs):
+        name = f"{mode} w{w} sup{sup:.2f} gate{gate:.2f} ref{ref} pct{pct:g} rq{rq:.1f}"
+        out[name] = {"mode": mode, "window": w, "support": sup, "gate": gate, "ref_frames": ref, "floor_pct": pct,
+                     "ref_quantile": rq}
     return out
 
 
@@ -134,37 +141,44 @@ def main() -> int:
     for text in args.variant:
         todo[text] = parse_variant(text)
     rows = []
+    none_area: dict[str, float] = {}      # the uncorrected area per video: the ideal factor is sqrt(truth / this)
     for name, spec in todo.items():
-        pairs, factors, skipped, frames, ref_diff = [], [], 0, 0, 0.0
+        pairs, applied, ideal, skipped, frames, ref_diff = [], [], [], 0, 0, 0.0
         for vid, cap in caps.items():
             facts, anchor = replay(cap, make_anchor(spec))
+            if spec is None and facts.get("area_m2"):
+                none_area[vid] = facts["area_m2"]
             if anchor is not None:
-                factors.append(anchor.factor)
                 skipped += anchor.skipped
                 frames += anchor.frames
+                if anchor.history and vid in truth and none_area.get(vid):
+                    applied.append(float(np.exp(np.mean(np.log(anchor.history)))))
+                    ideal.append(float(np.sqrt(truth[vid] / none_area[vid])))
             if spec is None and vid in ref_maps and ref_maps[vid].get("area_m2"):
                 ref_diff = max(ref_diff, abs(facts["area_m2"] - ref_maps[vid]["area_m2"]) / ref_maps[vid]["area_m2"])
             if vid in truth and facts.get("area_m2"):
                 pairs.append((facts["area_m2"], truth[vid]))
         if not pairs:
             continue
+        corr = float(np.corrcoef(np.log(applied), np.log(ideal))[0, 1]) if len(applied) >= 3 else float("nan")
         row = {"variant": name, **score(pairs),
-               "final_factor": statistics.median(factors) if factors else 1.0,
+               "applied_factor": statistics.median(applied) if applied else 1.0,
+               "factor_corr": corr,                 # does the correction track the drift video by video?
                "skipped": skipped / frames if frames else 0.0}
         if spec is None and ref_maps:
             row["ref_max_rel_diff"] = ref_diff
         rows.append(row)
-        print(f"  {name:<44} ratio {row['median_ratio']:.2f}  sd {row['log_sd']:.2f}  MRA {100 * row['mra']:.1f}"
+        print(f"  {name:<56} ratio {row['median_ratio']:.2f}  sd {row['log_sd']:.2f}  MRA {100 * row['mra']:.1f}"
               f"  free {100 * row['mra_scale_free']:.1f}  <50% {100 * row['within_50']:.0f}%"
-              f"  factor {row['final_factor']:.2f}  skipped {100 * row['skipped']:.0f}%"
+              f"  factor {row['applied_factor']:.2f}  corr {corr:+.2f}  skipped {100 * row['skipped']:.0f}%"
               + (f"  ref diff {100 * ref_diff:.1f}%" if "ref_max_rel_diff" in row else ""), flush=True)
 
     rows.sort(key=lambda r: -r["mra"])
-    print(f"\n{'variant':<44}{'ratio':>7}{'log sd':>8}{'MRA':>7}{'free':>7}{'<50%':>6}{'factor':>8}{'skip':>6}")
+    print(f"\n{'variant':<56}{'ratio':>7}{'log sd':>8}{'MRA':>7}{'free':>7}{'<50%':>6}{'factor':>8}{'corr':>7}{'skip':>6}")
     for r in rows:
-        print(f"{r['variant']:<44}{r['median_ratio']:>7.2f}{r['log_sd']:>8.2f}{100 * r['mra']:>7.1f}"
-              f"{100 * r['mra_scale_free']:>7.1f}{100 * r['within_50']:>5.0f}%{r['final_factor']:>8.2f}"
-              f"{100 * r['skipped']:>5.0f}%")
+        print(f"{r['variant']:<56}{r['median_ratio']:>7.2f}{r['log_sd']:>8.2f}{100 * r['mra']:>7.1f}"
+              f"{100 * r['mra_scale_free']:>7.1f}{100 * r['within_50']:>5.0f}%{r['applied_factor']:>8.2f}"
+              f"{r['factor_corr']:>+7.2f}{100 * r['skipped']:>5.0f}%")
     if args.json:
         Path(args.json).write_text(json.dumps(rows, indent=1))
     return 0
