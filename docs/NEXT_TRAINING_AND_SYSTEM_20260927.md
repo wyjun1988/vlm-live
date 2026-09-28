@@ -89,8 +89,10 @@ ingested (corr +0.44): a two-parameter calibration, log(measured/true area) = 0.
 factor per video to the metric facts at read time (geometry untouched) gives room MRA 55.5 → 63.8 split-half, and the
 4B run at ~1 fps scores **58.0** — +1.1 [+0.3, +2.1] over the uncorrected stream, parity with keyframes only (57.8,
 +0.2 [−1.3, +1.9]) while keeping the accumulation's direction gain (+5.8 on the type). The live design therefore
-keeps the state accumulating at ~1 fps with the calibrated read-time factor; the per-video estimator that could
-replace the calibration (CUT3R's self-view vs world-view distance ratio, `SelfViewScale`) is being measured.
+keeps the state accumulating at ~1 fps with the calibrated read-time factor. CUT3R's self-view vs world-view
+distance ratio (`SelfViewScale`) was measured the same evening and is 1.00 everywhere — the model is consistent about
+its wrong scale — so a per-video estimator has to come from outside the model (object-size priors, a metric depth
+model on a keyframe); until then the calibration is the correction.
 
 ### 2b. Long video — **measured by proxy: the facts compensate only partly, and need the scale fix first**
 VSI videos are 20 s – 3.6 min; the live setting is 10 minutes and more. What breaks first is the LLM's view:

@@ -8,8 +8,9 @@ Two ways of applying a variant's per-frame factors, scored side by side:
   per-frame  every frame's points and camera are rescaled by its own factor (the v1 anchor, chain 13): columns
              ratio / log sd / MRA / free / <50%. In the 60-video run this destroyed the layout (scale-free MRA
              65 -> 22, directions 75 -> 66): frames scaled differently shift relative to each other.
-  global     the geometry is left alone; one factor per video - the geometric mean of the per-frame factors -
-             rescales the metric facts at read time: columns g.ratio / g.MRA. Angles are untouched by design.
+  global     the geometry is left alone; one factor per video - the estimator's global_factor() (the geometric
+             mean of its per-frame factors, or the calibration at the final frame count) - rescales the metric
+             facts at read time: columns g.ratio / g.MRA. Angles are untouched by design.
 Also per variant: the median factor applied, the correlation across videos between it and the ideal factor
 (sqrt(truth / uncorrected area) - the signal check: a variant can be biased yet track the drift), and the share of
 frames the support / gate test skipped. `none` must reproduce the
@@ -174,7 +175,8 @@ def main() -> int:
                 skipped += anchor.skipped
                 frames += anchor.frames
                 if anchor.history and vid in truth and none_area.get(vid):
-                    g = float(np.exp(np.mean(np.log(anchor.history))))
+                    g = float(anchor.global_factor())        # the estimator's own read-time factor (FrameCountScale:
+                    #                                          the value at the final frame count, not a mean)
                     applied.append(g)
                     ideal.append(float(np.sqrt(truth[vid] / none_area[vid])))
                     gpairs.append((none_area[vid] * g * g, truth[vid]))     # global: the facts rescaled at read time

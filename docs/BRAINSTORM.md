@@ -492,11 +492,13 @@ percentile of its points along up) vs the first 10 frames; points and camera div
   0.82–1.06 (median 0.94). So **the live configuration — the state accumulating at ~1 fps, as a stream must — now
   matches the best offline configuration** instead of paying 0.9 for it, and the maps it builds are the ones a long
   video needs. Adopted for the ~1 fps path; the estimator that could beat a calibration (self-view ratio) is next.
-- Next estimator, plumbed and queued for a re-capture: **CUT3R's own two point maps.** The head predicts the frame's
-  points in the camera frame (`pts3d_in_self_view`, monocular, metric-trained) and in the state's world frame; their
-  distance ratio through the predicted pose is the state's scale per frame with no floor and no camera assumption
-  (`SelfViewScale`, relative to the first frames or absolute). If it correlates with the ideal factor, it replaces the
-  calibration (which cannot know a fast scan from a slow one).
+- **CUT3R's own two point maps carry no signal either (19:40).** The head predicts the frame's points in the camera
+  frame (`pts3d_in_self_view`) and in the state's world frame; through the predicted pose their distance ratio is
+  **1.00 on every frame of every video** (`SelfViewScale`, relative or absolute, w5/w15: factor 1.00, corr −0.06…+0.01).
+  The "monocular" head is conditioned on the same state, so its scale inflates together with the world map — the
+  model is internally consistent about a wrong scale, and nothing it outputs reveals the drift. The calibration
+  (frame count) stays; the per-video estimator would have to come from outside the model (object-size priors from
+  the detector — doors, chairs — or a metric depth model on a keyframe).
 
 ### I-38 The model reads the question first — routing for any phrasing, any language — **4B: reads perfectly (2026-09-28)**
 The routed facts were keyed on VSI's templates with regular expressions — exact on the benchmark, useless for a real
@@ -777,7 +779,7 @@ timestamps (I-04), recency weighting / decay, possibly state windows (I-05).
 | 31 | I-37 v1 camera-height scale anchor, per-frame rescaling, ~1 fps | I-37, I-05 | done: **49.5**, −7.4 [−9.3, −5.4] vs no anchor — room MRA 14.3 (ratio 0.70), scale-free 21.7, direction facts 70.7 %: per-frame rescaling breaks the layout |
 | 32 | I-37 v2: raw-stream capture (60 videos) + offline lab over floor-level / camera-height × window × support × gate, per-frame vs global application | I-37 | done: **no signal** — factor–ideal correlation −0.11…+0.13 for all 24 variants; best per-frame MRA 55.0 = none 55.5; global ≤ 48. Frame-count calibration instead: split-half MRA 63.8 (ceiling 65.2) |
 | 33 | I-37 frame-count calibration applied at read time (`frame_count`, a 0.3224 / b −1.3781), 4B, ~1 fps, routed + directions | I-37 | done: **58.0**, +1.1 [+0.3, +2.1] vs no correction (room 56.2 → 65.7); +0.2 [−1.3, +1.9] vs keyframes (direction +5.8, abs −2.8, room −1.3). Map room MRA 66.0, ratio 0.97. The ~1 fps stream is at parity with keyframes |
-| 34 | re-capture with the self-view points; `SelfViewScale` (relative / absolute, w5 / w15) in the lab next to the calibration | I-37 | queued (chain 17) — the per-video estimator the calibration cannot be |
+| 34 | re-capture with the self-view points; `SelfViewScale` (relative / absolute, w5 / w15) in the lab next to the calibration | I-37 | done: **no signal** — self-view / world-view distance ratio 1.00 on every frame (corr −0.06…+0.01); the calibration's in-sample global MRA 66.0 confirmed in the same table |
 | 35 | I-38 question reading by the model (JSON → template), 4B and 0.8B, 160 VSI + 28 paraphrased/Korean | I-38 | done — 4B: type 100 % / roles 99 % / identical routing 100 % on VSI, 100 % / 100 % on the paraphrases, 4.9 s per reading (M2); **0.8B: 54 % / 29 % and 43 % / 32 %** — a small reader needs the LoRA, the 4B does not |
 | 36 | I-38 compact reply format vs full, 4B, accuracy and output tokens | I-38 | running (chain 18) |
 | 37 | I-40 type hints, 4B, base + format hint, no geometry | I-40 | queued (chain 19) — vs 53.7 |
