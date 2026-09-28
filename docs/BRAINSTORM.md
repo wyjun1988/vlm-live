@@ -65,6 +65,9 @@ time (I-21). The rule that held every time: attach geometry only for what the fr
 | Object map as text, VLM grounding, oracle names (I-09) | **−13.7** | hallucinated objects, one bed → 7 instances |
 | Object map as text, OWLv2 fixed vocabulary (I-09) | **−9.9** | fewer hallucinations, counts still wrong |
 | The 4B writing its own cognitive map first (I-20) | **−4.8** | adds only its own errors |
+| CUT3R fed ~1 fps instead of the 32 keyframes (I-05) | −0.9 | angles improve (83 % direction facts), metric scale inflates ×1.18 |
+| Windowed state resets 40/3 · 80/6 (I-36) | −0.9 · −2.5 | half the scale back, the direction gain lost |
+| Per-frame camera-height scale anchor (I-37 v1) | **−8.3** | rescaling each frame by its own factor breaks the layout; the signal is wrong without a floor in view |
 | Every computable distance, min_frames=1 (I-29 run 1) | −0.7 vs I-27 | 1-view 3D estimates are bad |
 | Object size from measured extent (I-30) | model 66.7 vs ours 40.3 | category prior beats measurement (L6) |
 | Repeat the instruction after the question (I-31) | 4B −0.7, 0.8B −1.0 | one copy is enough at both sizes |
@@ -436,6 +439,33 @@ would need a scale source live (a metric depth model, or CUT3R itself).
   one. Caveats: window 8, chordal-mean chaining, fp32 on MPS, no offline joint-32 upper bound. The harness is
   ready for the next encoder (an adapter + one 60-video run).
 
+### I-36 Windowed CUT3R state (reset + overlap, rigid chaining) — **tested: no gain (2026-09-27)**
+Drop the recurrent state every N ingested frames, re-feed the last k frames to the fresh state, align the new
+window to the global frame rigidly through the shared cameras (`geometry.options.reset_every / overlap`).
+- 40 / 3 at ~1 fps: 56.9 (= no resets); room-area ratio 1.18 → 1.10, but the direction facts' accuracy 83.4 → 77.7 %.
+- 80 / 6: 55.3; direction 63.1 % — chaining to drifted poses through more shared cameras inherits their
+  orientation error.
+- Lesson: resets trade the accumulation gain (angles) for half the scale. Not the fix.
+
+### I-37 Metric scale anchor at the encoder's output — **v1 tested: strongly negative (2026-09-28); v2 in the lab**
+The state's scale inflates with the frames ingested (I-05: room area ×1.03 / ×1.18–1.23 / ×1.39 at keyframes /
+~1 fps / ~3 fps) while the layout improves. v1: per frame, camera height above the frame's own floor (2nd
+percentile of its points along up) vs the first 10 frames; points and camera divided by the ratio about the origin.
+- 60 videos at ~1 fps, 4B: **49.5** vs 56.9 without (−7.4 [−9.3, −5.4]); room MRA 55.5 → 14.3 (median ratio 0.70 —
+  over-shrunk, 37 % of videos within 50 %), **scale-free MRA 65 → 22**, direction facts 83.4 → 70.7 %, abs distance
+  39.7 → 31.6.
+- Two failures, both instructive. (1) The per-frame signal is wrong often: a frame without the floor in view
+  (wall, table top) puts the low percentile above the floor, the camera looks lower, the factor inflates; a
+  hand-held camera also moves up and down. (2) **Rescaling each frame by its own factor destroys the layout**:
+  frames scaled differently shift relative to each other about the origin, so the room's shape and the angles
+  between objects seen in different frames break. Angles do not need a scale at all.
+- v2 (`live3r.geometry.scale_anchor.ScaleAnchor`): floor depth below the first camera instead of camera height,
+  a support test, a gate that looks for the floor only where the current estimate predicts it; and the factor is to
+  be applied **once per video to the metric facts at read time** (geometric mean of the per-frame factors), the
+  geometry untouched. Chosen offline: `scripts/capture_geometry.py` records the raw stream of the 60 videos once,
+  `scripts/scale_anchor_lab.py` replays the variants against the room-area truth in seconds (per-frame and global
+  application side by side, and the correlation between the applied and the ideal factor as the signal check).
+
 ### Lessons so far (zero-shot, 4B)
 - **L6 Attach geometry only for scene-specific quantities; the model's prior already wins on canonical ones.**
   Object size is a property of the object category — a door is ~135 cm, a sofa ~180 cm — and the pretrained model
@@ -670,5 +700,7 @@ timestamps (I-04), recency weighting / decay, possibly state windows (I-05).
 | 27a | detection decoupled from the LLM's keyframes: OWLv2 on the geometry frames (~1 fps, median 82 detection frames per video), online object map, LLM at 8 keyframes | I-02 | done: **48.8** — +0.5 [−1.3, +2.3] vs keyframe detection, +1.5 [−0.8, +3.9] vs no facts; direction coverage 35% → 87% (type +4.6); distance facts worse (view count no longer means separate views) |
 | 27b | the same with the LLM at 32 keyframes — does dense detection lift the adopted 57.8? | I-02 | done: **55.4**, −2.4 [−4.0, −0.7] — direction coverage 77% → 86% but accuracy 76.4 → 75.6 (net 0); distances −8.0 (three near-duplicate "views"), room −10.8 (~1 fps drift) |
 | 30 | dense detection + time-separated view counting (`--view-gap 30`) + 40/3 resets, 32 keyframes — the combined fix | I-02, I-05, I-36 | done: **55.1**, −2.7 [−4.6, −0.9] vs keyframes only; −0.3 vs the dense map without the fixes. Distances beat the model only at ≥ 5–6 separated views; direction accuracy 69.9 (resets' cost); room ratio 1.10 |
+| 31 | I-37 v1 camera-height scale anchor, per-frame rescaling, ~1 fps | I-37, I-05 | done: **49.5**, −7.4 [−9.3, −5.4] vs no anchor — room MRA 14.3 (ratio 0.70), scale-free 21.7, direction facts 70.7 %: per-frame rescaling breaks the layout |
+| 32 | I-37 v2: raw-stream capture (60 videos) + offline lab over floor-level / camera-height × window × support × gate, per-frame vs global application | I-37 | running (chain 14) — pick by global MRA and factor–ideal correlation, then one 4B run of the winner |
 | 25 | I-35 encoder bake-off: VGGT window 8 behind the same maps (directions attached, metric facts logged) | I-35 | done: **CUT3R wins** — direction 76.4 vs 56.7 (72 vs 54 on common questions), room area MRA 65.8 vs 9.5 (scale-free 69.0 vs 16.2) |
 | 14 | **Sensenova-only baseline on 4 nodes x 8 H100**: zero-shot VSI (full); S1 and S2 (one epoch each) real vs control, two seeds; plain SFT (no geometry); S2 joint (no S1); the 2B pair; S2 learning curve; gate | I-12, I-16, I-18, I-22 | four-day run from 09-26 (docs/SERVER_WEEKEND.md) |

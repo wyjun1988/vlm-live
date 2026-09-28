@@ -4,9 +4,13 @@ each variant's scene map measures against VSI's ground truth - the metric probe 
     PYTHONPATH=src python scripts/scale_anchor_lab.py outputs/geom_capture/stride30 \\
         --ref-run outputs/vsi_local/i35_stride30_4b.json --grid quick
 
-Per variant: the median measured/true area ratio (1.0 = metric), the spread of log ratios across videos, MRA (the
-VSI room-size metric), MRA after the median ratio is divided out (shape only), the share of videos within 50%, the
-median correction applied, the correlation across videos between the correction applied and the ideal one
+Two ways of applying a variant's per-frame factors, scored side by side:
+  per-frame  every frame's points and camera are rescaled by its own factor (the v1 anchor, chain 13): columns
+             ratio / log sd / MRA / free / <50%. In the 60-video run this destroyed the layout (scale-free MRA
+             65 -> 22, directions 75 -> 66): frames scaled differently shift relative to each other.
+  global     the geometry is left alone; one factor per video - the geometric mean of the per-frame factors -
+             rescales the metric facts at read time: columns g.ratio / g.MRA. Angles are untouched by design.
+Also per variant: the median factor applied, the correlation across videos between it and the ideal factor
 (sqrt(truth / uncorrected area) - the signal check: a variant can be biased yet track the drift), and the share of
 frames the support / gate test skipped. `none` must reproduce the
 reference run's areas (--ref-run prints the largest relative difference) - that check validates the capture.
@@ -143,7 +147,7 @@ def main() -> int:
     rows = []
     none_area: dict[str, float] = {}      # the uncorrected area per video: the ideal factor is sqrt(truth / this)
     for name, spec in todo.items():
-        pairs, applied, ideal, skipped, frames, ref_diff = [], [], [], 0, 0, 0.0
+        pairs, gpairs, applied, ideal, skipped, frames, ref_diff = [], [], [], [], 0, 0, 0.0
         for vid, cap in caps.items():
             facts, anchor = replay(cap, make_anchor(spec))
             if spec is None and facts.get("area_m2"):
@@ -152,8 +156,10 @@ def main() -> int:
                 skipped += anchor.skipped
                 frames += anchor.frames
                 if anchor.history and vid in truth and none_area.get(vid):
-                    applied.append(float(np.exp(np.mean(np.log(anchor.history)))))
+                    g = float(np.exp(np.mean(np.log(anchor.history))))
+                    applied.append(g)
                     ideal.append(float(np.sqrt(truth[vid] / none_area[vid])))
+                    gpairs.append((none_area[vid] * g * g, truth[vid]))     # global: the facts rescaled at read time
             if spec is None and vid in ref_maps and ref_maps[vid].get("area_m2"):
                 ref_diff = max(ref_diff, abs(facts["area_m2"] - ref_maps[vid]["area_m2"]) / ref_maps[vid]["area_m2"])
             if vid in truth and facts.get("area_m2"):
@@ -161,24 +167,31 @@ def main() -> int:
         if not pairs:
             continue
         corr = float(np.corrcoef(np.log(applied), np.log(ideal))[0, 1]) if len(applied) >= 3 else float("nan")
+        gs = score(gpairs) if gpairs else {}
         row = {"variant": name, **score(pairs),
+               "global_ratio": gs.get("median_ratio"), "global_mra": gs.get("mra"),
+               "global_within_50": gs.get("within_50"),
                "applied_factor": statistics.median(applied) if applied else 1.0,
                "factor_corr": corr,                 # does the correction track the drift video by video?
                "skipped": skipped / frames if frames else 0.0}
         if spec is None and ref_maps:
             row["ref_max_rel_diff"] = ref_diff
         rows.append(row)
-        print(f"  {name:<56} ratio {row['median_ratio']:.2f}  sd {row['log_sd']:.2f}  MRA {100 * row['mra']:.1f}"
-              f"  free {100 * row['mra_scale_free']:.1f}  <50% {100 * row['within_50']:.0f}%"
-              f"  factor {row['applied_factor']:.2f}  corr {corr:+.2f}  skipped {100 * row['skipped']:.0f}%"
+        gtxt = f"  global ratio {gs['median_ratio']:.2f} MRA {100 * gs['mra']:.1f}" if gs else ""
+        print(f"  {name:<56} per-frame ratio {row['median_ratio']:.2f} sd {row['log_sd']:.2f} MRA {100 * row['mra']:.1f}"
+              f" free {100 * row['mra_scale_free']:.1f}{gtxt}  factor {row['applied_factor']:.2f} corr {corr:+.2f}"
+              f" skipped {100 * row['skipped']:.0f}%"
               + (f"  ref diff {100 * ref_diff:.1f}%" if "ref_max_rel_diff" in row else ""), flush=True)
 
-    rows.sort(key=lambda r: -r["mra"])
-    print(f"\n{'variant':<56}{'ratio':>7}{'log sd':>8}{'MRA':>7}{'free':>7}{'<50%':>6}{'factor':>8}{'corr':>7}{'skip':>6}")
+    rows.sort(key=lambda r: -max(r["mra"], r["global_mra"] or 0.0))
+    print(f"\n{'variant':<56}{'ratio':>7}{'log sd':>8}{'MRA':>7}{'free':>7}{'g.ratio':>9}{'g.MRA':>7}{'g.<50%':>7}"
+          f"{'factor':>8}{'corr':>7}{'skip':>6}")
     for r in rows:
+        g, gr, gw = r["global_mra"], r["global_ratio"], r["global_within_50"]
+        gcols = (f"{gr:>9.2f}{100 * g:>7.1f}{100 * gw:>6.0f}%" if g is not None else f"{'-':>9}{'-':>7}{'-':>7}")
         print(f"{r['variant']:<56}{r['median_ratio']:>7.2f}{r['log_sd']:>8.2f}{100 * r['mra']:>7.1f}"
-              f"{100 * r['mra_scale_free']:>7.1f}{100 * r['within_50']:>5.0f}%{r['applied_factor']:>8.2f}"
-              f"{r['factor_corr']:>+7.2f}{100 * r['skipped']:>5.0f}%")
+              f"{100 * r['mra_scale_free']:>7.1f}{gcols}"
+              f"{r['applied_factor']:>8.2f}{r['factor_corr']:>+7.2f}{100 * r['skipped']:>5.0f}%")
     if args.json:
         Path(args.json).write_text(json.dumps(rows, indent=1))
     return 0
