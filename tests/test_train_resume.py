@@ -144,3 +144,22 @@ def test_no_geometry_trains_lora_without_ever_running_the_encoder(monkeypatch, t
     assert lora_b and any(torch.count_nonzero(v) for v in lora_b), "LoRA did not train"
     assert all(torch.equal(v, torch.zeros_like(v)) for k, v in state.items() if "fc2.weight" in k and "projector" in k), \
         "the unused projector moved off its zero-init"
+
+
+@needs_tok
+def test_build_model_accepts_the_evaluations_minimal_namespace():
+    """eval_vsi_local.py / eval_geometry_ablation.py build the model with Namespace(stage, init_from, tokenizer)
+    only. With LoRA on (stage sft) build_model must not read trainer-only options without a default - it did
+    (`args.no_geometry`), and every trained-model evaluation on the server crashed (2026-09-28)."""
+    import argparse
+
+    from live3r.config import Live3RConfig
+    from live3r.train.train import build_model
+
+    cfg = Live3RConfig.from_yaml("configs/live3r_dummy.yaml")
+    cfg.base_model = "tiny"
+    cfg.lora.enabled = True
+    cfg.geometry.hidden_size, cfg.geometry.tap_layers = 64, (0, 1, 2)
+    model = build_model(argparse.Namespace(stage="sft", init_from=None, tokenizer=TOK), cfg, True)
+    assert any("lora" in n.lower() for n, _ in model.named_parameters())
+    build_model(argparse.Namespace(stage="align", init_from=None, tokenizer=TOK), cfg, True)

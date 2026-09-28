@@ -164,6 +164,11 @@ the relative-direction facts found on 09-26 (I-33, → 57.8) go into the next ru
 - **VideoMME never arrived**: the gate runs with MMStar as the general task (`gate/general.env`). To redo it with
   VideoMME once the download has succeeded, delete `gate/general.env`, `gate_*.done` and the `gate/base*`,
   `gate/trained` directories, then re-run the `control` and `sft` roles.
+- **Every trained-model VSI run failed (2026-09-28)**: a bug in `build_model` (fixed in the commit that carries this
+  note) crashed every `--config` evaluation whose config has LoRA on — all `s1_*`/`s2_*` VSI runs, `base_routed`,
+  the S2 ablation. Recovery: on every node `git fetch origin && git reset --hard origin/main`, then start the same
+  four `ROLE=…` commands again. Finished training arms and finished evaluations are skipped (their markers and
+  result files exist); only the failed evaluations run. Then send REPORT.md.
 - **Stop a node**: `bash scripts/server_weekend.sh stop` on that node (ends its script, torchrun, evaluations and
   downloads). Repeat on each node to stop everything.
 - **Disk**: about 300 GB for VideoMME (archives plus the unpacked copy), about 120 GB for checkpoints (13 arms).

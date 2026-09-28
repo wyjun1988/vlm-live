@@ -231,7 +231,12 @@ def cosine_with_warmup(step: int, total: int, warmup: int) -> float:
 
 # ---------------------------------------------------------------------- 모델
 def build_model(args, cfg: Live3RConfig, is_main: bool) -> Live3RModel:
-    model = Live3RModel.from_pretrained(cfg, tokenizer_path=args.tokenizer)
+    """`args` is the trainer's namespace - or the minimal one the evaluations build (stage, init_from, tokenizer),
+    so every trainer-only option must be read with a default. 2026-09-28: `args.no_geometry` read directly here
+    crashed every --config evaluation whose config has LoRA on (stage sft) - all trained-model VSI runs and the S2
+    ablation on the server; the M2 configs have LoRA off and never hit it."""
+    no_geometry = getattr(args, "no_geometry", False)
+    model = Live3RModel.from_pretrained(cfg, tokenizer_path=getattr(args, "tokenizer", None))
     model.freeze_base()  # 항상 먼저 전부 동결하고 필요한 것만 연다
     for p in model.projectors.parameters():
         p.requires_grad_(True)
@@ -250,12 +255,12 @@ def build_model(args, cfg: Live3RConfig, is_main: bool) -> Live3RModel:
                 logger.info("S1 결과 로드: %d/%d 텐서 (%s)", loaded, len(state), args.init_from)
             if loaded == 0:
                 raise RuntimeError(f"{args.init_from} 에서 로드된 텐서가 0개다 — 키가 안 맞는다")
-        elif is_main and not args.no_geometry:
+        elif is_main and not no_geometry:
             logger.warning(
                 "S2(sft) 를 S1 정렬 없이 시작한다 — LLM 이 기하를 무시하는 지름길을 배울 수 있다. "
                 "--init-from 으로 S1 결과를 넣는 걸 권장."
             )
-        if is_main and args.no_geometry:
+        if is_main and no_geometry:
             logger.info("--no-geometry: plain SFT reference - the encoder is never run, the projector stays at "
                         "its zero-init (so an eval that loads these weights injects nothing)")
     return model
