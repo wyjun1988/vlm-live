@@ -497,6 +497,17 @@ percentile of its points along up) vs the first 10 frames; points and camera div
   0.82–1.06 (median 0.94). So **the live configuration — the state accumulating at ~1 fps, as a stream must — now
   matches the best offline configuration** instead of paying 0.9 for it, and the maps it builds are the ones a long
   video needs. Adopted for the ~1 fps path; the estimator that could beat a calibration (self-view ratio) is next.
+- **Out of sample (09-29, 03:06): the calibration holds on videos it was not fitted on.** Streaming stack on the
+  seed-2 set (60 videos, 45 not in the fitting set): room-area median ratio 1.10 → 0.96 on the 45 new videos, MRA
+  54.2 → 63.3, videos within 50 % 84 → 96 % (all 60: 58.7 → 65.7). Two parameters, and the drift's dependence on
+  the frame count is a property of the encoder, not of the fitting videos.
+- **Streaming vs keyframes on the seed-2 videos (04:27): 55.3 vs 56.1, −0.8 [−1.9, +0.5]**; room at parity (both
+  65.7, ratio 0.96 vs 1.03), abs distance −1.0, **direction −3.4** — the direction facts were *less* accurate from the
+  accumulated maps here (64.7 % vs 69.6 % at ≥ 1 view, coverage 70 vs 74 %), the opposite of seed 1 (83.4 vs 76.4).
+  **Pooled over the 105 distinct videos: streaming stack − keyframes-only = −0.1 [−1.1, +1.1].** The honest
+  statement: the configuration a live stream must run (state accumulating at ~1 fps) is at **parity** with the best
+  offline configuration; the calibration is what buys the parity (without it, −0.9 and −1.1 on the two sets); the
+  "accumulation improves angles" effect of seed 1 does not replicate and was noise.
 - **CUT3R's own two point maps carry no signal either (19:40).** The head predicts the frame's points in the camera
   frame (`pts3d_in_self_view`) and in the state's world frame; through the predicted pose their distance ratio is
   **1.00 on every frame of every video** (`SelfViewScale`, relative or absolute, w5/w15: factor 1.00, corr −0.06…+0.01).
@@ -557,8 +568,9 @@ hint set is now the three priors (`--type-hints room_size,size,abs_distance`).
 - **I-40b (23:39): the three priors on the streaming stack (~1 fps + facts + calibration, 58.0) → 58.3**, +0.3
   [−0.0, +0.6]: size +1.5 (the same gain as without facts — the size type has no measurement, the prior is all it
   gets), abs distance +0.6, room +0.5 (the prior adds a little even next to the measured room facts). vs keyframes
-  only 57.8: +0.5 [−0.9, +2.1]. Small, consistent, free (one sentence, three types) — adopted into the streaming
-  stack, which is now the best measured configuration.
+  only 57.8: +0.5 [−0.9, +2.1]. Small, free (one sentence, three types) — kept in the streaming stack. **On the
+  seed-2 videos the size gain did not reproduce (67.6 vs 67.9 without the hints); pooled, the hints are ≈ 0.**
+  Treat them as harmless, not as a gain.
 
 ### I-41 The model places the named objects first (focused two-turn) — **tested: negative, −4.4 (2026-09-28)**
 I-20 (whole-scene cognitive map first) scored −4.8. The user's proposal narrowed: before the question, one or two
@@ -825,6 +837,6 @@ timestamps (I-04), recency weighting / decay, possibly state windows (I-05).
 | 40 | I-38 compact prompt v2 (+ rel_distance and Korean easy-direction examples), 4B re-check | I-38 | done: **100 % / 99 % / routing 100 %** on VSI, **100 % / 100 %** paraphrases, 29 tokens, 2.6 s — compact is the default now |
 | 41 | I-40b the three prior hints (room_size, size, abs_distance) on the streaming stack (~1 fps + facts + calibration, 58.0) | I-40, I-37 | done: **58.3**, +0.3 [−0.0, +0.6] — size +1.5, abs +0.6, room +0.5; +0.5 [−0.9, +2.1] vs keyframes. Adopted |
 | 42 | I-42 "trust the measurements" hint, 2B + routed facts (43.5, copy rate 53 %) | I-42, I-22 | done: **43.6**, +0.1 [−0.6, +0.8]; copy rate 49 % — null. Fact use in small models needs training (I-39) |
-| 43 | out-of-sample check of the adopted stacks on 60 *other* videos (seed 2): streaming stack (58.3 config) vs keyframes-only adopted (57.8 config) | I-37, I-40 | running (chain 23, overnight) — the calibration's coefficients were fitted on the seed-1 videos |
+| 43 | out-of-sample check of the adopted stacks on 60 *other* videos (seed 2): streaming stack (58.3 config) vs keyframes-only adopted (57.8 config) | I-37, I-40 | done: **55.3 vs 56.1, −0.8 [−1.9, +0.5]**; calibration holds (45 new videos: room ratio 1.10 → 0.96, MRA 54.2 → 63.3); direction −3.4 (facts 64.7 vs 69.6 %) — seed 1's direction gain was noise. **Pooled 105 videos: −0.1 [−1.1, +1.1] = parity** |
 | 25 | I-35 encoder bake-off: VGGT window 8 behind the same maps (directions attached, metric facts logged) | I-35 | done: **CUT3R wins** — direction 76.4 vs 56.7 (72 vs 54 on common questions), room area MRA 65.8 vs 9.5 (scale-free 69.0 vs 16.2) |
 | 14 | **Sensenova-only baseline on 4 nodes x 8 H100**: zero-shot VSI (full); S1 and S2 (one epoch each) real vs control, two seeds; plain SFT (no geometry); S2 joint (no S1); the 2B pair; S2 learning curve; gate | I-12, I-16, I-18, I-22 | four-day run from 09-26 (docs/SERVER_WEEKEND.md) |
