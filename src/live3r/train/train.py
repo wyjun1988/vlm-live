@@ -553,7 +553,9 @@ def train(args) -> int:
         raise RuntimeError(f"--stop-at-step {args.stop_at_step} is not after the resumed step {step}")
 
     cache = GeomCache(args.geom_cache) if args.geom_cache else None
-    donors = GeomDonors() if args.geom_control == "shuffled" else None
+    # the donor buffer: the weekend's 8 recent samples gave a same-shape donor 60 % of the time, so 40 % of the control
+    # arm's geometry was cycled or resampled - a confound real vs control does not have (SERVER_RESULTS_20260929 §8.2)
+    donors = GeomDonors(capacity=args.donor_buffer) if args.geom_control == "shuffled" else None
     if donors is not None:  # 데이터 뒤쪽의 서로 다른 샘플 둘로 기증자 버퍼를 채운다
         for j in range(len(ds) - 1 - rank, -1, -world):
             if len(donors.recent) >= 2:
@@ -718,6 +720,10 @@ def train(args) -> int:
                 probe.run(step)
             if is_main and args.save_every and step % args.save_every == 0:
                 _save(live, out_dir / f"step{step}.pt")
+            # the resume point can be written more often than the step checkpoints (--resume-every): a crash then
+            # costs minutes, while step{N}.pt stays sparse enough to evaluate every one of them
+            resume_every = args.resume_every or args.save_every
+            if is_main and resume_every and step % resume_every == 0:
                 save_resume(resume_path, live, opt, sched, step, micro_seen)
             if step >= total_steps:
                 break
@@ -738,7 +744,7 @@ def train(args) -> int:
     if is_main:
         probe.run(step)                      # the endpoint (skipped when this step was just probed)
         _save(live, out_dir / "final.pt")
-        if args.save_every:
+        if args.save_every or args.resume_every:
             save_resume(resume_path, live, opt, sched, step, micro_seen)
         if donors is not None:
             logger.info(donors.summary())
@@ -809,6 +815,9 @@ def main() -> int:
     ap.add_argument("--probe-n", type=int, default=32, help="held-out samples per probe")
     ap.add_argument("--probe-gen", type=int, default=6, help="of those, how many get a greedy answer generated")
     ap.add_argument("--probe-max-new-tokens", type=int, default=24)
+    ap.add_argument("--donor-buffer", type=int, default=8,
+                    help="--geom-control shuffled: recent samples kept as donors. A same-shape donor is preferred; "
+                         "a larger buffer finds one more often (~30 MB of geometry per sample on the GPU)")
     ap.add_argument("--weight-decay", type=float, default=0.0)
     ap.add_argument("--warmup-ratio", type=float, default=0.03)
     ap.add_argument("--grad-accum", type=int, default=16)
@@ -820,6 +829,8 @@ def main() -> int:
     ap.add_argument("--geom-cache", type=int, default=0, help="LRU 용량 (0=끔)")
     ap.add_argument("--log-every", type=int, default=10)
     ap.add_argument("--save-every", type=int, default=1000)
+    ap.add_argument("--resume-every", type=int, default=0,
+                    help="write <output>/resume.pt every N steps (default: with every --save-every checkpoint)")
     ap.add_argument("--dump-samples", type=int, default=0, help="학습 전 샘플 N개를 사람이 읽게 출력")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--device", default=None)

@@ -179,3 +179,11 @@ def test_holdout_probe_writes_rows_at_start_every_n_and_at_the_end(monkeypatch, 
     assert first["shuffled_minus_real"] == pytest.approx(0.0, abs=1e-5)
     assert len(first["generations"]) == 2 and all(set(g) >= {"answer", "truth"} for g in first["generations"])
     assert all(g["truth"] for g in first["generations"])
+
+
+@needs_tok
+def test_resume_every_writes_the_resume_point_without_step_checkpoints(monkeypatch, tmp_path):
+    out = tmp_path / "r"
+    _run(monkeypatch, tmp_path, out, "--max-steps", "2", "--save-every", "0", "--resume-every", "1")
+    assert (out / "resume.pt").exists() and not list(out.glob("step*.pt"))
+    assert torch.load(out / "resume.pt")["step"] == 2

@@ -132,3 +132,24 @@ def test_learning_curve_lists_checkpoints_with_per_type_scores(tmp_path):
     row = next(ln for ln in text.splitlines() if ln.startswith("| final"))
     assert row.count("|") == 3 + len(wr.TYPE_SHORT) + 1 and "| 62.0 |" in row and "| 50.0 |" in row and "| 70.0 |" in row
     assert wr.section_curve(tmp_path / "nothing") == []
+
+
+def test_run2_mode_uses_its_phases_comparisons_and_budget(tmp_path):
+    (tmp_path / "RUN").write_text("run2\n")
+    (tmp_path / "vsi").mkdir()
+    for name, sc in (("s2_real", 0.6), ("s2_control", 0.5)):
+        preds = [{"id": i, "type": "object_counting", "video": f"v{i // 2}", "score": sc} for i in range(8)]
+        (tmp_path / "vsi" / f"{name}.json").write_text(json.dumps(
+            {"scores": {"oracle-image": {"overall": sc}}, "predictions": {"oracle-image": preds}, "n_questions": 8}))
+    (tmp_path / "budget.env").write_text("N_TRAIN=830135\nCALIB_SPS_S1=16.0\nCALIB_SPS_S2=15.0\nS1_STEPS=324\nS2_STEPS=6485\n")
+    (tmp_path / "d0_throughput.txt").write_text("[verdict]\n  F1 NEEDED: the Conv3d patch embed is 40x slower\n")
+    wr.RUN = "run2"
+    try:
+        vsi = "\n".join(wr.section_vsi(tmp_path))
+        diag = "\n".join(wr.section_diagnostic(tmp_path))
+        status = "\n".join(wr.section_status(tmp_path))
+    finally:
+        wr.RUN = "weekend"
+    assert "S2: real - control (geometry content)  <- key" in vsi and "**+10.0**" in vsi and "Debiased" in vsi
+    assert "F1 NEEDED" in diag and "S2: 6485 steps x 128 = 830,080 samples = 1.00 epochs at 15.00 samples/s" in diag
+    assert "recover_vsi" in status and "s2_joint" in status

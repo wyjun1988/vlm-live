@@ -1,6 +1,7 @@
-"""One Markdown report of everything the weekend run produced (scripts/server_weekend.sh).
+"""One Markdown report of everything a server run produced (scripts/server_weekend.sh, scripts/server_run2.sh).
 
     python scripts/weekend_report.py outputs/weekend > outputs/weekend/REPORT.md
+    python scripts/weekend_report.py outputs/run2 > outputs/run2/REPORT.md      # run 2 (detected from the RUN file)
 
 Safe to run at any time: each section reports what exists and names what is missing, so the report is useful
 while the run is going and after a partial failure. No GPU, no model, no lmms-eval import. VSI comparisons are a
@@ -21,6 +22,8 @@ from pathlib import Path
 
 import numpy as np
 
+RUN = "weekend"   # set in main() from --run or <out>/RUN
+
 # lmms-eval's VSI aggregation (_compute_all_subscores): the mean of each question type, the three relative-
 # direction difficulties averaged into one type first, then the mean over the 8 types
 REL_DIR = "object_rel_direction"
@@ -40,6 +43,42 @@ PHASES = [("p0", "shared preflight"), ("p2_vsibench", "VSI-Bench data"), ("p2_mm
           ("s2_control_2b", "2B S2 control"), ("gate_base", "gate: base"), ("gate_base_video", "gate: base video"),
           ("gate_trained", "gate: trained"), ("gate_check", "gate verdict"),
           ("role.real", "role real"), ("role.control", "role control"), ("role.sft", "role sft"), ("role.small", "role small")]
+# run 2 (scripts/server_run2.sh): one epoch per arm, the new stack (linear patch embed, fla), all weekend checkpoints
+# re-evaluated on the same stack under the prefix wk_
+PHASES_RUN2 = [("p0", "shared preflight"), ("d0", "throughput diagnostic (first node)"), ("calib", "speed calibration"),
+               ("s1_real", "S1 real (short)"), ("s1_control", "S1 control (short)"), ("s2_real", "S2 real"),
+               ("s2_control", "S2 control"), ("s2_sft", "plain SFT (no geometry)"), ("recover_vsi", "weekend re-evaluation"),
+               ("recover_abl", "weekend ablations"), ("s2_joint", "S2 joint (no S1)"), ("gate_base", "gate: base"),
+               ("gate_base_video", "gate: base video"), ("gate_trained", "gate: trained"), ("gate_check", "gate verdict"),
+               ("role.real", "role real"), ("role.control", "role control"), ("role.sft", "role sft"),
+               ("role.recover", "role recover")]
+COMPARISONS_RUN2 = [
+    ("S2: real - control (geometry content)  <- key", "s2_real:oracle-image", "s2_control:oracle-image"),
+    ("S2 real - plain SFT (value of the whole geometry path)", "s2_real:oracle-image", "s2_sft:oracle-image"),
+    ("S2 control - plain SFT (a content-free injection)", "s2_control:oracle-image", "s2_sft:oracle-image"),
+    ("S2 joint (no S1) - S2 real (is S1 needed?)", "s2_joint:oracle-image", "s2_real:oracle-image"),
+    ("S1: real - control", "s1_real:oracle-image", "s1_control:oracle-image"),
+    ("Hint, same prompt: S2 real - control", "s2_real_hint:oracle-image", "s2_control_hint:oracle-image"),
+    ("Hint, same prompt: S2 real - plain SFT", "s2_real_hint:oracle-image", "s2_sft_hint:oracle-image"),
+    ("Hint, same prompt: plain SFT - base (what SFT buys)", "s2_sft_hint:oracle-image", "base_hint:oracle-image"),
+    ("Hint, same prompt: S2 real - base", "s2_real_hint:oracle-image", "base_hint:oracle-image"),
+    ("S2 real - base best format (gate 1, local eval)", "s2_real:oracle-image", "base_best"),
+    ("Room facts, same prompt: S2 real - plain SFT", "s2_real_routed_room:oracle-image", "s2_sft_routed_room:oracle-image"),
+    ("S2 real: room facts - hint (measurements after training)", "s2_real_routed_room:oracle-image", "s2_real_hint:oracle-image"),
+    ("Base: room facts - hint", "base_routed_room:oracle-image", "base_hint:oracle-image"),
+    ("Base: + hint - video mode", "base_hint:oracle-image", "base_plain:oracle-video"),
+    ("1 epoch vs 2 %: S2 real - weekend S2 real", "s2_real:oracle-image", "wk_s2_real:oracle-image"),
+    ("1 epoch vs 2 %: plain SFT - weekend plain SFT", "s2_sft:oracle-image", "wk_s2_sft:oracle-image"),
+    ("Weekend: S2 real - control (rule 1 at 2 %)", "wk_s2_real:oracle-image", "wk_s2_control:oracle-image"),
+    ("Weekend seed 1: S2 real - control", "wk_s2_real_seed1:oracle-image", "wk_s2_control_seed1:oracle-image"),
+    ("Weekend: S2 real seed 1 - seed 0 (training-seed noise)", "wk_s2_real_seed1:oracle-image", "wk_s2_real:oracle-image"),
+    ("Weekend: S2 real - plain SFT", "wk_s2_real:oracle-image", "wk_s2_sft:oracle-image"),
+    ("Weekend: S2 joint - S2 real", "wk_s2_joint:oracle-image", "wk_s2_real:oracle-image"),
+    ("Weekend: S1 real - control", "wk_s1_real:oracle-image", "wk_s1_control:oracle-image"),
+    ("Weekend 2B: S2 real - control", "wk_s2_real_2b:oracle-image", "wk_s2_control_2b:oracle-image"),
+    ("Weekend 2B: S2 real - 2B base + hint", "wk_s2_real_2b_hint:oracle-image", "base_hint_2b:oracle-image"),
+    ("Stack check: weekend S2 real, new stack - old stack", "wk_s2_real:oracle-image", "old_s2_real:oracle-image"),
+]
 # (label, run A, run B): A - B. A run is "<vsi json name>:<mode>"; "base_best" is the base's better format.
 COMPARISONS = [
     ("Base: image mode - video mode (the format confound)", "base_plain:oracle-image", "base_plain:oracle-video"),
@@ -155,6 +194,15 @@ def per_type_scores(sc: dict) -> dict[str, float | None]:
     return per
 
 
+def debiased_ids(vsi_root: str = "data/eval/vsibench") -> set | None:
+    """VSI-Debiased = the questions NOT in pruned_ids.txt (the ones the Debiased pilot found answerable without the
+    video). None when the file is not there."""
+    f = Path(vsi_root) / "pruned_ids.txt"
+    if not f.exists():
+        return None
+    return {int(x) for x in f.read_text().split()}
+
+
 def section_vsi(out: Path) -> list[str]:
     runs = load_vsi(out)
     lines = ["## VSI-Bench (local harness, live path: 32 uniform keyframes)", ""]
@@ -173,8 +221,10 @@ def section_vsi(out: Path) -> list[str]:
     lines += ["", "M2 reference (60 videos, 1,151 questions): base video mode 48.6 · + format hint 53.7 · "
               "routed facts 56.0 · S2 pilot (905 samples) 44.1 vs control 42.3.", "",
               "### Paired comparisons (Δ in points, 95% interval from resampling videos)", "",
-              "| comparison | A | B | Δ | 95% interval | videos / questions |", "|---|---|---|---|---|---|"]
-    for label, a, b in COMPARISONS:
+              "| comparison | A | B | Δ | 95% interval | videos / questions | Δ Debiased [95%] |",
+              "|---|---|---|---|---|---|---|"]
+    pruned = debiased_ids()
+    for label, a, b in (COMPARISONS_RUN2 if RUN == "run2" else COMPARISONS):
         sa, pa = vsi_preds(runs, a)
         sb, pb = vsi_preds(runs, b)
         if not pa or not pb:
@@ -185,8 +235,13 @@ def section_vsi(out: Path) -> list[str]:
             continue
         d, lo, hi, nv, nq = res
         sig = " *" if lo > 0 or hi < 0 else ""
-        lines.append(f"| {label} | {sa} | {sb} | **{d:+.1f}**{sig} | [{lo:+.1f}, {hi:+.1f}] | {nv} / {nq} |")
-    lines += ["", "`*` = the interval excludes 0.", ""]
+        deb = "-"
+        if pruned is not None:
+            rd = paired_bootstrap([p for p in pa if p["id"] not in pruned], [p for p in pb if p["id"] not in pruned])
+            if rd is not None:
+                deb = f"{rd[0]:+.1f} [{rd[1]:+.1f}, {rd[2]:+.1f}]" + (" *" if rd[1] > 0 or rd[2] < 0 else "")
+        lines.append(f"| {label} | {sa} | {sb} | **{d:+.1f}**{sig} | [{lo:+.1f}, {hi:+.1f}] | {nv} / {nq} | {deb} |")
+    lines += ["", "`*` = the interval excludes 0. Debiased = the questions not in `pruned_ids.txt` (2,362 of 5,130).", ""]
     return lines
 
 
@@ -361,8 +416,13 @@ def verdict(mean: float, ci: float, pos: str, neg: str, none: str) -> str:
 def section_ablation(out: Path) -> list[str]:
     lines = ["## Geometry ablation (holdout loss, lower is better)", ""]
     found = False
-    for label, f in [("S1 (projector only)", "p5_ablation_s1.json"), ("S2 (LoRA)", "p7_ablation_s2.json"),
-                     ("2B S2 (LoRA)", "p7_ablation_2b.json")]:
+    files = [("S1 (projector only)", "p5_ablation_s1.json"), ("S2 (LoRA)", "p7_ablation_s2.json"),
+             ("2B S2 (LoRA)", "p7_ablation_2b.json")]
+    if RUN == "run2":
+        files += [("weekend S1, new stack", "wk_p5_ablation_s1.json"), ("weekend S2, new stack", "wk_p7_ablation_s2.json"),
+                  ("weekend S2 seed 1, new stack", "wk_p7_ablation_s2_seed1.json"),
+                  ("weekend 2B S2, new stack", "wk_p7_ablation_2b.json")]
+    for label, f in files:
         p = out / f
         if not p.exists():
             lines.append(f"- {label}: not run yet (`{f}`)")
@@ -458,31 +518,71 @@ def section_status(out: Path) -> list[str]:
         lines += [f"Nodes seen: {', '.join(nodes)} · roles: {', '.join(roles) or '-'}", ""]
     lines += ["| step | state |", "|---|---|"]
     done = {p.stem for p in out.glob("*.done")}
-    for key, label in PHASES:
+    phases = PHASES_RUN2 if RUN == "run2" else PHASES
+    for key, label in phases:
         hit = re.compile(rf"FAILED {re.escape(key)}\b")   # "p1" must not match a "p1e" failure
         state = "done" if key in done else ("FAILED" if any(hit.search(ln) for ln in failed) else "-")
         lines.append(f"| {key} {label} | {state} |")
-    other = sorted(k for k in done if k not in {k for k, _ in PHASES} and not k.startswith(("p0.", "p1.")))
+    other = sorted(k for k in done if k not in {k for k, _ in phases} and not k.startswith(("p0.", "p1.")))
     if other:
         lines.append(f"| other markers | {', '.join(other)} |")
     lines.append("")
     if failed:
-        lines += ["Failures (from STATUS):", "", "```", *failed[-15:], "```", ""]
+        lines += [f"Failures (from STATUS, all {len(failed)}):", "", "```", *failed, "```", ""]
     if status:
         lines += [f"Last line of STATUS: `{status[-1]}`", ""]
+    return lines
+
+
+def section_diagnostic(out: Path) -> list[str]:
+    """Run 2: the throughput diagnostic (scripts/diagnose_throughput.py) and the calibrated budget."""
+    if RUN != "run2":
+        return []
+    lines = ["## Throughput: diagnostic and budget", ""]
+    d = out / "d0_throughput.txt"
+    if d.exists():
+        keep = [ln.rstrip() for ln in d.read_text(errors="replace").splitlines()
+                if ln.strip().startswith(("python", "cuda", "transformers", "packages", "qwen3_5.", "Gated", "conv3d",
+                                          "linear", "stock", "loss fused", "FLA", "F1", "F2", "Conv3d", "vision tower",
+                                          "fla check", "[llm]"))]
+        lines += ["```", *keep, "```", ""]
+    else:
+        lines += ["Diagnostic not run yet (`d0_throughput.txt`).", ""]
+    b = out / "budget.env"
+    if b.exists():
+        env = dict(ln.split("=", 1) for ln in b.read_text().split() if "=" in ln)
+        n = int(env.get("N_TRAIN", 0) or 0)
+        lines += ["Budget: " + " · ".join(f"{k} {v}" for k, v in env.items()), ""]
+        if n:
+            for st in ("S1", "S2"):
+                steps = int(env.get(f"{st}_STEPS", 0) or 0)
+                sps = float(env.get(f"CALIB_SPS_{st}", 0) or 0)
+                if steps:
+                    lines.append(f"- {st}: {steps} steps x 128 = {steps * 128:,} samples = {steps * 128 / n:.2f} epochs"
+                                 + (f" at {sps:.2f} samples/s = {steps * 128 / sps / 3600:.1f} h" if sps else ""))
+            lines.append("")
     return lines
 
 
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("out", nargs="?", default="outputs/weekend")
+    ap.add_argument("--run", choices=("weekend", "run2"), default=None,
+                    help="which run's phases and comparisons (default: the RUN file in the output directory)")
     args = ap.parse_args()
     out = Path(args.out)
-    parts = ["# Weekend run report - Sensenova-only baseline", "",
-             f"Generated {datetime.now():%Y-%m-%d %H:%M} from `{out}`. Plan and reading guide: "
-             "docs/SERVER_WEEKEND.md.", ""]
-    for section in (section_status, section_training, section_probe, section_ablation, section_vsi, section_curve,
-                    section_gate, section_latency):
+    global RUN
+    RUN = args.run or ((out / "RUN").read_text().strip() if (out / "RUN").exists() else "weekend")
+    if RUN == "run2":
+        parts = ["# Run 2 report - Sensenova, one epoch per arm, new stack", "",
+                 f"Generated {datetime.now():%Y-%m-%d %H:%M} from `{out}`. Plan and reading guide: docs/SERVER_RUN2.md; "
+                 "why this run: docs/SERVER_RESULTS_20260929.md.", ""]
+    else:
+        parts = ["# Weekend run report - Sensenova-only baseline", "",
+                 f"Generated {datetime.now():%Y-%m-%d %H:%M} from `{out}`. Plan and reading guide: "
+                 "docs/SERVER_WEEKEND.md.", ""]
+    for section in (section_status, section_diagnostic, section_training, section_probe, section_ablation, section_vsi,
+                    section_curve, section_gate, section_latency):
         try:
             parts += section(out)
         except Exception as exc:  # noqa: BLE001 - one broken section must not hide the others

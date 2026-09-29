@@ -63,6 +63,11 @@ class Live3RModel(nn.Module):
         self.vision_patch: int = self.spec.patch
         self.spatial_merge: int = self.spec.merge
         self.temporal_patch: int = self.spec.temporal_patch
+        if getattr(cfg, "patch_embed", "conv") == "linear":
+            from .patch_embed import linearize_patch_embed
+
+            n = linearize_patch_embed(base)
+            logger.info("patch_embed=linear: %d vision patch embedding(s) run as the equivalent matmul", n)
         self.image_token_id: int = base.config.image_token_id
         self.video_token_id: int = base.config.video_token_id
         self.vision_start_id: int = base.config.vision_start_token_id

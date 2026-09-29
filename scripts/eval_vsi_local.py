@@ -479,6 +479,13 @@ def main() -> int:
     ap.add_argument("--save-maps", type=int, default=6, help="--scene-map 일 때 앞쪽 N 개 영상의 지도 이미지를 저장")
     ap.add_argument("--prefix-cache", action=argparse.BooleanOptionalAction, default=True,
                     help="같은 영상의 질문들이 시각 프리픽스 캐시를 공유한다 (답은 동일, 수 배 빠름)")
+    ap.add_argument("--patch-embed", choices=("conv", "linear"), default=None,
+                    help="the vision patch embedding: transformers' Conv3d or its exact matmul form "
+                         "(live3r.model.patch_embed). Default: the config's value (--config), else conv")
+    ap.add_argument("--shard", type=int, default=0, help="with --num-shards: this process's share (0-based)")
+    ap.add_argument("--num-shards", type=int, default=1,
+                    help="split the selected videos round-robin over this many processes (one per GPU); the "
+                         "outputs carry every scored record and are combined by scripts/merge_vsi_shards.py")
     ap.add_argument("--out", default=None)
     args = ap.parse_args()
 
@@ -511,6 +518,10 @@ def main() -> int:
     vids = pick_videos(docs, args.videos, args.seed)
     if args.first_videos:
         vids = vids[: args.first_videos]
+    if args.num_shards > 1:   # one GPU's share of the run; scripts/merge_vsi_shards.py puts the shards together
+        if not 0 <= args.shard < args.num_shards:
+            raise SystemExit(f"--shard {args.shard} out of range for --num-shards {args.num_shards}")
+        vids = vids[args.shard :: args.num_shards]
     todo = [d for d in docs if (d["dataset"], d["scene_name"]) in set(vids)]
     modes = [m for m in args.modes.split(",") if m]
     print(f"영상 {len(vids)} · 문항 {len(todo)} · 모드 {modes} · 키프레임 {args.budget}")
@@ -521,6 +532,8 @@ def main() -> int:
         from live3r.train.train import build_model
 
         cfg = Live3RConfig.from_yaml(args.config)
+        if args.patch_embed:
+            cfg.patch_embed = args.patch_embed
         if args.scene_map and cfg.geometry.name == "dummy":
             raise SystemExit("--scene-map 은 점·포즈를 내는 실제 기하(CUT3R)가 필요하다 — 설정의 geometry 를 봐라")
         if cfg.geometry.name != "dummy" and len(modes) > 1:
@@ -540,7 +553,7 @@ def main() -> int:
             base_model=args.model, dtype=args.dtype,
             geometry=GeometryConfig(name=args.geometry, tap_layers=(6, 9, 12), hidden_size=768, image_size=512),
             fusion=FusionConfig(inject_layers=(0, 1, 2), zero_init=True),
-            lora=LoRAConfig(enabled=False),
+            lora=LoRAConfig(enabled=False), patch_embed=args.patch_embed or "conv",
         )
         live = Live3RModel(cfg, base, tok).to(dev).eval()
         if args.weights:
@@ -832,8 +845,12 @@ def main() -> int:
             "direction_facts": args.direction_facts, "direction_min_frames": args.direction_min_frames,
             "route_plan_facts": args.route_plan_facts, "detect_stride": args.detect_stride, "view_gap": args.view_gap,
             "frame_labels": args.frame_labels, "thinking": args.thinking, "think_tokens": args.think_tokens,
-            "thinking_log": think_log,
-        }, indent=2, ensure_ascii=False))
+            "thinking_log": think_log, "patch_embed": getattr(live.cfg, "patch_embed", "conv"),
+            "shard": [args.shard, args.num_shards] if args.num_shards > 1 else None,
+            # a shard keeps its full scored records: the merge re-aggregates them with lmms-eval's own function
+            "records": ({m: [{k: v for k, v in r.items() if k != "attached"} for r in scored[m]] for m in modes}
+                        if args.num_shards > 1 else None),
+        }, indent=2, ensure_ascii=False, default=str))
         print(f"저장: {args.out}")
     return 0
 

@@ -38,3 +38,20 @@ def test_only_non_overlapping_patch_convs_are_touched():
     other.proj = torch.nn.Conv3d(3, 8, kernel_size=3, stride=1)
     other.temporal_patch_size = 2
     assert not is_patch_embed(other) and is_patch_embed(PatchEmbed())
+
+
+def test_config_patch_embed_reaches_the_model_and_is_validated():
+    """patch_embed: linear in the config patches the base model's vision tower when Live3RModel is built."""
+    import pytest
+
+    from live3r.config import Live3RConfig
+    from live3r.model.live3r import Live3RModel
+
+    with pytest.raises(ValueError):
+        Live3RConfig(patch_embed="conv3d")
+    for mode, patched in (("conv", False), ("linear", True)):
+        cfg = Live3RConfig.from_dict({"base_model": "tiny", "patch_embed": mode, "lora": {"enabled": False},
+                                      "geometry": {"name": "dummy", "hidden_size": 32, "tap_layers": [1, 2, 3]}})
+        live = Live3RModel.from_pretrained(cfg)
+        pe = [m for m in live.base.modules() if is_patch_embed(m)]
+        assert pe and all(getattr(m, "_live3r_linear", False) == patched for m in pe)

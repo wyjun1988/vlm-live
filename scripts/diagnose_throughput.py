@@ -155,6 +155,56 @@ def section_model(dev: torch.device, model_path: str, images: int, llm_tokens: i
     return out
 
 
+FLA_PROBE = r"""
+import os, sys, time, torch
+if os.environ.get("BLOCK_FLA") == "1":        # transformers resolves the kernels at import: block fla before it
+    sys.modules["fla"] = None
+    sys.modules["causal_conv1d"] = None
+from transformers import Qwen3_5ForConditionalGeneration
+path, n, out, dev = sys.argv[1], int(sys.argv[2]), sys.argv[3], sys.argv[4]
+m = Qwen3_5ForConditionalGeneration.from_pretrained(path, dtype=torch.bfloat16).to(dev).eval()
+g = torch.Generator().manual_seed(0)
+ids = torch.randint(1000, 20000, (1, n), generator=g).to(dev)
+def sync():
+    torch.cuda.synchronize() if dev.startswith("cuda") else None
+with torch.no_grad():
+    o = m(input_ids=ids, labels=ids)
+    sync(); t = time.perf_counter(); m(input_ids=ids, labels=ids); sync(); ms = (time.perf_counter() - t) * 1e3
+torch.save({"loss": float(o.loss), "logits": o.logits[0, -64:].float().cpu(), "ms": ms}, out)
+"""
+
+
+def section_fla(dev: torch.device, model_path: str, tokens: int) -> dict:
+    """The same 4B forward with the fused Gated DeltaNet (fla) and with transformers' torch fallback, in two
+    processes: loss, logits and time. Decides whether fla may be used for training (same numerics up to bf16)."""
+    import subprocess
+    import tempfile
+
+    print(f"\n[fla] fused vs torch-fallback Gated DeltaNet, {tokens}-token forward of {model_path}")
+    if not importlib.util.find_spec("fla"):
+        print("  fla is not installed - nothing to compare (install flash-linear-attention first)")
+        return {"fla": None}
+    res = {}
+    with tempfile.TemporaryDirectory() as td:
+        for name, block in (("fused", "0"), ("torch", "1")):
+            out = f"{td}/{name}.pt"
+            r = subprocess.run([sys.executable, "-c", FLA_PROBE, model_path, str(tokens), out, str(dev)],
+                               env={**__import__("os").environ, "BLOCK_FLA": block}, capture_output=True, text=True)
+            if r.returncode != 0:
+                print(f"  {name} path failed:\n{r.stderr[-2000:]}")
+                return {"fla": False}
+            res[name] = torch.load(out)
+    a, b = res["fused"], res["torch"]
+    rel = ((a["logits"] - b["logits"]).norm() / b["logits"].norm()).item()
+    agree = (a["logits"].argmax(-1) == b["logits"].argmax(-1)).float().mean().item()
+    dloss = abs(a["loss"] - b["loss"])
+    ok = dloss < 0.05 and rel < 0.05 and agree > 0.9
+    print(f"  loss fused {a['loss']:.4f} vs torch {b['loss']:.4f} (|d| {dloss:.4f}) · logits rel. diff {rel:.1e} · "
+          f"top-1 agreement {100 * agree:.0f}% · time {a['ms']:.0f} vs {b['ms']:.0f} ms ({b['ms'] / max(a['ms'], 1e-6):.1f}x)")
+    print(f"  FLA {'OK' if ok else 'MISMATCH'}")
+    return {"fla": ok, "fla_speedup": b["ms"] / max(a["ms"], 1e-6)}
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default=None, help="Qwen3.5 checkpoint; without it only [env] and [patch] run")
@@ -164,11 +214,14 @@ def main() -> int:
     ap.add_argument("--hidden", type=int, default=1024)
     ap.add_argument("--images", type=int, default=32)
     ap.add_argument("--llm-tokens", type=int, default=4096)
+    ap.add_argument("--fla-check", action="store_true",
+                    help="with --model: compare the fused Gated DeltaNet (fla) with the torch fallback (two processes)")
     args = ap.parse_args()
     dev = torch.device(args.device)
     env = section_env(dev)
     patch = section_patch(dev, args.rows, args.hidden)
     model = section_model(dev, args.model, args.images, args.llm_tokens) if args.model else {}
+    fla = section_fla(dev, args.model, args.llm_tokens) if (args.model and args.fla_check) else {}
 
     print("\n[verdict]")
     ratio = patch["conv_ms"] / max(patch["linear_ms"], 1e-6)
@@ -181,6 +234,9 @@ def main() -> int:
         print(f"  vision tower: {model['vision_stock_ms_row']:.3f} -> {model['vision_linear_ms_row']:.3f} ms/row with F1 ({gain:.1f}x)")
     print("  F2 NEEDED: Gated DeltaNet runs the torch fallback - install flash-linear-attention and causal-conv1d."
           if env["gdn_fallback"] else "  Gated DeltaNet uses the fused kernels: F2 is not needed.")
+    if fla.get("fla") is not None:
+        print(f"  fla check: {'OK - keep it' if fla['fla'] else 'MISMATCH - uninstall flash-linear-attention'}"
+              + (f" ({fla['fla_speedup']:.1f}x faster forward)" if fla.get("fla_speedup") else ""))
     return 0
 
 

@@ -118,6 +118,11 @@ class Live3RConfig:
     # bf16 | fp16 | fp32
     dtype: str = "bf16"
     attn_implementation: str = "sdpa"
+    # the vision tower's patch embedding: "conv" (transformers' Conv3d) or "linear" (the same map as a matmul,
+    # live3r.model.patch_embed). Some torch/cuDNN builds run the bf16 Conv3d on a slow kernel - the prime suspect for
+    # the weekend run's 16 GPU-s per sample (docs/SERVER_RESULTS_20260929.md §2.3). Training and every evaluation of
+    # a run must use the same value.
+    patch_embed: str = "conv"
     geometry: GeometryConfig = field(default_factory=GeometryConfig)
     fusion: FusionConfig = field(default_factory=FusionConfig)
     lora: LoRAConfig = field(default_factory=LoRAConfig)
@@ -125,6 +130,8 @@ class Live3RConfig:
     data: DataConfig = field(default_factory=DataConfig)
 
     def __post_init__(self) -> None:
+        if self.patch_embed not in ("conv", "linear"):
+            raise ValueError(f"patch_embed must be 'conv' or 'linear', got {self.patch_embed!r}")
         if self.fusion.mode == "deepstack":
             n_tap = len(self.geometry.tap_layers)
             n_inj = len(self.fusion.inject_layers)

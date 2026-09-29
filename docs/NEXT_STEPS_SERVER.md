@@ -1,5 +1,11 @@
 # 서버 다음 진행사항 — 2026-09-23 (09-24 M2 실측 반영)
 
+> ## 2026-09-30 — start here: run 2
+> **Run [`docs/SERVER_RUN2.md`](SERVER_RUN2.md)**: `scripts/server_run2.sh`, one `ROLE` per node (`real`, `control`,
+> `sft`, `recover`). One epoch per arm on the fixed stack (linear patch embed, fla, budget from the production
+> speed), and every weekend checkpoint re-evaluated on the same stack. Why: [`docs/SERVER_RESULTS_20260929.md`](SERVER_RESULTS_20260929.md).
+> The weekend section below is history.
+>
 > ## 2026-09-26 — start here: the four-day run on 4 nodes
 > **Run [`docs/SERVER_WEEKEND.md`](SERVER_WEEKEND.md)**: `scripts/server_weekend.sh` with one `ROLE` per node
 > (`real`, `control`, `sft`, `small`) does steps 1–10 of this document unattended (all but the streaming evaluation
