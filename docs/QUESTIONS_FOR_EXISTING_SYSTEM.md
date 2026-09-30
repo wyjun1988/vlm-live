@@ -1,5 +1,18 @@
 # 기존 시스템(VGGT → CUT3R + 4B, 최고 70.2)에 물어볼 것
 
+> **Status 2026-09-30 (English):** the reference team's reply was an answer-generation runbook (how to run their model
+> on a benchmark and hand over prediction files), not answers to the questions below. What it did give:
+> - VSI-Bench overall **70.83** (lmms-eval `vsibench`, thinking off; results
+>   `logs/vsibench_qwen35_nothink/cot__qwen3.5-4b-allcot-sqa-gt-cut3r-lora2/20260728_140541_results.json`).
+>   77.91 is SQA3D's `is` sub-score, not VSI.
+> - Model: Qwen/Qwen3.5-4B + LoRA `/group-volume/jcho/VG-LLM/ckpt/cot/qwen3.5-4b-allcot-sqa-gt-cut3r-lora2`
+>   (VG-LLM codebase), encoder CUT3R `/group-volume/jcho/CUT3R/src/cut3r_512_dpt_4_64.pth` (the same checkpoint name
+>   as ours), geometry patch 16; evaluation `scripts/evaluation/eval_lora_multi.sh`.
+> - Everything is on the same group volume as our server, so P0-A (checkpoint) is answered and most of the rest can be
+>   read from their files: `python scripts/inspect_reference_system.py` writes `outputs/reference_70/INVENTORY.md`
+>   (per-type scores, evaluation config and prompt, frames and pixels, answer lengths / chain of thought, adapter and
+>   training arguments, training script and datasets with record counts, where geometry is fused) and a small bundle.
+
 코드를 가져올 수 없으므로, 아래 항목을 그쪽 담당자에게 물어 채워주면 Live3R 이 **같은 데이터·같은 운영점**에서
 비교 가능해진다. 답이 없으면 추측으로 맞춰야 하고, 그러면 격차의 원인을 못 가린다.
 
