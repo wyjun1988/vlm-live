@@ -28,6 +28,7 @@ from __future__ import annotations
 import json
 import logging
 import random
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -36,6 +37,7 @@ import torch
 from torch.utils.data import Dataset
 
 from ..config import DataConfig
+from . import marks as marks_mod
 from .prompt import PromptBuilder, PromptError
 from .vision import (
     VisionSpec,
@@ -178,7 +180,17 @@ class Record:
         return "text"
 
 
-def normalize_record(raw: dict) -> Record:
+_THINK = re.compile(r"^\s*<think>.*?</think>\s*", re.S)
+
+
+def strip_thinking(answer: str) -> str:
+    """'<think>reasoning</think>\\n\\nC' -> 'C'. The live system answers at once (thinking off, no chain of thought -
+    decided 2026-09-30), so no reasoning is ever trained; an answer that is only reasoning stays as it is."""
+    final = _THINK.sub("", answer, count=1)
+    return final if final.strip() else answer
+
+
+def normalize_record(raw: dict, strip_reasoning: bool = False) -> Record:
     conv = raw.get("conversations")
     if isinstance(conv, str):
         try:
@@ -201,7 +213,7 @@ def normalize_record(raw: dict) -> Record:
         elif role in ("gpt", "assistant"):
             if pending_user is None:
                 raise RecordError("user 없이 assistant 가 먼저 나왔다")
-            turns.append((pending_user, val))
+            turns.append((pending_user, strip_thinking(val) if strip_reasoning else val))
             pending_user = None
         else:
             raise RecordError(f"모르는 role: {role}")
@@ -211,7 +223,6 @@ def normalize_record(raw: dict) -> Record:
     images = raw.get("image", raw.get("images"))
     if isinstance(images, str):
         images = [images]
-    marks = raw.get("spar_info")
     return Record(
         id=str(raw.get("id", "")),
         turns=turns,
@@ -219,7 +230,7 @@ def normalize_record(raw: dict) -> Record:
         video=raw.get("video"),
         frames=raw.get("frames"),
         data_source=str(raw.get("data_source", raw.get("source", "unknown"))),
-        marks=marks if marks not in (None, "", {}, [], "{}", "[]") else None,
+        marks=marks_mod.parse(raw.get("spar_info")),   # None unless there is something to draw
     )
 
 
@@ -402,8 +413,8 @@ class SpatialVQADataset(Dataset):
 
     # ------------------------------------------------------------------ 구성
     def build(self, i: int) -> dict:
-        rec = normalize_record(self.records[i])
-        if rec.marks is not None and self.cfg.marks == "skip":
+        rec = normalize_record(self.records[i], strip_reasoning=self.cfg.strip_reasoning)
+        if rec.marks is not None and (self.cfg.marks == "skip" or (self.cfg.marks == "draw" and not rec.images)):
             raise SkipRecord(f"record {rec.id} has marks to draw (spar_info)")
         mt = rec.media_type
         if mt == "images":
@@ -437,6 +448,11 @@ class SpatialVQADataset(Dataset):
         for p in rec.images:
             with Image.open(self._resolve(p)) as im:
                 pil.append(im.convert("RGB"))
+        if rec.marks is not None and self.cfg.marks == "draw":
+            plan = marks_mod.plan(rec.marks, rec.turns[0][0], len(pil))
+            if plan is None:
+                raise SkipRecord(f"record {rec.id}: where its marks go is not certain")
+            pil = marks_mod.draw(pil, plan)          # the same marked frames go to the VLM and to the encoder
         vlm = [prepare_image(im, self.spec) for im in pil]
         segments = [self.prompt.image_segment(tokens_per_step(g[0], self.spec)) for _, g in vlm]
         built = self.prompt.build(rec.turns, segments, "images", self.cfg.max_length)

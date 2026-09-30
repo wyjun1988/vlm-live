@@ -35,16 +35,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from live3r.data.datasets import iter_json_records as iter_records  # noqa: E402
-from live3r.data.mixture import Source, load_registry  # noqa: E402
+from live3r.data.mixture import SCENE_PATTERNS, Source, load_registry  # noqa: E402
 
 IMAGE_EXT = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 VIDEO_EXT = {".mp4", ".avi", ".mkv", ".mov", ".webm"}
 PLACEHOLDER = re.compile(r"<image>|<video>")
-SCENE_PATTERNS = {                      # scene ids as they appear in paths of the three VSI-Bench collections
-    "scannet": re.compile(r"(scene\d{4}_\d{2})"),
-    "arkitscenes": re.compile(r"(?<![0-9a-f])(4\d{7})(?![0-9a-f])"),
-    "scannetpp": re.compile(r"(?<![0-9a-z])([0-9a-f]{10})(?![0-9a-z])"),
-}
 NUM = re.compile(r"^-?\d+(\.\d+)?$")
 OPTION = re.compile(r"^\(?[A-H]\)?(?:[.:)]|$)")     # "B", "B.", "(B)", "B. chair" - not "A man ..."
 COT = re.compile(r"<think>|</think>|step by step|let me|first,|therefore", re.I)

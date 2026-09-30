@@ -34,7 +34,9 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 import numpy as np  # noqa: E402
 
+from live3r.data import marks as marks_mod  # noqa: E402
 from live3r.data.datasets import RecordError, iter_json_records, normalize_record  # noqa: E402
+from live3r.data.mixture import load_scene_list, scene_ids  # noqa: E402
 
 _PH = re.compile(r"<image>|<video>")
 _NUM = re.compile(r"^-?\d+(\.\d+)?$")
@@ -79,14 +81,20 @@ def main() -> int:
     ap.add_argument("--holdout", type=int, default=2000,
                     help="학습에서 뺄 레코드 수 (무작위, 시드 고정). 0=안 뺀다")
     ap.add_argument("--seed", type=int, default=0)
-    ap.add_argument("--drop-marked", action="store_true",
-                    help="leave out records with marks (spar_info) - while training cannot draw them (data.marks skip)")
+    ap.add_argument("--marks", choices=("keep", "skip", "draw"), default="keep",
+                    help="records with marks (spar_info): keep all; skip = leave them out (data.marks skip); draw = keep "
+                         "those whose mark placement is certain (data/marks.py plan), leave out the rest")
+    ap.add_argument("--drop-marked", dest="marks", action="store_const", const="skip", help="= --marks skip")
+    ap.add_argument("--exclude-scenes", default=None,
+                    help="scene list ('<collection> <id>' lines, e.g. configs/data/vsibench_scenes.txt): records whose "
+                         "media paths name one of them are left out (no evaluation scene in training)")
     ap.add_argument("--records", type=int, default=0,
                     help="records in src when known (a JSON array is not counted up front; sets the holdout and "
                          "file-check rates)")
     args = ap.parse_args()
 
     src, dst = Path(args.src), Path(args.dst)
+    excluded = load_scene_list(args.exclude_scenes) if args.exclude_scenes else set()
     media = Path(args.media_root)
     dst.parent.mkdir(parents=True, exist_ok=True)
     rng = random.Random(args.seed)
@@ -120,11 +128,22 @@ def main() -> int:
                 dropped["형식:" + str(exc)[:40]] += 1
                 continue
 
-            if args.drop_marked and rec.marks is not None:
-                dropped["marked (not drawn yet)"] += 1
-                stats["marked"] += 1
-                continue
             imgs = rec.images or []
+            stats["marked"] += rec.marks is not None
+            if rec.marks is not None and args.marks == "skip":
+                dropped["marked"] += 1
+                continue
+            if rec.marks is not None and args.marks == "draw" and (
+                    not imgs or marks_mod.plan(rec.marks, rec.turns[0][0], len(imgs)) is None):
+                dropped["marks: placement not certain"] += 1
+                continue
+            paths = imgs or ([rec.video] if rec.video else [])
+            if excluded and any(scene_ids(p) & excluded for p in paths):
+                dropped["VSI-Bench scene"] += 1
+                continue
+            stats["reasoning answers (stripped)"] += any(
+                "<think>" in str(c.get("value", c.get("content", ""))) for c in (
+                    raw.get("conversations") if isinstance(raw.get("conversations"), list) else []))
             ph = sum(len(_PH.findall(u)) for u, _ in rec.turns)
             if imgs and ph not in (0, len(imgs)):
                 dropped["placeholder≠이미지수"] += 1
@@ -137,9 +156,8 @@ def main() -> int:
             do_check = args.check_files < 0 or (
                 args.check_files > 0 and rng.random() < args.check_files / denom
             )
-            media_paths = imgs or ([rec.video] if rec.video else [])
+            media_paths = paths
             kinds_media[rec.media_type] += 1
-            stats["marked"] += rec.marks is not None
             if do_check and media_paths:
                 checked += 1
                 bad = [p for p in media_paths if not (media / p).exists()]
@@ -180,7 +198,9 @@ def main() -> int:
         "answer_kinds": dict(kinds),
         "media": dict(kinds_media),
         "marked": stats["marked"],
-        "drop_marked": bool(args.drop_marked),
+        "marks": args.marks,
+        "exclude_scenes": args.exclude_scenes,
+        "reasoning_answers_stripped": stats["reasoning answers (stripped)"],
         "data_sources_top": dict(sources.most_common(20)),
         "file_check": {"checked_records": checked, "records_with_missing": missing,
                        "examples": missing_examples},

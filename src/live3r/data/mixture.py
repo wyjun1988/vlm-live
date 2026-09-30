@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import bisect
 import math
+import re
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable
@@ -26,6 +27,28 @@ from typing import Callable
 import numpy as np
 import yaml
 from torch.utils.data import Dataset
+
+
+# scene ids as they appear in media paths of the three collections VSI-Bench is drawn from
+SCENE_PATTERNS = {
+    "scannet": re.compile(r"(scene\d{4}_\d{2})"),
+    "arkitscenes": re.compile(r"(?<![0-9a-f])(4\d{7})(?![0-9a-f])"),
+    "scannetpp": re.compile(r"(?<![0-9a-z])([0-9a-f]{10})(?![0-9a-z])"),
+}
+
+
+def scene_ids(path: str) -> set[str]:
+    """The scene ids a media path names (any collection)."""
+    return {m.group(1) for rx in SCENE_PATTERNS.values() for m in rx.finditer(path)}
+
+
+def load_scene_list(path: str | Path) -> set[str]:
+    """configs/data/vsibench_scenes.txt: '<collection> <scene id>' lines -> the ids."""
+    out: set[str] = set()
+    for ln in Path(path).read_text().splitlines():
+        if ln.strip() and not ln.startswith("#"):
+            out.add(ln.split()[-1])
+    return out
 
 
 @dataclass(frozen=True)

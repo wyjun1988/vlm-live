@@ -1,24 +1,29 @@
-# Run 3 — our implementation of the reference design, trained on the VG-LLM data
+# Run 3 — our implementation of the reference design, trained on the VG-LLM data (no CoT: live)
 
 Script: `scripts/server_run3.sh`. Why: `docs/REFERENCE_70_ANALYSIS.md` — the 70.83 system's score comes from data
 (2.03 M samples of VSI-domain QA), resolution (long side 512) and a simple input fusion trained at that scale. We may
 use the data; we do not take their code. So this run trains **our implementation** of the design on **their data
-mix**, against a no-geometry arm at equal data, on our live evaluation path.
+mix** without its chain-of-thought part (the live system answers at once - the lead's call, 2026-09-30), against a
+no-geometry arm at equal data, on our live evaluation path.
 
 ## What is new (all ours, written from the understood design)
 
 | piece | what | where |
 |---|---|---|
 | gated input fusion | a merger (CUT3R's last decoder layer, 2×2 merge, MLP 3,072 → 4,096 → d_llm) gives one geometry token per visual token; a per-token gate `g = sigmoid(w·[N(v); N(geo)] + b)` mixes it in, `(1 − g)·N(v) + g·N(geo)` replaces the visual embedding at the LLM input. One stage with LoRA | `src/live3r/fusion/gated.py`, `fusion.mode: gated_input` |
-| data registry and mixture | the 17 annotation files on `/group-volume/VG-LLM_data` with their media roots; mixes `ref70` (the 70.83 run's 2,029,000 records) and `all6`; one dataset over several sources, fixed subsets and repeats (`name%N`) | `configs/data/vgllm.yaml`, `src/live3r/data/mixture.py`, `train.py --mix` |
-| record forms | `images` as the image key; videos (files or frame directories) given as 4-8 frames (one per 2 s) as images — the live path's form; records with `spar_info` marks | `src/live3r/data/datasets.py`, `data.video_as_images`, `data.marks` |
+| data registry and mixture | the 17 annotation files on `/group-volume/VG-LLM_data` with their media roots; mixes `ref70` (the 70.83 run's 2,029,000 records), `all6`, and **`live`** = ref70 without the six CoT variants (1,443,777 records: spar_234k, llava_hound_64k, vlm3r_scannet / scannetpp / arkit, sensenova_800k, sqa3d, scanqa); one dataset over several sources, fixed subsets and repeats (`name%N`) | `configs/data/vgllm.yaml`, `src/live3r/data/mixture.py`, `train.py --mix` |
+| record forms | `images` as the image key; system messages dropped; videos (files or frame directories - llava_hound is 10-56 JPEG frames per clip) given as 4-8 frames (one per 2 s) as images — the live path's form; a `<think>…</think>` block in any answer stripped to the final answer (no reasoning is trained) | `src/live3r/data/datasets.py`, `data.video_as_images` |
+| SPAR marks | `spar_info` points and boxes (red / blue / green / yellow, 0-1000 coordinates, `*_img_idx` = the frame of each mark, listed objects as `bbox{i}`) drawn by our code onto the frames both the VLM and CUT3R see; a mark's frame is taken from the order the question names the colors (all 13 sampled records agree) and a record whose placement is not certain is left out | `src/live3r/data/marks.py`, `data.marks: draw` |
+| no evaluation scene in training | the data pass found one VSI-Bench scene (`scene0685_00`, ScanNet) in the SPAR sets; every record whose media paths name a VSI-Bench scene is left out | `prepare_mix.py --exclude-scenes` |
 | resolution | the VLM input at long side 512, the rule CUT3R's input already follows, so the two token grids coincide (144 tokens for 16:9 frames, 192 for 4:3 — the reference's operating point) | `data.vlm_long_side`, `VisionSpec.long_side` |
 | preparation | each source once as JSONL + offset index (lazy loading; a 740 MB JSON array per rank would not fit), a 300-record holdout per source, a media check | `scripts/prepare_mix.py` |
 | data pass | fields, media forms, marks, answer kinds, and the scene ids in the paths against VSI-Bench's 288 scenes | `scripts/inspect_reference_data.py` |
 
-**Marks.** Questions of `spar_info` records refer to points or boxes drawn on the frames. Until our code draws them
-(it needs the record format - the data pass reads it), those records are left out at preparation (`data.marks: skip`
-→ `prepare_mix.py --drop-marked`); `PREPARED.md` says how many.
+**What the data pass showed (2026-09-30, `outputs/reference_data_srv/`):** all 17 files as registered, media 100 %
+found except vsi_590k (not in any mix); spar_234k is 100 % `spar_info` (points/boxes in ~95 %, the rest only a type);
+the vlm3r sets are 32 frames with VSI-style one-word answers; sqa3d / scanqa 32 frames with short answers; the CoT sets
+are `<think>…</think>` answers after a system message. Scene overlap with VSI-Bench: one ScanNet scene in SPAR, none
+elsewhere.
 
 ## Arms (same data order, same steps, same seed)
 
@@ -31,7 +36,7 @@ mix**, against a no-geometry arm at equal data, on our live evaluation path.
 | base | no training, same resolution | the reference point for every arm |
 
 Recipe (the reference's): LoRA r16 α32 (our target modules), lr 5e-5 LoRA / 1e-5 merger + gate, global batch 64
-(8 GPUs × accum 8), cosine, warmup 3 %, weight decay 0.01, one pass of the mix or what `TRAIN_HOURS` allows.
+(8 GPUs × accum 8, or 4 × 16), cosine, warmup 3 %, weight decay 0.01, one full pass of the `live` mix (no time cap).
 
 Step-0 check on the M2 (`scripts/check_fusion_init.py`, 4B, 12 Sensenova holdout samples, random merger):
 
@@ -55,23 +60,27 @@ nohup bash scripts/server_run3.sh > outputs/run3/master.$(hostname -s).log 2>&1 
 tail -f outputs/run3/STATUS
 ```
 
-As run 2: on one node everything runs in order; the same command on more nodes shares the roles (claims and
-heartbeats on the shared volume, takeover after 30 min without a heartbeat); re-running resumes; `bash
-scripts/server_run3.sh stop` ends a node's run. Queue: **gated → plain → control → base → gated_raw**, after the
-one-time steps:
+Run the same command on **each of the two nodes**. A node may have 8 or 4 GPUs: it uses the GPUs it was given
+(the scheduler's `CUDA_VISIBLE_DEVICES`, else all it sees) with the global batch kept at 64. As run 2: the nodes share
+the roles (claims and heartbeats on the shared volume, takeover after 30 min without a heartbeat); re-running resumes;
+`bash scripts/server_run3.sh stop` ends a node's run. Queue: **gated → plain → base → control → gated_raw**, after
+the one-time steps:
 
 1. **p0** on every node (packages, flash-linear-attention unless run 2 banned it, the tests, the annotation files).
-2. **data** (once, CPU): the data pass → `outputs/run3/reference_data/DATA.md`; the mix → `data/vgllm/` and
-   `outputs/run3/PREPARED.md` (tens of minutes).
+2. **data** (once, CPU): the data pass → `outputs/run3/reference_data/DATA.md`; the `live` mix → `data/vgllm/` and
+   `outputs/run3/PREPARED.md` (tens of minutes; per source: kept, held out, dropped and why, marks, reasoning stripped).
 3. **calib** (once): 12 steps of the gated arm at the production settings (with 3 dumped samples: check the prompt
-   forms) → `budget.env`: steps = one pass, or what `TRAIN_HOURS` (72) allows at the measured speed; **NO_GO** when
-   that is under `GO_EPOCHS` (0.2) of a pass (training skipped, base still evaluated). d1: one profiled step.
+   forms and a drawn mark) → `budget.env`: the steps of one pass. d1: one profiled step.
 
-With four nodes: gated, plain, control and base start together; base finishes in hours and its node takes gated_raw.
+On two nodes: gated and plain start together (the key comparison first); the node that finishes first runs base (hours)
+and then control; the other takes gated_raw.
 
-| duration (per node) | at 6.48 samples/s (the reference's speed) | at 2 samples/s |
+| one arm, one pass of `live` (≈1.4 M samples) | 8 GPUs | 4 GPUs |
 |---|---|---|
-| one pass of ref70 without marked records (≈1.5-1.9 M) | ≈ 65-80 h → capped at 72 h | 72 h = ≈ 0.27 M (≈ 15 % of a pass) |
+| at the reference's speed (6.48 samples/s per 8 GPUs) | ≈ 60 h | ≈ 120 h |
+| all five roles on two nodes | ≈ 5-6 days | ≈ 10-11 days |
+
+8 GPUs per node halves everything; the script runs either way (and a mix of one 8- and one 4-GPU node).
 
 Evaluation per arm: VSI on the live path (32 uniform keyframes as images) plain and with the room facts; gated also
 in video mode (the offline protocol) and at every quarter checkpoint; the lmms-eval gate (VideoMME Δ ≥ −1.0 is our
@@ -80,8 +89,9 @@ ablation gated vs control.
 
 ## Knobs
 
-`MIX` (ref70 | all6 | any registry spec, e.g. `all6,sqa3d%50`), `TRAIN_HOURS` (72), `GO_EPOCHS` (0.2), `ROLE`
-(a subset in order, no claims), `PROBE_SRC` (vlm3r_scannet), `R2` (run 2's outputs, for the cross-run rows).
+`MIX` (live | ref70 | all6 | any registry spec, e.g. `live,sqa3d%50`), `TRAIN_HOURS` (0 = no cap; > 0 caps each arm
+at the calibrated speed, with `GO_EPOCHS` 0.2 as the no-go line), `ROLE` (a subset in order, no claims), `PROBE_SRC`
+(vlm3r_scannet), `R2` (run 2's outputs, for the cross-run rows), `NGPU` (dry runs without nvidia-smi only).
 
 ## Reading (REPORT.md)
 

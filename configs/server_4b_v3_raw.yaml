@@ -39,7 +39,8 @@ data:
   video_fps: 0.5
   video_min_frames: 4
   video_max_frames: 8
-  marks: skip
+  marks: draw           # spar_info marks drawn where their frame is certain (data/marks.py)
+  strip_reasoning: true  # live: no chain of thought is trained (a leftover <think> block is cut)
 
 stream:
   max_visual_tokens: 16384

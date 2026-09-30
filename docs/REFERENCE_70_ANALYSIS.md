@@ -159,9 +159,15 @@ still settles our stack's speed and a Sensenova-only baseline for it.
 Implemented here (tests: `tests/test_gated_fusion.py`, `test_mixture.py`, `test_data_forms.py`, the trainer end to end
 on a two-source mix): the gated input fusion (`fusion.mode: gated_input`), the registry and mixture loader, videos
 as frames given as images (files and frame directories), long-side-512 input (the geometry and visual grids
-coincide), marked records skipped until drawn, the one-time preparation (`scripts/prepare_mix.py`) and run 3
-(`scripts/server_run3.sh`, `docs/SERVER_RUN3.md`). Still to do: drawing the SPAR marks (after the data pass shows the
-record format).
+coincide), the one-time preparation (`scripts/prepare_mix.py`) and run 3 (`scripts/server_run3.sh`,
+`docs/SERVER_RUN3.md`).
+
+The data pass (`outputs/reference_data_srv/`, all 17 files, media found) settled the rest: the SPAR marks are
+`{color}_point` / `{color}_bbox` / `bbox_list` in 0-1000 coordinates with a frame index per mark, now drawn by our code
+(`src/live3r/data/marks.py`); the CoT sets answer `<think>…</think>` after a system message - **the lead dropped them
+for the live system** (run 3 trains the `live` mix: ref70 without the six CoT variants, 1,443,777 records, any leftover
+reasoning stripped to the final answer); and one VSI-Bench scene (`scene0685_00`) appears in the SPAR training images,
+so every record naming a VSI-Bench scene is left out at preparation.
 
 Step 0 of our implementation on the M2 (4B, 12 Sensenova holdout samples, random merger, real CUT3R): the
 reference-style start (LayerNorm on both streams, g = 0.5) changes 75 % of the first answer tokens against the base

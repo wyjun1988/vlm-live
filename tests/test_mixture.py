@@ -56,6 +56,8 @@ def test_the_project_registry_reconciles_the_reference_mix():
     ref = resolve_mix("ref70", reg)
     assert len(ref) == 14 and sum(s.records for s in ref) == 2_029_000
     assert sum(s.records for s in resolve_mix("all6", reg)) == 1_337_817
+    live = resolve_mix("live", reg)
+    assert sum(s.records for s in live) == 1_443_777 and not any(s.name.endswith("_cot") for s in live)
     assert reg.datasets["sensenova_800k"].media_root == Path("/group-volume/VG-LLM_data/media/sensenova")
 
 

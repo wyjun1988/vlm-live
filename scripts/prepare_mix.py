@@ -36,9 +36,12 @@ def main() -> int:
     ap.add_argument("--holdout", type=int, default=300, help="records per source kept out of training")
     ap.add_argument("--check-files", type=int, default=1000, help="records per source whose media are checked")
     ap.add_argument("--max-images", type=int, default=32)
-    ap.add_argument("--drop-marked", action="store_true",
-                    help="leave out records with marks (spar_info) while training cannot draw them; the prepared "
-                         "files then hold only usable records (an epoch in steps is then an epoch of real samples)")
+    ap.add_argument("--marks", choices=("keep", "skip", "draw"), default="draw",
+                    help="records with marks (spar_info): draw = keep those whose placement is certain (data.marks "
+                         "draw), skip = leave all out (data.marks skip), keep = keep all. The prepared files then hold "
+                         "only usable records, so a pass in steps is a pass of real samples")
+    ap.add_argument("--exclude-scenes", default="configs/data/vsibench_scenes.txt",
+                    help="leave out records from these scenes (the evaluation's); '' for none")
     ap.add_argument("--force", action="store_true", help="prepare again even when up to date")
     a = ap.parse_args()
     out = Path(a.out)
@@ -53,7 +56,8 @@ def main() -> int:
             failed.append(s.name)
             continue
         rep_path = dst.with_suffix(".report.json")
-        same_choice = rep_path.exists() and json.loads(rep_path.read_text()).get("drop_marked", False) == a.drop_marked
+        rep0 = json.loads(rep_path.read_text()) if rep_path.exists() else {}
+        same_choice = rep0.get("marks") == a.marks and rep0.get("exclude_scenes") == (a.exclude_scenes or None)
         fresh = idx.exists() and idx.stat().st_mtime > s.annotation.stat().st_mtime and same_choice
         if fresh and not a.force:
             print(f"[{s.name}] up to date", flush=True)
@@ -63,8 +67,7 @@ def main() -> int:
             cmd = [sys.executable, str(HERE / "prepare_annotations.py"), str(s.annotation), str(dst),
                    "--media-root", str(s.media_root), "--holdout", str(a.holdout), "--check-files", str(a.check_files),
                    "--max-images", str(a.max_images), "--records", str(s.records or 0)]
-            if a.drop_marked:
-                cmd.append("--drop-marked")
+            cmd += ["--marks", a.marks] + (["--exclude-scenes", a.exclude_scenes] if a.exclude_scenes else [])
             rc = subprocess.run(cmd).returncode
             print(f"[{s.name}] exit {rc} in {time.perf_counter() - t0:.0f} s", flush=True)
             if rc not in (0, 2):                          # 2 = done, but more than 1 % of the checked media missing
@@ -72,20 +75,20 @@ def main() -> int:
                 continue
         rep = json.loads(dst.with_suffix(".report.json").read_text())
         fc = rep.get("file_check", {})
-        rows.append((s.name, rep.get("total", 0), rep.get("kept", 0), sum(rep.get("dropped", {}).values()),
-                     rep.get("holdout", 0), fc.get("records_with_missing", 0), fc.get("checked_records", 0),
-                     rep.get("marked", 0), rep.get("media", {})))
-    lines = [f"# Prepared sources of `{a.mix}`", "", f"Registry `{a.registry}` · written by scripts/prepare_mix.py", "",
-             "| source | records | kept | dropped | holdout | media missing (checked) | marked | media |",
-             "|---|---|---|---|---|---|---|---|"]
-    for name, tot, kept, drop, ho, miss, chk, marked, media in rows:
-        lines.append(f"| {name} | {tot:,} | {kept:,} | {drop:,} | {ho:,} | {miss} ({chk}) | {marked:,} "
-                     f"({100 * marked / max(1, tot):.0f} %) | {media} |")
+        rows.append((s.name, rep.get("total", 0), rep.get("kept", 0), rep.get("dropped", {}), rep.get("holdout", 0),
+                     fc.get("records_with_missing", 0), fc.get("checked_records", 0), rep.get("marked", 0),
+                     rep.get("reasoning_answers_stripped", 0), rep.get("media", {})))
+    lines = [f"# Prepared sources of `{a.mix}`", "", f"Registry `{a.registry}` · marks `{a.marks}` · excluded scenes "
+             f"`{a.exclude_scenes or '-'}` · written by scripts/prepare_mix.py", "",
+             "| source | records | kept | holdout | dropped (why) | media missing (checked) | marked | reasoning "
+             "stripped | media |", "|---|---|---|---|---|---|---|---|---|"]
+    for name, tot, kept, drop, ho, miss, chk, marked, think, media in rows:
+        why = ", ".join(f"{k} {v:,}" for k, v in drop.items()) or "-"
+        lines.append(f"| {name} | {tot:,} | {kept:,} | {ho:,} | {sum(drop.values()):,} ({why}) | {miss} ({chk}) | "
+                     f"{marked:,} ({100 * marked / max(1, tot):.0f} %) | {think:,} | {media} |")
     tk = sum(r[2] for r in rows)
-    # marked among the kept (holdout drawn at random); none are kept with --drop-marked
-    tm = 0 if a.drop_marked else sum(round(r[7] * r[2] / max(1, r[1])) for r in rows)
-    lines += ["", f"**{tk:,} records kept**, about {tm:,} of them marked (skipped while data.marks is 'skip') -> "
-              f"about {tk - tm:,} usable now." + (f" FAILED: {failed}" if failed else "")]
+    lines += ["", f"**{tk:,} records kept** for training (every one usable: marks policy `{a.marks}`)."
+              + (f" FAILED: {failed}" if failed else "")]
     (out / "PREPARED.md").write_text("\n".join(lines) + "\n")
     print("\n".join(lines))
     return 1 if failed else 0

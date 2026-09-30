@@ -5,16 +5,17 @@
 # ONE command, run to the end without anyone stepping in:
 #   cd /group-volume/wooyeol/vlm-live && git pull && mkdir -p outputs/run3
 #   nohup bash scripts/server_run3.sh > outputs/run3/master.$(hostname -s).log 2>&1 &
-# As run 2: on one node (8 H100) everything runs in order; the SAME command on more nodes shares the roles (claims on
-# the shared volume; a node whose heartbeat stops for 30 min loses its claims and the role resumes elsewhere).
+# As run 2: on one node everything runs in order; the SAME command on more nodes shares the roles (claims on the shared
+# volume; a node whose heartbeat stops for 30 min loses its claims and the role resumes elsewhere). A node may have 8 or
+# 4 GPUs: each node uses what it has, with the global batch kept at 64 (8 x accum 8, or 4 x accum 16).
 #   tail -f outputs/run3/STATUS           # every node writes here, lines tagged with its host
 #   bash scripts/server_run3.sh stop      # on a node: ends that node's run and everything it started
 #
 #   first      p0 environment on every node; once: data - the data pass (scripts/inspect_reference_data.py ->
-#              reference_data/DATA.md) and the mix as JSONL + index (scripts/prepare_mix.py -> data/vgllm; records
-#              with marks are left out while training cannot draw them); calib - 12 steps of the gated arm at the
-#              production settings -> budget.env: the steps of one pass of the prepared mix, capped by TRAIN_HOURS at
-#              the measured speed (every arm trains the same steps on the same data order); NO_GO below GO_EPOCHS
+#              reference_data/DATA.md) and the mix as JSONL + index (scripts/prepare_mix.py -> data/vgllm; marked
+#              records kept when their marks can be drawn with certainty; VSI-Bench scenes left out); calib - 12 steps
+#              of the gated arm at the production settings -> budget.env: the steps of one pass of the prepared mix
+#              (every arm trains the same steps on the same data order; TRAIN_HOURS > 0 caps it, NO_GO below GO_EPOCHS)
 #   gated      fusion gated_input, the reference-style start (configs/server_4b_v3.yaml) -> VSI plain / room facts /
 #              video mode, learning curve, the lmms-eval gate, latency
 #   plain      the same data, LoRA and resolution, no geometry (server_4b_v3_plain.yaml) -> VSI -> the gate smoke,
@@ -22,6 +23,7 @@
 #   control    the gated arm with shuffled geometry -> VSI -> holdout ablation gated vs control
 #   base       the untrained model at this resolution: VSI plain / room facts; run 2's results copied in for reference
 #   gated_raw  fusion gated_input, the near-base start (server_4b_v3_raw.yaml) -> VSI -> gate
+# The queue runs in that order: on two nodes gated and plain start together (the key comparison comes first).
 # ROLE=gated,plain,... runs just those roles, in that order, without claims.
 # Resumable: a finished step leaves a marker and is skipped on a re-run; a training arm continues from resume.pt.
 set -uo pipefail
@@ -31,7 +33,8 @@ ROOT="${ROOT:-/group-volume/wooyeol/vlm-live}"
 CFG="${CFG:-configs/server_4b_v3.yaml}"               # gated_input, LayerNorm, g = 0.5 at step 0
 CFG_RAW="${CFG_RAW:-configs/server_4b_v3_raw.yaml}"   # gated_input, no norm, g = 0.018 at step 0
 CFG_PLAIN="${CFG_PLAIN:-configs/server_4b_v3_plain.yaml}"   # fusion none
-MIX="${MIX:-ref70}"                                   # configs/data/vgllm.yaml: the 70.83 run's 14 sources
+MIX="${MIX:-live}"                                    # configs/data/vgllm.yaml: the 70.83 run's sources without
+                                                      # its six CoT variants (live: no reasoning is trained)
 REGISTRY="${REGISTRY:-configs/data/vgllm.yaml}"
 PREP="${PREP:-data/vgllm}"                            # scripts/prepare_mix.py output (JSONL + index per source)
 OUT="${OUT:-outputs/run3}"
@@ -41,18 +44,17 @@ export HF_HOME="${HF_HOME:-/group-volume/wooyeol/hf_cache}"
 export PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
 export TOKENIZERS_PARALLELISM=false
 
-# Budget: one pass of the prepared mix (the reference: one epoch of 2.03 M samples at batch 64), capped by the hours
-# at the calibrated speed of the gated arm (the slowest: it runs CUT3R). Every arm shares the budget file.
-TRAIN_HOURS="${TRAIN_HOURS:-72}"
-GO_EPOCHS="${GO_EPOCHS:-0.2}"       # below this fraction of a pass the training roles are skipped (NO_GO)
-EFF_BATCH=64; ACCUM=8               # 8 GPUs x 8 micro-steps = the reference's global batch 64
+# Budget: one pass of the prepared mix (the reference: one epoch at batch 64). TRAIN_HOURS > 0 caps it at the
+# calibrated speed of the gated arm (the slowest: it runs CUT3R); 0 = no cap (the nodes have no time limit).
+TRAIN_HOURS="${TRAIN_HOURS:-0}"
+GO_EPOCHS="${GO_EPOCHS:-0.2}"       # with a cap: below this fraction of a pass the training roles are skipped (NO_GO)
+EFF_BATCH=64                        # the reference's global batch; micro-steps per GPU = 64 / GPUs on the node
 LR=1e-5; LORA_LR=5e-5; WD=0.01      # merger + gate / LoRA (the reference's rates); cosine, warmup 3 %
 DONOR_BUFFER="${DONOR_BUFFER:-64}"
 PROBE_SRC="${PROBE_SRC:-vlm3r_scannet}"   # the probe's holdout: VSI-style QA on ScanNet training scenes
 VSI=(--videos 288 --seed 1)         # all of VSI-Bench: 288 videos, 5,130 questions
-SHARDS=8; VSI_HOURS="${VSI_HOURS:-12}"
+VSI_HOURS="${VSI_HOURS:-12}"        # per shard; one shard per GPU
 ROUTED_ROOM=(--scene-map --no-map-image --route-facts)
-ALL8=0,1,2,3,4,5,6,7
 
 cd "$ROOT" || { echo "no $ROOT"; exit 1; }
 mkdir -p "$OUT/vsi/shards" "$OUT/gate"
@@ -66,8 +68,16 @@ if [[ "${1:-}" == stop ]]; then
   echo "$(date '+%F %T') [$HOST] stopped by hand (pid $pid)" >> "$OUT/STATUS"
   exit 0
 fi
+# the GPUs this node was given: the scheduler's CUDA_VISIBLE_DEVICES when set (a 4-GPU allocation on an 8-GPU machine
+# may be devices 4-7), else every GPU nvidia-smi lists. Our GPU k below means the k-th of these.
+if [[ -n "${CUDA_VISIBLE_DEVICES:-}" ]]; then IFS=, read -r -a GPUS <<< "$CUDA_VISIBLE_DEVICES"
+elif command -v nvidia-smi > /dev/null; then GPUS=($(nvidia-smi --query-gpu=index --format=csv,noheader))
+else GPUS=($(seq 0 $(( ${NGPU:-0} - 1 )))); fi                   # no nvidia-smi: NGPU= (dry runs)
+NGPU=${#GPUS[@]}
+[[ "$NGPU" == 4 || "$NGPU" == 8 ]] || { echo "this plan runs on 4 or 8 GPUs per node (found $NGPU: ${GPUS[*]})"; exit 1; }
+ALLG=$(IFS=,; echo "${GPUS[*]}"); ACCUM=$(( EFF_BATCH / NGPU )); SHARDS=$NGPU
 ROLE="${ROLE:-auto}"
-ALL_ROLES=(gated plain control base gated_raw)
+ALL_ROLES=(gated plain base control gated_raw)
 if [[ "$ROLE" == auto ]]; then
   RTAG=$HOST; QUEUE=("${ALL_ROLES[@]}")
 else
@@ -81,7 +91,7 @@ fail()     { log "FAILED $*"; }
 is_done()  { [[ -f "$OUT/$1.done" ]]; }
 mark()     { touch "$OUT/$1.done"; log "$1 done"; }
 have()     { [[ -f "$1" ]] || { log "$2 skipped: $1 missing"; return 1; }; }
-on_gpu()   { local g=$1; shift; CUDA_VISIBLE_DEVICES=$g "$@"; }
+on_gpu()   { local g=$1; shift; CUDA_VISIBLE_DEVICES=${GPUS[$g]} "$@"; }
 wait_all() { local rc=0 p; for p in "$@"; do wait "$p" || rc=1; done; return $rc; }
 hours_s()  { awk -v h="$1" -v f="$2" -v a="$3" 'BEGIN { printf "%d", h * 3600 * f + a }'; }
 sps_of()   { grep -ao '[0-9.]* samp/s' "$1" 2> /dev/null | tail -n "${2:-4}" \
@@ -131,7 +141,7 @@ p0_local() {
   local CHECK="import torch, transformers, peft, lmms_eval, roma, omegaconf, scipy, yaml
 import transformers.models.qwen3_5
 print('torch', torch.__version__, '| transformers', transformers.__version__, '| peft', peft.__version__)
-n = torch.cuda.device_count(); print(n, 'GPUs'); assert n >= 8, f'this plan needs 8 GPUs per node, found {n}'"
+n = torch.cuda.device_count(); print(n, 'GPUs'); assert n in (4, 8), f'this plan runs on 4 or 8 GPUs per node, found {n}'"
   if ! python -c "$CHECK" >> "$L" 2>&1; then
     log "p0: packages missing on $HOST - installing requirements (without flash-attn)"
     grep -v '^flash-attn' requirements.txt > "$OUT/requirements.noflash.txt"
@@ -181,10 +191,12 @@ _data() {
   log "data: the data pass (scripts/inspect_reference_data.py, CPU) on $HOST"
   timeout 4h python scripts/inspect_reference_data.py --registry "$REGISTRY" --out "$OUT/reference_data" \
     > "$OUT/data_pass.log" 2>&1 || log "data pass failed - $OUT/data_pass.log (not fatal: preparation checks the files)"
-  log "data: preparing $MIX -> $PREP (JSONL + index per source; marked records left out while not drawn)"
-  local drop=(); grep -aq "^  marks: skip" "$CFG" && drop=(--drop-marked)
-  timeout 8h python scripts/prepare_mix.py --mix "$MIX" --registry "$REGISTRY" --out "$PREP" ${drop[@]+"${drop[@]}"} \
-    > "$OUT/prepare_mix.log" 2>&1 || { fail "data: preparation - $OUT/prepare_mix.log"; return 1; }
+  log "data: preparing $MIX -> $PREP (JSONL + index per source; marks drawn where certain; VSI-Bench scenes out)"
+  local marks; marks=$(python -c "import sys, yaml; print(yaml.safe_load(open(sys.argv[1]))['data'].get('marks', 'skip'))" "$CFG")
+  [[ "$marks" == ignore ]] && marks=keep
+  timeout 8h python scripts/prepare_mix.py --mix "$MIX" --registry "$REGISTRY" --out "$PREP" --marks "$marks" \
+    --exclude-scenes configs/data/vsibench_scenes.txt > "$OUT/prepare_mix.log" 2>&1 \
+    || { fail "data: preparation - $OUT/prepare_mix.log"; return 1; }
   cp "$PREP/PREPARED.md" "$OUT/PREPARED.md"
   local n; n=$(n_train) || { fail "data: cannot count the prepared mix"; return 1; }
   log "data: $n samples in one pass of $MIX"
@@ -195,7 +207,7 @@ plan() {   # budget.env from the calibrated speed of the gated arm
 import math, sys
 sps = float(sys.argv[1]) if sys.argv[1] else 0.0
 hours, eff, n = float(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4])
-target = n if sps <= 0 else min(n, hours * 3600 * sps * 0.95)
+target = n if (sps <= 0 or hours <= 0) else min(n, hours * 3600 * sps * 0.95)
 st = max(50, int(target // eff))
 print(f"N_TRAIN={n}\nEFF_BATCH={eff}\nCALIB_SPS={sps:.3f}\nSTEPS={st}\nEPOCHS={max(1, math.ceil(st * eff / n))}"
       f"\nSAVE={max(10, math.ceil(st / 4))}\nPROBE={max(5, math.ceil(st / 8))}\nRESUME_EVERY={max(10, min(200, math.ceil(st / 20)))}")
@@ -208,9 +220,10 @@ train_cmd() {   # the trainer's common arguments
 }
 _calib() {
   is_done calib && return 0
-  log "calib: 12 steps of the gated arm at the production settings (8 GPUs x accum $ACCUM) on $HOST"
+  log "calib: 12 steps of the gated arm at the production settings ($NGPU GPUs x accum $ACCUM) on $HOST"
   # shellcheck disable=SC2046
-  timeout 4h torchrun --nproc_per_node 8 --master_port 29531 $(train_cmd) --config "$CFG" --output "$OUT/calib" \
+  CUDA_VISIBLE_DEVICES=$ALLG timeout 4h torchrun --nproc_per_node "$NGPU" --master_port 29531 $(train_cmd) \
+    --config "$CFG" --output "$OUT/calib" \
     --max-steps 12 --save-every 0 --log-every 2 --dump-samples 3 > "$OUT/calib.log" 2>&1 \
     || { fail "calib - $OUT/calib.log"; return 1; }
   grep -aq "sync OK" "$OUT/calib.log" || { fail "calib: ranks not in sync"; return 1; }
@@ -225,7 +238,8 @@ _calib() {
   on_gpu 0 timeout 2h python $(train_cmd | sed 's/--grad-accum [0-9]*//') --config "$CFG" --grad-accum 6 \
     --max-steps 1 --profile 4 --save-every 0 --log-every 1 --output "$OUT/d1_profile" > "$OUT/d1_profile.log" 2>&1 \
     && mark d1 || log "d1 profile failed - $OUT/d1_profile.log (not fatal)"
-  if awk -v st="$STEPS" -v e="$EFF_BATCH" -v n="$N_TRAIN" -v g="$GO_EPOCHS" 'BEGIN { exit !(st * e / n < g) }'; then
+  if awk -v h="$TRAIN_HOURS" -v st="$STEPS" -v e="$EFF_BATCH" -v n="$N_TRAIN" -v g="$GO_EPOCHS" \
+       'BEGIN { exit !(h > 0 && st * e / n < g) }'; then
     printf 'at the calibrated %s samples/s per node, TRAIN_HOURS %s covers %s of a pass of %s (< GO_EPOCHS %s).\n' \
       "$CALIB_SPS" "$TRAIN_HOURS" "$(awk -v st="$STEPS" -v e="$EFF_BATCH" -v n="$N_TRAIN" 'BEGIN { printf "%.2f", st * e / n }')" \
       "$N_TRAIN" "$GO_EPOCHS" > "$OUT/NO_GO"
@@ -242,9 +256,13 @@ train_arm() {   # name config args...
   rm -f "$OUT/$name/final.pt"
   [[ -f "$OUT/$name/resume.pt" ]] && log "$name: resuming from $OUT/$name/resume.pt"
   log "$name started on $HOST ($cfg, $STEPS steps)"
+  local cap=()
+  if awk -v h="$TRAIN_HOURS" 'BEGIN { exit !(h > 0) }'; then
+    cap=(timeout --kill-after=10m "$(hours_s "$TRAIN_HOURS" 1.25 3600)")
+  fi
   # shellcheck disable=SC2046
-  CUDA_VISIBLE_DEVICES=$ALL8 timeout --kill-after=10m "$(hours_s "$TRAIN_HOURS" 1.25 3600)" \
-    torchrun --nproc_per_node 8 --master_port 29512 $(train_cmd) --config "$cfg" --output "$OUT/$name" --resume \
+  CUDA_VISIBLE_DEVICES=$ALLG ${cap[@]+"${cap[@]}"} \
+    torchrun --nproc_per_node "$NGPU" --master_port 29512 $(train_cmd) --config "$cfg" --output "$OUT/$name" --resume \
       --epochs "$EPOCHS" --max-steps "$STEPS" --max-hours "$(awk -v h="$TRAIN_HOURS" 'BEGIN { print h * 1.25 }')" \
       --log-every 20 --save-every "$SAVE" --resume-every "$RESUME_EVERY" \
       --probe-ann "$PREP/$PROBE_SRC.holdout.jsonl" --probe-media-root "$(media_of "$PROBE_SRC")" \
@@ -333,8 +351,8 @@ role_gated() {
   eval_arm gated "$CFG" || rc=1
   vsi_sharded gated_video --config "$CFG" --weights "$OUT/gated/final.pt" --modes oracle-video || rc=1
   report
-  gate_arm 7 gated "$CFG" & local g=$!                  # GPU 7, alongside the curve on GPUs 0-6
-  SHARDS=7 curve gated "$CFG" || rc=1
+  gate_arm $(( NGPU - 1 )) gated "$CFG" & local g=$!     # the last GPU, alongside the curve on the others
+  SHARDS=$(( NGPU - 1 )) curve gated "$CFG" || rc=1
   wait $g || rc=1
   if [[ ! -f "$OUT/latency_stream.json" ]]; then
     on_gpu 0 timeout 1h python scripts/bench_latency.py --config "$CFG" --frames 512 --offline --height 288 --width 512 \
@@ -369,7 +387,7 @@ role_control() {
   local rc=0
   train_arm control "$CFG" --geom-control shuffled --donor-buffer "$DONOR_BUFFER" || return 1
   eval_arm control "$CFG" || rc=1
-  { wait_marker gated 96 gated && ablation 0 ablation_gated "$OUT/gated/final.pt" "$OUT/control/final.pt" "$CFG"; } || rc=1
+  { wait_marker gated 400 gated && ablation 0 ablation_gated "$OUT/gated/final.pt" "$OUT/control/final.pt" "$CFG"; } || rc=1
   report
   return $rc
 }
@@ -393,7 +411,7 @@ role_gated_raw() {
 }
 
 # ============================================================================================ run
-log "started on $HOST at $(git log --oneline -1 2> /dev/null) - roles: ${QUEUE[*]}"
+log "started on $HOST (GPUs $ALLG, accum $ACCUM) at $(git log --oneline -1 2> /dev/null) - roles: ${QUEUE[*]}"
 touch "$OUT/alive.$HOST"
 ( n=0; while true; do touch "$OUT/alive.$HOST"; (( n % 6 == 5 )) && report; n=$(( n + 1 )); sleep 300; done ) &
 REFRESH_PID=$!

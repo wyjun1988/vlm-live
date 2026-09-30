@@ -36,3 +36,6 @@ mixes:
           sensenova_800k_cot, sqa3d, scanqa]
   # the "all" recipe without the CoT variants and the scene QA (1,337,817 records)
   all6: [spar_234k, llava_hound_64k, vlm3r_scannet, vlm3r_scannetpp, vlm3r_arkit, sensenova_800k]
+  # ours for the live system (2026-09-30): ref70 without the six CoT variants - answers come at once, no reasoning
+  # is trained (1,443,777 records; a reasoning block left in any answer is stripped to its final answer)
+  live: [spar_234k, llava_hound_64k, vlm3r_scannet, vlm3r_scannetpp, vlm3r_arkit, sensenova_800k, sqa3d, scanqa]

@@ -119,9 +119,13 @@ class DataConfig:
     video_max_frames: int = 8
     # a video given as a directory of frames does not say its frame rate; this is assumed
     frames_dir_fps: float = 1.0
-    # records whose questions refer to marks drawn on the frames (`spar_info`): "skip" them (the default until the
-    # marks are drawn by our own code) or "ignore" the marks (inspection only - the question then points at nothing)
+    # records whose questions refer to marks on the frames (`spar_info`: "the pillar (red point)"): "draw" them
+    # (data/marks.py - a record whose mark placement is not certain is left out), "skip" such records, or "ignore"
+    # the marks (inspection only - the question then points at nothing)
     marks: str = "skip"
+    # a `<think>…</think>` block leading an answer is cut away, the final answer kept (run 3: the live system answers at
+    # once, so no reasoning is trained). Off by default so earlier runs read their data exactly as before.
+    strip_reasoning: bool = False
 
 
 @dataclass
@@ -154,8 +158,8 @@ class Live3RConfig:
     data: DataConfig = field(default_factory=DataConfig)
 
     def __post_init__(self) -> None:
-        if self.data.marks not in ("skip", "ignore"):
-            raise ValueError(f"data.marks must be 'skip' or 'ignore' (drawing is not implemented yet), got {self.data.marks!r}")
+        if self.data.marks not in ("skip", "draw", "ignore"):
+            raise ValueError(f"data.marks must be 'skip', 'draw' or 'ignore', got {self.data.marks!r}")
         if self.patch_embed not in ("conv", "linear"):
             raise ValueError(f"patch_embed must be 'conv' or 'linear', got {self.patch_embed!r}")
         if self.fusion.mode == "gated_input" and len(self.geometry.tap_layers) != 1:

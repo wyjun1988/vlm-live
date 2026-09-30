@@ -37,7 +37,7 @@ def test_long_side_token_counts_and_default_unchanged():
 
 def test_data_config_rejects_unknown_marks_policy():
     with pytest.raises(ValueError, match="marks"):
-        Live3RConfig.from_dict({"data": {"marks": "draw"}})
+        Live3RConfig.from_dict({"data": {"marks": "paint"}})
 
 
 def test_frames_to_use():
