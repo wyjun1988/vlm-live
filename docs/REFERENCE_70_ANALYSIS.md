@@ -1,9 +1,14 @@
 # The reference system (VSI 70.83) and what separates it from ours
 
-Source: `scripts/inspect_reference_system.py` run on the server on 2026-09-30 against `/group-volume/jcho` (bundle in
-`outputs/reference_70/reference_70/` on the M2: `INVENTORY.md`, the checkpoint's configs and `trainer_state.json`, the
-training and evaluation scripts, the lmms-eval results JSON and 50 sample records). The reference team's reply to
-`docs/QUESTIONS_FOR_EXISTING_SYSTEM.md` was a prediction-file runbook; the facts below are read from their files.
+Source: two read-only inspection passes over their files on the server on 2026-09-30 (checkpoint configs and
+`trainer_state.json`, the lmms-eval results JSON and 50 sample records, the dataset annotation files, their latency
+profiles, the training log). The reference team's reply to `docs/QUESTIONS_FOR_EXISTING_SYSTEM.md` was a
+prediction-file runbook; the facts below are read from their files.
+
+**Rule (2026-09-30): we do not take their code.** We note how their system is built and used, and implement it
+ourselves; their training data may be used (`configs/data/vgllm.yaml`). The local bundles keep only data and
+metadata - the copies of their scripts and sources that the passes had collected were deleted, and the inspector
+that collected them was replaced by a data-only one (`scripts/inspect_reference_data.py`).
 
 ## 1. What it is
 
@@ -67,20 +72,16 @@ Not a factor: the CUT3R checkpoint (identical) and chain of thought in the answe
 
 ## 5. What to do with it
 
-- **The live question is now cheap to answer on their model.** Their `scripts/evaluation/eval_lora_multi.sh` already
-  exposes our live constraints as knobs: `TARGET_SIZE` (358 px ≈ our 128 tokens/frame), `MAX_NUM_FRAMES`, `FPS=1`
-  (frames at 1 fps, capped), and the `vsibench_multiimage` task (frames as images). Their 70.83 under those settings
-  is the realistic live target — the number every one of our runs should be compared with, on the same evaluation.
-  Their own 1-fps latency profiles of this model (`profiling/results`) exist too.
+- **The live question for their model is theirs to measure.** Their evaluation already has knobs for our live
+  constraints (target size, frame cap, 1 fps sampling, frames as images); their 70.83 under those settings would be
+  the realistic live target. That is a request to their team - we do not run their code.
 - **Run 2 stays what it is:** the throughput fixes and a Sensenova-only one-epoch reference for our architecture, with
   the weekend recovered. It is not the route to 70.
-- **Run 3 (proposal, after run 2 and the live evaluation of their model):** their data mix at one epoch, with their
-  fusion and ours as the A/B, at the resolution the live evaluation says we can afford.
+- **Run 3 (proposal, after run 2):** the same data mix at one epoch, trained on our stack with our implementation
+  of their fusion design, against a no-geometry arm at equal data (§7).
 
-Second inspection pass (CPU, ~1 min, `python scripts/inspect_reference_system.py`): the dataset table with every
-annotation file's path, size and record count; the gated-token fusion code; their 1-fps latency profiles; the head and
-tail of the checkpoint's `train.log`. The first bundle's searches were drowned by their lmms-eval fork (under `src/`);
-the second pass searches the training package only.
+The second pass (2026-09-30) read the dataset annotation files (paths, sizes, record counts), their 1-fps latency
+profiles and the head and tail of the checkpoint's `train.log`.
 
 ---
 
@@ -124,29 +125,31 @@ Per frame: CUT3R ~48 ms, vision ~2 ms; LLM prefill ~20-32 µs per token. Offline
 question; live, CUT3R and the vision tower run as frames arrive, and a 32-keyframe prefix (8,192 tokens) prefills in
 ~0.16 s — **their model on their stack fits the 1 s answer budget even without prefix caching.**
 
-### The fusion, exactly
+### The fusion design (in our words)
 
-`GeometryFeatureMerger(mlp)`: CUT3R's final decoder tokens (768-d, patch 16) → 2×2 spatial merge → LayerNorm → Linear
-(3,072 → 4,096) → GELU → Linear (→ 2,560), i.e. one geometry token per visual token (both 32 px). `FeatureFusionModule
-(gated_token)`: `g = sigmoid(Linear([LN1(v), LN2(geo)]) → 1)`, `fused = (1 − g)·LN1(v) + g·LN2(geo)`, replacing the
-image embeddings at the LLM input. CUT3R runs over the sample's frames in one call, `reference_frame first`.
+A geometry merger: CUT3R's final decoder tokens (768-d, patch 16) → 2×2 spatial merge → normalisation → an MLP (3,072 →
+4,096 → 2,560), i.e. one geometry token per visual token (both cover 32 px). A per-token gate at the LLM input:
+`g = sigmoid(w·[LN(v); LN(geo)] + b)`, `fused = (1 − g)·LN(v) + g·LN(geo)`, which replaces the visual token's
+embedding. CUT3R runs over the sample's frames in one call, the first frame as the reference. Merger, gate and LoRA
+train together in one stage.
 
-## 7. Recommendation: make the 70.83 model live, rather than re-deriving it
+## 7. Recommendation: implement the design here, train it on the permitted data, and make it live
 
-The reference already has the score; what it lacks is the live form — which is our harness (streaming CUT3R, causal
-keyframes, prefix cache, question-only latency). For VSI (questions at the end of a video) a causal selector that keeps
-a uniform subset of the stream sees nearly the frames offline sampling sees, and their stack is fast enough; so the open
-risks are narrow and measurable:
-1. **Port their architecture into our harness** (merger + gated-token fusion at the input, their CUT3R feature read,
-   their preprocessing and prompt; load the PEFT adapter + `modules_to_save`). Validate by reproducing their answers on
-   the 50 sample records we hold (greedy, same frames and prompt).
-2. **Evaluate it live** on VSI: streaming CUT3R over the keyframes (and at ~1 fps with the read-time scale calibration),
-   causal keyframe selection, measured question-time latency — the achievable live score.
-3. **Fine-tune only what the live form costs** (e.g. CUT3R features from the streaming state instead of an offline
-   pass), on their data mix, with their trainer or ours.
+Their score comes from data (2.03 M samples of VSI-domain QA), resolution and a simple input fusion trained at that
+scale; none of it needs their code. Our harness already has the live half (streaming CUT3R, causal keyframes, prefix
+cache, question-time latency). So:
 
-Our deepstack / S1→S2 design becomes an optional A/B at equal data, not the main line. Run 2 (running) still settles
-our stack's speed and a Sensenova-only baseline for it.
+1. **Our implementation of the fusion design** - `fusion.mode: gated_input` in Live3R: a merger from CUT3R's last
+   decoder tap to one token per visual token, and a learned per-token gate that mixes it into the visual embedding at
+   the LLM input, trained in one stage with LoRA (`configs/server_4b_v3.yaml`).
+2. **The data, read by our loader** - the registry `configs/data/vgllm.yaml` (paths and media roots of the 17
+   annotation files, the `ref70` and `all6` mixes), `MixtureDataset` (per-source media roots, fixed subsets and
+   repeats), videos as a few frames given as images. The record forms our loader must handle (frame directories or
+   files, the `spar_info` marks, multi-turn records) are read by `scripts/inspect_reference_data.py` (data only, CPU,
+   minutes); the marks are then drawn by our own code.
+3. **Run 3** - the `ref70` mix (or the subset the calibrated speed allows) on 4B: gated input fusion against a
+   no-geometry arm at equal data, evaluated on our live path (and on the offline protocol for the comparison with
+   70.83).
 
-Third inspection pass needed for step 1 (CPU, ~1 min): their CUT3R wrapper, their lmms-eval model (frame
-preprocessing, prompt), the SPAR marker code, the training entry point, and 3 records of every dataset of the mix.
+Their checkpoint is not part of this plan. Our deepstack / S1→S2 design stays available as an A/B arm; run 2 (running)
+still settles our stack's speed and a Sensenova-only baseline for it.

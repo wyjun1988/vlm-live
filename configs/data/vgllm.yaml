@@ -1,0 +1,38 @@
+# The VG-LLM training data on the shared volume - read-only for us; approved for our training on 2026-09-30.
+# Only the data is used: annotation files and media. Nothing of the reference team's code is read or copied.
+#
+# annotation: relative to `root` (or absolute); media: the directory the records' image/video paths are relative to.
+# records: the count read on 2026-09-30 (scripts/inspect_reference_data.py re-counts and reports differences).
+# Our training reads the JSONL + offset index that scripts/prepare_mix.py writes under data/vgllm/ (one pass per file;
+# eight ranks each parsing a 740 MB JSON array would not fit), and falls back to the file here when that is missing.
+root: /group-volume/VG-LLM_data
+datasets:
+  # the six "all" sets
+  spar_234k:           {annotation: train/spar_234k.json,                  media: media, records: 234277}
+  llava_hound_64k:     {annotation: train/llava_hound_64k.json,            media: media, records: 63750}
+  vlm3r_scannet:       {annotation: train/vlm3r_scannet_spar.json,         media: media, records: 53821}
+  vlm3r_scannetpp:     {annotation: train/vlm3r_scannetpp_spar.json,       media: media, records: 152462}
+  vlm3r_arkit:         {annotation: train/vlm3r_arkitscenes_spar.json,     media: media, records: 1375}
+  sensenova_800k:      {annotation: train/sensenova_si_800k.json,          media: media/sensenova, records: 832132}
+  # their chain-of-thought variants of the same six (answers with reasoning)
+  spar_234k_cot:       {annotation: train/spar_234k_qwen_reasoning_jcho_cleaning.json,               media: media, records: 87433}
+  llava_hound_64k_cot: {annotation: train/llava_hound_64k_qwen_reasoning_jcho_cleaning.json,         media: media, records: 61122}
+  vlm3r_scannet_cot:   {annotation: train/vlm3r_scannet_spar_qwen_reasoning_jcho_cleaning.json,      media: media, records: 24898}
+  vlm3r_scannetpp_cot: {annotation: train/vlm3r_scannetpp_spar_qwen_reasoning_jcho_cleaning.json,    media: media, records: 70143}
+  vlm3r_arkit_cot:     {annotation: train/vlm3r_arkitscenes_spar_qwen_reasoning_jcho_cleaning.json,  media: media, records: 770}
+  sensenova_800k_cot:  {annotation: train/sensenova_si_800k_qwen_reasoning_jcho_cleaning.json,       media: media/sensenova, records: 340857}
+  # 3D scene QA
+  sqa3d:               {annotation: train/sqa3d_train_32frame_spar.json,   media: media, records: 79445}
+  scanqa:              {annotation: train/scanqa_train_32frame_spar.json,  media: media, records: 26515}
+  # registered, not in the 70.83 mix
+  vsi_590k:            {annotation: train/vsi_590k_spar.json,              media: media, records: 302005}
+  vsti_camera:         {annotation: train/vsti_camera.json,                media: media, records: 66513}
+  vsti_camera_obj:     {annotation: train/vsti_camera_obj.json,            media: media, records: 48628}
+
+mixes:
+  # the 70.83 run: the six "all" sets + their CoT variants + SQA3D + ScanQA = 2,029,000 records, one epoch
+  ref70: [spar_234k, llava_hound_64k, vlm3r_scannet, vlm3r_scannetpp, vlm3r_arkit, sensenova_800k,
+          spar_234k_cot, llava_hound_64k_cot, vlm3r_scannet_cot, vlm3r_scannetpp_cot, vlm3r_arkit_cot,
+          sensenova_800k_cot, sqa3d, scanqa]
+  # the "all" recipe without the CoT variants and the scene QA (1,337,817 records)
+  all6: [spar_234k, llava_hound_64k, vlm3r_scannet, vlm3r_scannetpp, vlm3r_arkit, sensenova_800k]
