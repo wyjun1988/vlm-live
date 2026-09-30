@@ -591,6 +591,15 @@ small model use the facts; that is capacity or training. On the 157 direction qu
 93 % and answers 80 % right against a fact that is right 83 % — it is already at the facts' ceiling. This is the
 precise case for I-39: teach fact use by training, not by prompt, and it matters for the small models only.
 
+### I-44 Visual-token gain — **idea (2026-09-30), from the fusion's step-0 check**
+Checking where our gated input fusion starts (`scripts/check_fusion_init.py`, docs/SERVER_RUN3.md): a LayerNorm on
+the visual tokens at the LLM input makes them 5.6× louder (4B: norm 9.0 → 50.6; 0.8B 5.5 → 32) and changes 58-75 %
+of the first answer tokens - yet the held-out Sensenova loss *drops* before any training (4B 1.71 → 1.50 at a 2 %
+geometry mix; 0.8B 2.68 → 2.40), on 12-16 samples. If real, the base model under-weights its visual tokens for spatial
+QA, and a single scalar gain on the visual embeddings is a zero-shot lever. Test on the M2: VSI (60 videos, keyframes)
+with the visual embeddings × {1, 2, 3, 5.6} and LayerNorm'd, per type; the loss effect first on 200 holdout samples.
+Watch the general side too (a louder image may drown the question).
+
 ### Lessons so far (zero-shot, 4B)
 - **L6 Attach geometry only for scene-specific quantities; the model's prior already wins on canonical ones.**
   Object size is a property of the object category — a door is ~135 cm, a sofa ~180 cm — and the pretrained model
@@ -838,5 +847,6 @@ timestamps (I-04), recency weighting / decay, possibly state windows (I-05).
 | 41 | I-40b the three prior hints (room_size, size, abs_distance) on the streaming stack (~1 fps + facts + calibration, 58.0) | I-40, I-37 | done: **58.3**, +0.3 [−0.0, +0.6] — size +1.5, abs +0.6, room +0.5; +0.5 [−0.9, +2.1] vs keyframes. Adopted |
 | 42 | I-42 "trust the measurements" hint, 2B + routed facts (43.5, copy rate 53 %) | I-42, I-22 | done: **43.6**, +0.1 [−0.6, +0.8]; copy rate 49 % — null. Fact use in small models needs training (I-39) |
 | 43 | out-of-sample check of the adopted stacks on 60 *other* videos (seed 2): streaming stack (58.3 config) vs keyframes-only adopted (57.8 config) | I-37, I-40 | done: **55.3 vs 56.1, −0.8 [−1.9, +0.5]**; calibration holds (45 new videos: room ratio 1.10 → 0.96, MRA 54.2 → 63.3); direction −3.4 (facts 64.7 vs 69.6 %) — seed 1's direction gain was noise. **Pooled 105 videos: −0.1 [−1.1, +1.1] = parity** |
+| 44 | I-44 visual-token gain: held-out loss (200 samples) then VSI (60 videos, keyframes) with the visual embeddings × {1, 2, 3, 5.6} and LayerNorm'd | I-44 | open |
 | 25 | I-35 encoder bake-off: VGGT window 8 behind the same maps (directions attached, metric facts logged) | I-35 | done: **CUT3R wins** — direction 76.4 vs 56.7 (72 vs 54 on common questions), room area MRA 65.8 vs 9.5 (scale-free 69.0 vs 16.2) |
 | 14 | **Sensenova-only baseline on 4 nodes x 8 H100**: zero-shot VSI (full); S1 and S2 (one epoch each) real vs control, two seeds; plain SFT (no geometry); S2 joint (no S1); the 2B pair; S2 learning curve; gate | I-12, I-16, I-18, I-22 | four-day run from 09-26 (docs/SERVER_WEEKEND.md) |

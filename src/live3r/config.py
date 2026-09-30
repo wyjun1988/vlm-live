@@ -42,10 +42,12 @@ class GeometryConfig:
 class FusionConfig:
     """기하 토큰 → LLM 주입 설정."""
 
-    # deepstack: 디코더 여러 깊이에 residual add (SpatialStack 식, 기본값)
-    # xattn:     LLM 입력 직전 cross-attention 1회 (VLM-3R 식, ablation)
-    # none:      주입 없음 (베이스라인)
-    mode: Literal["deepstack", "xattn", "none"] = "deepstack"
+    # deepstack:   디코더 여러 깊이에 residual add (SpatialStack 식, 기본값)
+    # gated_input: one merger + a per-token gate that mixes geometry into each visual token at the LLM input
+    #              (fusion/gated.py - our implementation of the 70.83 reference's design; one geometry tap)
+    # xattn:       LLM 입력 직전 cross-attention 1회 (VLM-3R 식, ablation)
+    # none:        주입 없음 (베이스라인)
+    mode: Literal["deepstack", "gated_input", "xattn", "none"] = "deepstack"
     # 주입할 LLM 디코더 레이어 인덱스. geometry.tap_layers 와 길이가 같아야 한다.
     inject_layers: tuple[int, ...] = (0, 1, 2)
     # 기하 토큰 공간 머지 비율 (2 = 2x2 → 1). 토큰 예산 축소 축.
@@ -55,6 +57,12 @@ class FusionConfig:
     # 마지막 Linear 를 0 으로 초기화 → 학습 시작 시 베이스 VLM 동작을 그대로 보존
     zero_init: bool = True
     dropout: float = 0.0
+    # gated_input only: the merger's hidden width (0 = d_llm × mlp_ratio), LayerNorm on both streams before the gate,
+    # and the gate's starting bias (0 -> g = 0.5 everywhere at step 0; -4 -> g = 0.018). The merger is never
+    # zero-initialised in this mode: a zero geometry token has no LayerNorm (0/0) and no direction to learn from.
+    merger_hidden: int = 0
+    gate_norm: bool = True
+    gate_bias_init: float = 0.0
 
 
 @dataclass
@@ -98,6 +106,22 @@ class DataConfig:
     num_frames: int = 16
     # 영상 fps 를 모를 때 타임스탬프 계산에 쓸 값
     default_fps: float = 2.0
+    # > 0: the VLM input's long side in pixels (each side a multiple of 32) instead of min/max_pixels - the geometry
+    # encoder's rule, so geometry and visual tokens line up one to one (512: 144 tokens for 16:9, 192 for 4:3; the
+    # reference's operating point). Training and every evaluation of a run must use the same value.
+    vlm_long_side: int = 0
+    # video records as a few frames given as images (image mode, the live path's form): one per 1/video_fps seconds,
+    # clamped to [video_min_frames, video_max_frames] (the reference: one per 2 s, 4-8 frames). Off: video mode with
+    # num_frames frames (temporal pairs).
+    video_as_images: bool = False
+    video_fps: float = 0.5
+    video_min_frames: int = 4
+    video_max_frames: int = 8
+    # a video given as a directory of frames does not say its frame rate; this is assumed
+    frames_dir_fps: float = 1.0
+    # records whose questions refer to marks drawn on the frames (`spar_info`): "skip" them (the default until the
+    # marks are drawn by our own code) or "ignore" the marks (inspection only - the question then points at nothing)
+    marks: str = "skip"
 
 
 @dataclass
@@ -130,8 +154,13 @@ class Live3RConfig:
     data: DataConfig = field(default_factory=DataConfig)
 
     def __post_init__(self) -> None:
+        if self.data.marks not in ("skip", "ignore"):
+            raise ValueError(f"data.marks must be 'skip' or 'ignore' (drawing is not implemented yet), got {self.data.marks!r}")
         if self.patch_embed not in ("conv", "linear"):
             raise ValueError(f"patch_embed must be 'conv' or 'linear', got {self.patch_embed!r}")
+        if self.fusion.mode == "gated_input" and len(self.geometry.tap_layers) != 1:
+            raise ValueError(f"fusion.mode gated_input merges one geometry tap; geometry.tap_layers is "
+                             f"{self.geometry.tap_layers} (CUT3R: (12,), its last decoder layer)")
         if self.fusion.mode == "deepstack":
             n_tap = len(self.geometry.tap_layers)
             n_inj = len(self.fusion.inject_layers)

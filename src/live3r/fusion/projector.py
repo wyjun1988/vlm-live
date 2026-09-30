@@ -26,6 +26,9 @@ class GeometryProjector(nn.Module):
         mlp_ratio: 은닉 배율
         zero_init: 마지막 Linear 를 0 으로 초기화. True 면 학습 시작 시 주입량이 정확히 0 →
             베이스 VLM 동작 보존. 특화 역설(docs/RESEARCH_NOTES.md §5-1) 방어의 1차 장치.
+        hidden: the MLP's hidden width; None = d_llm × mlp_ratio.
+        scalar_gate: the learned output scale (deepstack). The gated input fusion normalises this output right away,
+            which would leave the scale without a gradient - it builds the projector without one.
 
     ⚠️ 초기화 교착 (2026-09-23 수정):
         예전엔 fc2=0 **그리고** gate=0 으로 뒀다. 출력이 fc2(h)·gate 라서
@@ -45,13 +48,15 @@ class GeometryProjector(nn.Module):
         mlp_ratio: float = 2.0,
         zero_init: bool = True,
         dropout: float = 0.0,
+        hidden: int | None = None,
+        scalar_gate: bool = True,
     ) -> None:
         super().__init__()
         self.c_geo = c_geo
         self.d_llm = d_llm
         self.merge_size = max(1, int(merge_size))
         c_in = c_geo * self.merge_size * self.merge_size
-        hidden = int(d_llm * mlp_ratio)
+        hidden = int(hidden) if hidden else int(d_llm * mlp_ratio)
 
         self.norm = nn.LayerNorm(c_in)
         self.fc1 = nn.Linear(c_in, hidden)
@@ -59,7 +64,7 @@ class GeometryProjector(nn.Module):
         self.drop = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
         self.fc2 = nn.Linear(hidden, d_llm)
         # 레이어별 주입 세기 스칼라. 1.0 으로 시작한다 — 0 으로 두면 fc2 와 함께 교착된다(위 docstring).
-        self.gate = nn.Parameter(torch.ones(1))
+        self.gate = nn.Parameter(torch.ones(1)) if scalar_gate else None
 
         if zero_init:
             nn.init.zeros_(self.fc2.weight)
@@ -102,7 +107,7 @@ class GeometryProjector(nn.Module):
         x = x.flatten(2).transpose(1, 2)  # [B, H*W, C*m*m]
         x = self.norm(x)
         x = self.fc2(self.drop(self.act(self.fc1(x))))
-        return x * self.gate
+        return x if self.gate is None else x * self.gate
 
 
 class PoseProjector(nn.Module):

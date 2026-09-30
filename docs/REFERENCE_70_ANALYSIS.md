@@ -153,3 +153,18 @@ cache, question-time latency). So:
 
 Their checkpoint is not part of this plan. Our deepstack / S1→S2 design stays available as an A/B arm; run 2 (running)
 still settles our stack's speed and a Sensenova-only baseline for it.
+
+## 8. Status (2026-09-30, evening)
+
+Implemented here (tests: `tests/test_gated_fusion.py`, `test_mixture.py`, `test_data_forms.py`, the trainer end to end
+on a two-source mix): the gated input fusion (`fusion.mode: gated_input`), the registry and mixture loader, videos
+as frames given as images (files and frame directories), long-side-512 input (the geometry and visual grids
+coincide), marked records skipped until drawn, the one-time preparation (`scripts/prepare_mix.py`) and run 3
+(`scripts/server_run3.sh`, `docs/SERVER_RUN3.md`). Still to do: drawing the SPAR marks (after the data pass shows the
+record format).
+
+Step 0 of our implementation on the M2 (4B, 12 Sensenova holdout samples, random merger, real CUT3R): the
+reference-style start (LayerNorm on both streams, g = 0.5) changes 75 % of the first answer tokens against the base
+model but lowers the held-out loss (1.71 → 1.51): the LayerNorm alone makes the visual tokens 5.6× louder. A start
+without the norm and g = 0.018 stays at the base model (8 %, 1.72). Run 3 trains both (gated, gated_raw); the loss
+drop from louder visual tokens is a zero-shot idea of its own (BRAINSTORM I-44).

@@ -1,0 +1,47 @@
+# Run 3 (docs/SERVER_RUN3.md), arm "gated_raw": server_4b_v3.yaml with a start near the base model - no LayerNorm on
+# either stream, gate bias -4 (g = 0.018 at step 0). Step-0 check on the M2 (4B): 8 % of the first answer tokens
+# change against the base model, loss 1.72 vs 1.71 (the "gated" start: 75 %, 1.51). Everything else identical.
+patch_embed: linear
+base_model: /group-volume/wooyeol/models/Qwen3.5-4B
+dtype: bf16
+attn_implementation: sdpa
+
+geometry:
+  name: cut3r
+  checkpoint: checkpoints/cut3r_512_dpt_4_64.pth
+  tap_layers: [12]
+  hidden_size: 768
+  image_size: 512
+  stride: 1
+  freeze: true
+  expose_pose_token: false
+  options:
+    repo_path: third_party/CUT3R
+
+fusion:
+  mode: gated_input
+  merge_size: 2
+  merger_hidden: 4096
+  gate_norm: false
+  gate_bias_init: -4.0
+
+lora:
+  enabled: true
+  r: 16
+  alpha: 32
+  dropout: 0.05
+
+data:
+  vlm_long_side: 512
+  max_images: 32
+  max_length: 12800
+  video_as_images: true
+  video_fps: 0.5
+  video_min_frames: 4
+  video_max_frames: 8
+  marks: skip
+
+stream:
+  max_visual_tokens: 16384
+  budget_policy: evict
+  target_fps: 30.0

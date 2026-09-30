@@ -34,7 +34,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 import numpy as np  # noqa: E402
 
-from live3r.data.datasets import RecordError, normalize_record  # noqa: E402
+from live3r.data.datasets import RecordError, iter_json_records, normalize_record  # noqa: E402
 
 _PH = re.compile(r"<image>|<video>")
 _NUM = re.compile(r"^-?\d+(\.\d+)?$")
@@ -54,17 +54,7 @@ def answer_kind(a: str) -> str:
 
 
 def iter_raw(path: Path):
-    with open(path, "rb") as fh:
-        head = fh.read(4096).lstrip()
-    if head.startswith(b"["):
-        print(f"JSON 배열로 읽는다 (한 번만 전체 로드): {path}", flush=True)
-        for rec in json.loads(path.read_text()):
-            yield rec
-    else:
-        with open(path) as fh:
-            for line in fh:
-                if line.strip():
-                    yield json.loads(line)
+    return iter_json_records(path)
 
 
 def count_records(path: Path) -> int | None:
@@ -89,6 +79,11 @@ def main() -> int:
     ap.add_argument("--holdout", type=int, default=2000,
                     help="학습에서 뺄 레코드 수 (무작위, 시드 고정). 0=안 뺀다")
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--drop-marked", action="store_true",
+                    help="leave out records with marks (spar_info) - while training cannot draw them (data.marks skip)")
+    ap.add_argument("--records", type=int, default=0,
+                    help="records in src when known (a JSON array is not counted up front; sets the holdout and "
+                         "file-check rates)")
     args = ap.parse_args()
 
     src, dst = Path(args.src), Path(args.dst)
@@ -101,6 +96,7 @@ def main() -> int:
     n_images = Counter()
     n_turns = Counter()
     kinds = Counter()
+    kinds_media = Counter()
     sources = Counter()
     missing_examples: list[str] = []
     checked = missing = 0
@@ -109,7 +105,7 @@ def main() -> int:
     ho_offsets: list[int] = []
     # 홀드아웃은 레코드 순서와 무관하게 뽑아야 한다 (앞/뒤에 특정 소스가 몰려 있을 수 있다)
     # The rate needs the file's size: a fixed 832k (SenseNova) gave a 3,651-record file 0 holdout records.
-    n_src = count_records(src) or 832_000
+    n_src = args.records or count_records(src) or 832_000
     ho_rate = args.holdout / max(1, min(args.limit, n_src) if args.limit else n_src)
     ho_rng = random.Random(args.seed + 1)
 
@@ -124,6 +120,10 @@ def main() -> int:
                 dropped["형식:" + str(exc)[:40]] += 1
                 continue
 
+            if args.drop_marked and rec.marks is not None:
+                dropped["marked (not drawn yet)"] += 1
+                stats["marked"] += 1
+                continue
             imgs = rec.images or []
             ph = sum(len(_PH.findall(u)) for u, _ in rec.turns)
             if imgs and ph not in (0, len(imgs)):
@@ -133,13 +133,16 @@ def main() -> int:
                 dropped[f"이미지>{args.max_images}"] += 1
                 continue
 
-            denom = args.limit or 850_000
+            denom = args.limit or n_src
             do_check = args.check_files < 0 or (
                 args.check_files > 0 and rng.random() < args.check_files / denom
             )
-            if do_check and imgs:
+            media_paths = imgs or ([rec.video] if rec.video else [])
+            kinds_media[rec.media_type] += 1
+            stats["marked"] += rec.marks is not None
+            if do_check and media_paths:
                 checked += 1
-                bad = [p for p in imgs if not (media / p).exists()]
+                bad = [p for p in media_paths if not (media / p).exists()]
                 if bad:
                     missing += 1
                     if len(missing_examples) < 5:
@@ -175,6 +178,9 @@ def main() -> int:
         "images_per_record": {str(k): v for k, v in sorted(n_images.items())},
         "turns_per_record": {str(k): v for k, v in sorted(n_turns.items())},
         "answer_kinds": dict(kinds),
+        "media": dict(kinds_media),
+        "marked": stats["marked"],
+        "drop_marked": bool(args.drop_marked),
         "data_sources_top": dict(sources.most_common(20)),
         "file_check": {"checked_records": checked, "records_with_missing": missing,
                        "examples": missing_examples},

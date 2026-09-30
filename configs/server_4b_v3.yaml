@@ -1,0 +1,56 @@
+# Run 3 (docs/SERVER_RUN3.md): our implementation of the 70.83 reference's design, trained on the VG-LLM data
+# (configs/data/vgllm.yaml, docs/REFERENCE_70_ANALYSIS.md §7). Arm "gated": the start the reference trains from.
+#   fusion   gated_input - one merger from CUT3R's last decoder layer (tap 12) to one token per visual token, and a
+#            learned per-token gate that mixes it into the visual embedding at the LLM input (fusion/gated.py);
+#            LayerNorm on both streams, gate bias 0 (g = 0.5 at step 0). One stage: merger, gate and LoRA together.
+#   LoRA     r16 / alpha 32 (the reference's recipe; ours had r32)
+#   vision   long side 512 for the VLM input as for CUT3R: the two token grids coincide (144 tokens for 16:9 frames,
+#            192 for 4:3) - the reference's operating point; training and every evaluation use it
+#   video    records given as 4-8 frames (one per 2 s) as images - the live path's form
+# Step-0 check on the M2 (scripts/check_fusion_init.py, 4B, 12 Sensenova holdout samples, random merger): this start
+# changes 75 % of the first answer tokens against the base model, yet its loss is lower (1.51 vs 1.71) - the
+# LayerNorm makes the visual tokens 5.6x louder (norm 9 -> 51). server_4b_v3_raw.yaml starts near the base instead.
+patch_embed: linear
+base_model: /group-volume/wooyeol/models/Qwen3.5-4B
+dtype: bf16
+attn_implementation: sdpa
+
+geometry:
+  name: cut3r
+  checkpoint: checkpoints/cut3r_512_dpt_4_64.pth
+  tap_layers: [12]
+  hidden_size: 768
+  image_size: 512
+  stride: 1
+  freeze: true
+  expose_pose_token: false
+  options:
+    repo_path: third_party/CUT3R
+
+fusion:
+  mode: gated_input
+  merge_size: 2
+  merger_hidden: 4096
+  gate_norm: true
+  gate_bias_init: 0.0
+
+lora:
+  enabled: true
+  r: 16
+  alpha: 32
+  dropout: 0.05
+
+data:
+  vlm_long_side: 512
+  max_images: 32
+  max_length: 12800
+  video_as_images: true
+  video_fps: 0.5
+  video_min_frames: 4
+  video_max_frames: 8
+  marks: skip
+
+stream:
+  max_visual_tokens: 16384
+  budget_policy: evict
+  target_fps: 30.0

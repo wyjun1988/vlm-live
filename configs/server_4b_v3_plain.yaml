@@ -1,0 +1,42 @@
+# Run 3 (docs/SERVER_RUN3.md), arm "plain": the same data, LoRA and vision settings, no geometry at all (fusion none:
+# the encoder is never run in training). gated - plain = what the geometry path adds at this data scale.
+patch_embed: linear
+base_model: /group-volume/wooyeol/models/Qwen3.5-4B
+dtype: bf16
+attn_implementation: sdpa
+
+geometry:
+  name: cut3r
+  checkpoint: checkpoints/cut3r_512_dpt_4_64.pth
+  tap_layers: [12]
+  hidden_size: 768
+  image_size: 512
+  stride: 1
+  freeze: true
+  expose_pose_token: false
+  options:
+    repo_path: third_party/CUT3R
+
+fusion:
+  mode: none
+
+lora:
+  enabled: true
+  r: 16
+  alpha: 32
+  dropout: 0.05
+
+data:
+  vlm_long_side: 512
+  max_images: 32
+  max_length: 12800
+  video_as_images: true
+  video_fps: 0.5
+  video_min_frames: 4
+  video_max_frames: 8
+  marks: skip
+
+stream:
+  max_visual_tokens: 16384
+  budget_policy: evict
+  target_fps: 30.0

@@ -3,7 +3,9 @@
 책임 분리:
   * 기하 인코더(동결·바닐라) : 프레임 → 잠재 토큰
   * GeometryProjector      : 잠재 토큰 → LLM 히든 공간 (학습)
-  * DeepStackInjector      : 디코더 앞단 여러 깊이에 residual add
+  * DeepStackInjector      : 디코더 앞단 여러 깊이에 residual add            (fusion.mode deepstack)
+    InputFusionInjector    : a learned per-token gate mixes geometry into the visual tokens at the LLM input
+                             (fusion.mode gated_input - fusion/gated.py)
   * LLM                    : LoRA 만 학습
 
 "스텝" 이라는 단위: LLM 비전 토큰 블록 하나.
@@ -28,6 +30,7 @@ from torch import nn
 from ..config import Live3RConfig
 from ..data.vision import VisionSpec, geometry_frame, llm_grid, unpatchify
 from ..fusion.deepstack import DeepStackInjector
+from ..fusion.gated import GatedTokenFusion, InputFusionInjector
 from ..fusion.projector import GeometryProjector, PoseProjector
 from ..geometry.base import GeomOutput
 from ..geometry.registry import build_geometry_stream
@@ -58,7 +61,8 @@ class Live3RModel(nn.Module):
         self.d_llm: int = text_cfg.hidden_size
         self.n_layers: int = text_cfg.num_hidden_layers
         self.spec = VisionSpec.from_config(
-            vis_cfg, min_pixels=cfg.data.min_pixels, max_pixels=cfg.data.max_pixels
+            vis_cfg, min_pixels=cfg.data.min_pixels, max_pixels=cfg.data.max_pixels,
+            long_side=cfg.data.vlm_long_side,
         )
         self.vision_patch: int = self.spec.patch
         self.spatial_merge: int = self.spec.merge
@@ -89,34 +93,47 @@ class Live3RModel(nn.Module):
 
         # ---- 프로젝터 (학습) ----
         c_geo = self.geometry.hidden_size
-        self.projectors = nn.ModuleList(
-            [
-                GeometryProjector(
-                    c_geo=c_geo,
-                    d_llm=self.d_llm,
-                    merge_size=cfg.fusion.merge_size,
-                    mlp_ratio=cfg.fusion.mlp_ratio,
-                    zero_init=cfg.fusion.zero_init,
-                    dropout=cfg.fusion.dropout,
-                )
-                for _ in cfg.fusion.inject_layers
-            ]
-        )
+        fusion = cfg.fusion
+        self.input_fusion: GatedTokenFusion | None = None
+        if fusion.mode == "gated_input":
+            # one merger from the single tap; never zero-init (fusion/gated.py: the gate normalises its output)
+            self.projectors = nn.ModuleList([
+                GeometryProjector(c_geo=c_geo, d_llm=self.d_llm, merge_size=fusion.merge_size,
+                                  mlp_ratio=fusion.mlp_ratio, zero_init=False, dropout=fusion.dropout,
+                                  hidden=fusion.merger_hidden or None, scalar_gate=False)])
+            self.input_fusion = GatedTokenFusion(self.d_llm, norm=fusion.gate_norm, bias_init=fusion.gate_bias_init)
+        else:
+            self.projectors = nn.ModuleList(
+                [
+                    GeometryProjector(
+                        c_geo=c_geo,
+                        d_llm=self.d_llm,
+                        merge_size=fusion.merge_size,
+                        mlp_ratio=fusion.mlp_ratio,
+                        zero_init=fusion.zero_init,
+                        dropout=fusion.dropout,
+                        hidden=fusion.merger_hidden or None,
+                    )
+                    for _ in fusion.inject_layers
+                ]
+            )
         self.pose_projector = (
-            PoseProjector(c_geo, self.d_llm, zero_init=cfg.fusion.zero_init)
+            PoseProjector(c_geo, self.d_llm, zero_init=fusion.zero_init)
             if cfg.geometry.expose_pose_token
             else None
         )
 
         # ---- 주입 훅 ----
-        self.injector: DeepStackInjector | None = None
-        if cfg.fusion.mode == "deepstack":
+        self.injector: DeepStackInjector | InputFusionInjector | None = None
+        if fusion.mode == "deepstack":
             self.injector = DeepStackInjector(
-                self._decoder_layers(), cfg.fusion.inject_layers
+                self._decoder_layers(), fusion.inject_layers
             ).attach()
-        elif cfg.fusion.mode == "xattn":
+        elif fusion.mode == "gated_input":
+            self.injector = InputFusionInjector(self._decoder_layers(), self.input_fusion).attach()
+        elif fusion.mode == "xattn":
             raise NotImplementedError(
-                "xattn(VLM-3R 식) 융합은 ablation 용으로 예정. 지금은 deepstack 또는 none."
+                "xattn(VLM-3R 식) 융합은 ablation 용으로 예정. 지금은 deepstack, gated_input 또는 none."
             )
         self._auto_geom_orig = None
 
@@ -375,7 +392,7 @@ class Live3RModel(nn.Module):
         if self._auto_geom_orig is not None:
             return self
         if self.injector is None:
-            raise RuntimeError("fusion.mode 가 deepstack 이 아니면 자동 기하를 쓸 수 없다")
+            raise RuntimeError("자동 기하는 fusion.mode deepstack 또는 gated_input 에서만 쓸 수 있다")
 
         self._auto_geom_orig = self.base.forward
         orig = self._auto_geom_orig
@@ -430,7 +447,7 @@ class Live3RModel(nn.Module):
     # ------------------------------------------------------------- 파라미터 관리
     def trainable_parameter_summary(self) -> dict[str, int]:
         total = trainable = 0
-        by_group = {"projector": 0, "lora": 0, "other_trainable": 0}
+        by_group = {"projector": 0, "fusion": 0, "lora": 0, "other_trainable": 0}
         for name, p in self.named_parameters():
             total += p.numel()
             if not p.requires_grad:
@@ -438,6 +455,8 @@ class Live3RModel(nn.Module):
             trainable += p.numel()
             if "projector" in name:
                 by_group["projector"] += p.numel()
+            elif name.startswith("input_fusion."):
+                by_group["fusion"] += p.numel()
             elif "lora" in name.lower():
                 by_group["lora"] += p.numel()
             else:
@@ -450,9 +469,9 @@ class Live3RModel(nn.Module):
             p.requires_grad_(False)
 
     def trainable_state_dict(self) -> dict[str, torch.Tensor]:
-        """학습된 것만 (프로젝터 + LoRA). 베이스 가중치는 복사하지 않는다."""
+        """학습된 것만 (프로젝터 + gated fusion + LoRA). 베이스 가중치는 복사하지 않는다."""
         return {
             k: v.detach().cpu()
             for k, v in self.state_dict().items()
-            if ("projector" in k or "lora" in k.lower())
+            if ("projector" in k or k.startswith("input_fusion.") or "lora" in k.lower())
         }

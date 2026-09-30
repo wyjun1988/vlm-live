@@ -11,6 +11,9 @@
     영상:
       {"id": ..., "video": "scannet/videos/scene0191_00.mp4", "conversations": [...]}
 
+    VG-LLM 계열 (configs/data/vgllm.yaml): the same forms, plus `images` as the image key, videos given as a
+      directory of frames, and `spar_info` - marks (points, boxes) the question refers to, drawn onto the frames.
+
 이미지 시퀀스는 **이미지 모드**로 넣는다 (이미지마다 별도 비전 블록).
 비디오 모드로 넣으면 Qwen 의 temporal_patch=2 때문에 서로 다른 시점 두 장이 한 블록으로
 섞이고, "3번째 이미지에서 보면…" 같은 질문이 가리킬 대상이 사라진다.
@@ -52,7 +55,8 @@ class RecordError(ValueError):
 
 
 class SkipRecord(Exception):
-    """Not an error: a valid record this run does not use (`require_media` and a text-only record).
+    """Not an error: a valid record this run does not use (`require_media` and a text-only record, or a record with
+    marks to draw while `data.marks` is "skip").
 
     Deliberately not a RecordError - it never counts toward `max_fail_rate` or `max_retries`.
     """
@@ -91,6 +95,31 @@ class LazyJsonl:
             self._pid = os.getpid()
         self._fh.seek(int(self.offsets[i]))
         return json.loads(self._fh.readline())
+
+
+def iter_json_records(path: str | Path):
+    """Records of a JSON array one at a time (the text is held once, the records are not), or of a JSONL file.
+
+    A 740 MB array parsed with json.loads holds every record at once (several GB); this holds the text only."""
+    path = Path(path)
+    with open(path, "rb") as fh:
+        head = fh.read(4096).lstrip()
+    if not head.startswith(b"["):
+        with open(path, errors="replace") as fh:
+            for line in fh:
+                if line.strip():
+                    yield json.loads(line)
+        return
+    text = path.read_text(errors="replace")
+    dec = json.JSONDecoder()
+    i, n = text.index("[") + 1, len(text)
+    while True:
+        while i < n and text[i] in " \t\r\n,":
+            i += 1
+        if i >= n or text[i] == "]":
+            return
+        obj, i = dec.raw_decode(text, i)
+        yield obj
 
 
 def load_records(path: str | Path, max_samples: int | None = None):
@@ -137,6 +166,8 @@ class Record:
     video: str | None = None
     frames: list[int] | None = None
     data_source: str = "unknown"
+    #: marks the question refers to (`spar_info`), None when there are none
+    marks: object = None
 
     @property
     def media_type(self) -> str:
@@ -180,6 +211,7 @@ def normalize_record(raw: dict) -> Record:
     images = raw.get("image", raw.get("images"))
     if isinstance(images, str):
         images = [images]
+    marks = raw.get("spar_info")
     return Record(
         id=str(raw.get("id", "")),
         turns=turns,
@@ -187,6 +219,7 @@ def normalize_record(raw: dict) -> Record:
         video=raw.get("video"),
         frames=raw.get("frames"),
         data_source=str(raw.get("data_source", raw.get("source", "unknown"))),
+        marks=marks if marks not in (None, "", {}, [], "{}", "[]") else None,
     )
 
 
@@ -233,15 +266,39 @@ def _read_video(path: Path, indices: list[int]) -> tuple[np.ndarray, float | Non
 
 
 def _probe_len(path: Path) -> int:
+    return _probe(path)[0]
+
+
+def _probe(path: Path) -> tuple[int, float | None]:
+    """(frames, fps) of a video file."""
     try:
         import decord  # type: ignore
 
-        return len(decord.VideoReader(str(path)))
+        vr = decord.VideoReader(str(path))
+        return len(vr), float(vr.get_avg_fps())
     except ImportError:
         import av  # type: ignore
 
         with av.open(str(path)) as c:
-            return sum(1 for _ in c.decode(video=0))
+            stream = c.streams.video[0]
+            fps = float(stream.average_rate) if stream.average_rate else None
+            return sum(1 for _ in c.decode(video=0)), fps
+
+
+IMAGE_EXT = (".jpg", ".jpeg", ".png", ".bmp", ".webp")
+
+
+def frame_files(path: Path) -> list[Path]:
+    """The frames of a video given as a directory, in order (names sort numerically when zero-padded)."""
+    return sorted(f for f in path.iterdir() if f.suffix.lower() in IMAGE_EXT)
+
+
+def frames_to_use(n_total: int, fps: float, rate: float, lo: int, hi: int) -> int:
+    """How many frames a video contributes as images: one per 1/rate seconds, within [lo, hi] and <= n_total."""
+    if n_total <= 0:
+        return 0
+    k = int(round(n_total / max(fps, 1e-6) * rate))
+    return max(1, min(n_total, max(lo, min(hi, k))))
 
 
 # -------------------------------------------------------------------- 데이터셋
@@ -300,12 +357,13 @@ class SpatialVQADataset(Dataset):
                 # 워커 프로세스의 카운터는 메인 프로세스에서 안 보인다 → 샘플에 실어 보낸다
                 item["retries"] = attempt + skips
                 return item
-            except SkipRecord:
+            except SkipRecord as exc:
                 self.n_skip += 1
                 skips += 1
                 if skips >= 1000:  # a mixed file skips a few; a thousand in a row means nothing is usable
-                    raise RuntimeError("1,000 records in a row are text-only - require_media needs images "
-                                       "or video. Wrong annotation file?") from None
+                    raise RuntimeError(f"1,000 records in a row skipped (last: {exc}) - text-only records under "
+                                       "require_media, or records with marks while data.marks is 'skip'. Wrong "
+                                       "annotation file, or a source that needs its marks drawn?") from None
             except Exception as exc:  # noqa: BLE001 - see below
                 # Anything a broken record can raise: RecordError, PromptError, a missing or truncated image
                 # (OSError), a decode error (ValueError) ... and whatever the long tail of 830k records holds.
@@ -345,10 +403,14 @@ class SpatialVQADataset(Dataset):
     # ------------------------------------------------------------------ 구성
     def build(self, i: int) -> dict:
         rec = normalize_record(self.records[i])
+        if rec.marks is not None and self.cfg.marks == "skip":
+            raise SkipRecord(f"record {rec.id} has marks to draw (spar_info)")
         mt = rec.media_type
         if mt == "images":
             return self._build_images(rec)
         if mt == "video":
+            if self.cfg.video_as_images:
+                return self._build_video_as_images(rec)
             return self._build_video(rec)
         if self.require_media:
             raise SkipRecord(f"record {rec.id} is text-only")
@@ -392,10 +454,21 @@ class SpatialVQADataset(Dataset):
 
     def _build_video(self, rec: Record) -> dict:
         path = self._resolve(rec.video)
-        idx = rec.frames or sample_indices(
-            _probe_len(path), FrameSpec(num_frames=self.cfg.num_frames), self.rng
-        )
-        raw, fps = _read_video(path, idx)
+        if path.is_dir():                     # a directory of frames
+            from PIL import Image
+
+            files = frame_files(path)
+            idx = rec.frames or sample_indices(len(files), FrameSpec(num_frames=self.cfg.num_frames), self.rng)
+            frames = []
+            for j in idx:
+                with Image.open(files[min(j, len(files) - 1)]) as im:
+                    frames.append(np.array(im.convert("RGB")))
+            raw, fps = np.stack(frames), self.cfg.frames_dir_fps
+        else:
+            idx = rec.frames or sample_indices(
+                _probe_len(path), FrameSpec(num_frames=self.cfg.num_frames), self.rng
+            )
+            raw, fps = _read_video(path, idx)
         pv, grid = prepare_video(raw, self.spec)
         ts = frame_timestamps(idx, fps or self.cfg.default_fps, self.spec.temporal_patch)
         segment = self.prompt.video_segment(tokens_per_step(grid[0], self.spec), ts)
@@ -410,6 +483,53 @@ class SpatialVQADataset(Dataset):
             llm_grids=llm_grid(grid[0], self.spec),
             pool_temporal=True,
             cache_key=f"vid|{rec.video}|{','.join(map(str, idx))}",
+        )
+
+    def _build_video_as_images(self, rec: Record) -> dict:
+        """A video record as a few of its frames given as images (DataConfig.video_as_images): the live path's form.
+
+        One frame per 1/video_fps seconds within [video_min_frames, video_max_frames], spread uniformly with
+        jitter (training may know the length). The record's single <video> placeholder becomes all the frames'
+        image blocks; a record without a placeholder gets them before the first question.
+        """
+        from PIL import Image
+
+        path = self._resolve(rec.video)
+        c = self.cfg
+        if path.is_dir():
+            files = frame_files(path)
+            n, fps = len(files), c.frames_dir_fps
+        else:
+            files = None
+            n, fps = _probe(path)
+            fps = fps or c.default_fps
+        k = frames_to_use(n, fps, c.video_fps, c.video_min_frames, c.video_max_frames)
+        if k == 0:
+            raise RecordError(f"video without frames: {path}")
+        idx = rec.frames or sample_indices(n, FrameSpec(num_frames=k), self.rng)
+        if files is not None:
+            frames = []
+            for j in idx:
+                with Image.open(files[min(j, n - 1)]) as im:
+                    frames.append(np.array(im.convert("RGB")))
+        else:
+            raw, _ = _read_video(path, idx)
+            frames = list(raw)
+        vlm = [prepare_image(f, self.spec) for f in frames]
+        segs = [self.prompt.image_segment(tokens_per_step(g[0], self.spec)) for _, g in vlm]
+        n_ph = sum(u.count("<video>") + u.count("<image>") for u, _ in rec.turns)
+        segments = ["".join(segs)] if n_ph == 1 else segs
+        built = self.prompt.build(rec.turns, segments, "images", self.cfg.max_length)
+        return self._pack(
+            rec,
+            built,
+            media_type="images",
+            pixel_values=torch.cat([pv for pv, _ in vlm], 0),
+            image_grid_thw=torch.cat([g for _, g in vlm], 0),
+            geom_frames=[geometry_frame(f, self.geom_long_side, self.geom_unit) for f in frames],
+            llm_grids=[llm_grid(g[0], self.spec) for _, g in vlm],
+            pool_temporal=False,
+            cache_key=f"vimg|{rec.video}|{','.join(map(str, idx))}",
         )
 
     def _build_text(self, rec: Record) -> dict:

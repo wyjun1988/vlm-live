@@ -79,6 +79,30 @@ COMPARISONS_RUN2 = [
     ("Weekend 2B: S2 real - 2B base + hint", "wk_s2_real_2b_hint:oracle-image", "base_hint_2b:oracle-image"),
     ("Stack check: weekend S2 real, new stack - old stack", "wk_s2_real:oracle-image", "old_s2_real:oracle-image"),
 ]
+# run 3 (scripts/server_run3.sh): our implementation of the 70.83 reference's design on the VG-LLM data
+PHASES_RUN3 = [("data", "data pass + mix preparation"), ("calib", "speed calibration + budget"), ("d1", "one-step profile"),
+               ("gated", "gated (reference-style start)"), ("plain", "plain SFT (no geometry)"),
+               ("control", "gated, shuffled geometry"), ("gated_raw", "gated (near-base start)"),
+               ("gate_smoke", "gate smoke"), ("gate_base", "gate: base"), ("gate_base_video", "gate: base video"),
+               ("gate_plain", "gate: plain"), ("gate_gated", "gate: gated"), ("gate_gated_raw", "gate: gated_raw"),
+               ("role.gated", "role gated"), ("role.plain", "role plain"), ("role.control", "role control"),
+               ("role.base", "role base"), ("role.gated_raw", "role gated_raw")]
+ARMS_RUN3 = ("gated", "plain", "control", "gated_raw")
+COMPARISONS_RUN3 = [
+    ("gated - plain (the geometry path at this data scale)  <- key", "gated:oracle-image", "plain:oracle-image"),
+    ("gated - control (geometry content)", "gated:oracle-image", "control:oracle-image"),
+    ("control - plain (a content-free fusion)", "control:oracle-image", "plain:oracle-image"),
+    ("gated - gated_raw (reference-style start - near-base start)", "gated:oracle-image", "gated_raw:oracle-image"),
+    ("gated_raw - plain", "gated_raw:oracle-image", "plain:oracle-image"),
+    ("gated - base (what the training buys)", "gated:oracle-image", "base:oracle-image"),
+    ("plain - base (what the data alone buys)", "plain:oracle-image", "base:oracle-image"),
+    ("gated: + room facts - plain prompt", "gated_routed_room:oracle-image", "gated:oracle-image"),
+    ("Room facts, same prompt: gated - plain", "gated_routed_room:oracle-image", "plain_routed_room:oracle-image"),
+    ("Base: room facts - plain prompt", "base_routed_room:oracle-image", "base:oracle-image"),
+    ("gated: video mode - image mode (offline protocol vs live form)", "gated_video:oracle-video", "gated:oracle-image"),
+    ("Run 3 gated - run 2 S2 real (data + design + resolution)", "gated:oracle-image", "r2_s2_real:oracle-image"),
+    ("Run 3 plain - run 2 plain SFT (data + resolution)", "plain:oracle-image", "r2_s2_sft:oracle-image"),
+]
 # (label, run A, run B): A - B. A run is "<vsi json name>:<mode>"; "base_best" is the base's better format.
 COMPARISONS = [
     ("Base: image mode - video mode (the format confound)", "base_plain:oracle-image", "base_plain:oracle-video"),
@@ -218,13 +242,17 @@ def section_vsi(out: Path) -> list[str]:
             cells = " | ".join("-" if per[c] is None else f"{100 * per[c]:.1f}" for c in cols)
             lines.append(f"| {name} | {mode} | **{100 * sc['overall']:.1f}** | {cells} | "
                          f"{'-' if ff is None else f'{100 * ff:.1f}%'} | {r.get('n_questions', '-')} |")
-    lines += ["", "M2 reference (60 videos, 1,151 questions): base video mode 48.6 · + format hint 53.7 · "
-              "routed facts 56.0 · S2 pilot (905 samples) 44.1 vs control 42.3.", "",
+    ref = ("The reference (their protocol: video path, 32 frames, long side 512): **70.8** overall · appear 80.1 · abs "
+           "dist 57.5 · count 73.8 · rel dist 72.1 · obj size 78.4 · room size 74.1 · route 46.4 · rel dir 84.3."
+           if RUN == "run3" else "M2 reference (60 videos, 1,151 questions): base video mode 48.6 · + format hint 53.7 · "
+           "routed facts 56.0 · S2 pilot (905 samples) 44.1 vs control 42.3.")
+    lines += ["", ref, "",
               "### Paired comparisons (Δ in points, 95% interval from resampling videos)", "",
               "| comparison | A | B | Δ | 95% interval | videos / questions | Δ Debiased [95%] |",
               "|---|---|---|---|---|---|---|"]
     pruned = debiased_ids()
-    for label, a, b in (COMPARISONS_RUN2 if RUN == "run2" else COMPARISONS):
+    comps = {"run2": COMPARISONS_RUN2, "run3": COMPARISONS_RUN3}.get(RUN, COMPARISONS)
+    for label, a, b in comps:
         sa, pa = vsi_preds(runs, a)
         sb, pb = vsi_preds(runs, b)
         if not pa or not pb:
@@ -248,30 +276,32 @@ def section_vsi(out: Path) -> list[str]:
 def section_curve(out: Path) -> list[str]:
     """VSI at the saved S2 checkpoints: does more Sensenova keep helping, or does the numeric prior take over?"""
     runs = load_vsi(out)
-    pts = sorted((int(m.group(1)), name) for name in runs for m in [re.match(r"s2_real_step(\d+)$", name)] if m)
+    arm, ref = ("gated", "base") if RUN == "run3" else ("s2_real", "base_hint")
+    label = {"base_hint": "base + format hint", "base": "base (untrained)"}[ref]
+    pts = sorted((int(m.group(1)), name) for name in runs for m in [re.match(rf"{arm}_step(\d+)$", name)] if m)
     if not pts:
         return []
     cols = list(TYPE_SHORT)
-    lines = ["## S2 learning curve (VSI, image mode, real arm)", "",
-             "| checkpoint | overall | Δ vs base + format hint | " + " | ".join(TYPE_SHORT[c] for c in cols) + " |",
+    lines = [f"## Learning curve (VSI, image mode, {arm})", "",
+             f"| checkpoint | overall | Δ vs {label} | " + " | ".join(TYPE_SHORT[c] for c in cols) + " |",
              "|---|---|---|" + "---|" * len(cols)]
-    _, hint = vsi_preds(runs, "base_hint:oracle-image")
-    rows = [(0, "base_hint")] if "base_hint" in runs else []
-    rows += pts + ([(None, "s2_real")] if "s2_real" in runs else [])
+    _, hint = vsi_preds(runs, f"{ref}:oracle-image")
+    rows = [(0, ref)] if ref in runs else []
+    rows += pts + ([(None, arm)] if arm in runs else [])
     for step, name in rows:
         sc = runs[name].get("scores", {}).get("oracle-image")
         if not sc:
             continue
         per = per_type_scores(sc)
         cells = " | ".join("-" if per[c] is None else f"{100 * per[c]:.1f}" for c in cols)
-        if name == "base_hint":
-            lines.append(f"| base + format hint | {100 * sc['overall']:.1f} | — | {cells} |")
+        if name == ref:
+            lines.append(f"| {label} | {100 * sc['overall']:.1f} | — | {cells} |")
             continue
         _, preds = vsi_preds(runs, f"{name}:oracle-image")
         d = paired_bootstrap(preds, hint) if preds and hint else None
         delta = f"{d[0]:+.1f} [{d[1]:+.1f}, {d[2]:+.1f}]" if d else "-"
         lines.append(f"| {'step ' + str(step) if step else 'final'} | {100 * sc['overall']:.1f} | {delta} | {cells} |")
-    return lines + ["", "Per type along the curve: where more Sensenova helps and where it hurts - the numeric types "
+    return lines + ["", "Per type along the curve: where more data helps and where it hurts - the numeric types "
                     "(abs dist, obj size, room size) are where the M2 pilot's answers collapsed.", ""]
 
 
@@ -319,15 +349,18 @@ def section_training(out: Path) -> list[str]:
         p = out / f
         if p.exists():
             env.update(dict(ln.split("=", 1) for ln in p.read_text().split() if "=" in ln))
+    eff = int(env.get("EFF_BATCH", 128) or 128)
     if env:
-        lines += ["Budget: " + " · ".join(f"{k} {v}" for k, v in env.items()) + " (steps x 128 = samples per arm)", ""]
+        lines += ["Budget: " + " · ".join(f"{k} {v}" for k, v in env.items()) + f" (steps x {eff} = samples per arm)", ""]
         n = int(env.get("N_TRAIN", 0) or 0)
         if n:
-            lines += [" · ".join(f"{st} {int(env[k]) * 128 / n:.2f} epochs" for st, k in (("S1", "S1_STEPS"), ("S2", "S2_STEPS"))
-                                 if k in env), ""]
+            lines += [" · ".join(f"{st} {int(env[k]) * eff / n:.2f} epochs" for st, k in
+                                 (("S1", "S1_STEPS"), ("S2", "S2_STEPS"), ("each arm", "STEPS")) if k in env), ""]
     lines += ["| run | steps | first -> last loss | last inj (L0..) | samples/s | peak mem | skipped | sync | "
               "elapsed | notes |", "|---|---|---|---|---|---|---|---|---|---|"]
     logs = sorted(out.glob("p1_*_smoke_*.log")) + sorted(out.glob("s[12]_*.log"))
+    if RUN == "run3":
+        logs = [out / f"{n}.log" for n in ("calib",) + ARMS_RUN3 if (out / f"{n}.log").exists()]
     for log in logs:
         name = log.stem.removeprefix("p1_")
         info = parse_train_log(log)
@@ -357,7 +390,8 @@ def section_training(out: Path) -> list[str]:
                      f"{float(last['loss']):.3f} | {last['inj']} | {sps:.1f} | {mem} | {last['skip']} | "
                      f"{last['sync']} | {fmt_hours(rows)} | {'; '.join(notes)} |")
     lines += ["", "`inj` = per-layer ||injection|| / ||vision hidden||; above 3 the geometry drowns the image "
-              "(M2 at lr 1e-3: 15-30).", ""]
+              "(M2 at lr 1e-3: 15-30)." + (" Gated arms: `gate` = the mean ± sd of the per-token gate g over the visual "
+              "tokens (the share of geometry in each fused token)." if RUN == "run3" else ""), ""]
     return lines
 
 
@@ -375,7 +409,8 @@ def load_probe(path: Path) -> list[dict]:
 def section_probe(out: Path) -> list[str]:
     """The holdout probe train.py runs every --probe-every steps (HoldoutProbe): when, if ever, real geometry starts
     beating shuffled geometry, and what the answers look like along the way - the path, not just the endpoint."""
-    files = sorted(out.glob("s[12]_*/probe.jsonl"))
+    files = sorted(out.glob("s[12]_*/probe.jsonl")) if RUN != "run3" else \
+        [out / a / "probe.jsonl" for a in ARMS_RUN3 if (out / a / "probe.jsonl").exists()]
     if not files:
         return []
     lines = ["## Holdout probe during training (loss, lower is better)", "",
@@ -418,6 +453,8 @@ def section_ablation(out: Path) -> list[str]:
     found = False
     files = [("S1 (projector only)", "p5_ablation_s1.json"), ("S2 (LoRA)", "p7_ablation_s2.json"),
              ("2B S2 (LoRA)", "p7_ablation_2b.json")]
+    if RUN == "run3":
+        files = [("gated vs control (the VSI-style holdout)", "ablation_gated.json")]
     if RUN == "run2":
         files += [("weekend S1, new stack", "wk_p5_ablation_s1.json"), ("weekend S2, new stack", "wk_p7_ablation_s2.json"),
                   ("weekend S2 seed 1, new stack", "wk_p7_ablation_s2_seed1.json"),
@@ -461,6 +498,8 @@ def section_gate(out: Path) -> list[str]:
     cg = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(cg)
     table = {}
+    if RUN == "run3":
+        return section_gate_run3(out, cg)
     for run in ("base", "base_video", "trained"):
         d = out / "gate" / run
         try:
@@ -487,6 +526,47 @@ def section_gate(out: Path) -> list[str]:
     chk = out / "gate_check.txt"
     if chk.exists():
         lines += ["check_gate.py output:", "", "```", chk.read_text().strip(), "```", ""]
+    return lines
+
+
+def section_gate_run3(out: Path, cg) -> list[str]:
+    """Run 3: the two base runs (gate/) and each trained arm's own run (gate_<arm>/trained)."""
+    lines = ["## Pre-registered gate (lmms-eval, eval_path=live3r)", ""]
+    dirs = {"base": out / "gate" / "base", "base_video": out / "gate" / "base_video"}
+    dirs.update({a: out / f"gate_{a}" / "trained" for a in ("plain", "gated", "gated_raw")})
+    table: dict[str, dict[str, float]] = {}
+    for run, d in dirs.items():
+        try:
+            res = cg.latest_results(d)
+        except (FileNotFoundError, json.JSONDecodeError, KeyError):
+            continue
+        for task, want in cg.PRIMARY.items():
+            m = cg.numeric_metrics(res.get(task, {}))
+            k = next((k for k in m if k.split(",")[0] == want), None)
+            if k is not None:
+                v = m[k]
+                table.setdefault(task, {})[run] = 100 * v if abs(v) <= 1.0 else v
+    if not table:
+        return lines + ["No gate results yet (`gate/base`, `gate/base_video`, `gate_<arm>/trained`).", ""]
+    cols = list(dirs)
+    lines += ["| task | " + " | ".join(cols) + " |", "|---|" + "---|" * len(cols)]
+    for task, v in table.items():
+        best = max((v[r] for r in ("base", "base_video") if r in v), default=None)
+        cells = []
+        for r in cols:
+            if r not in v:
+                cells.append("-")
+            elif r.startswith("base") or best is None:
+                cells.append(f"{v[r]:.2f}")
+            else:
+                cells.append(f"{v[r]:.2f} ({v[r] - best:+.2f})")
+        lines.append(f"| {task} | " + " | ".join(cells) + " |")
+    lines += ["", "(Δ against the base's better format.) Gate 1: vsibench Δ >= +1.0 · Gate 2: videomme Δ >= -1.0 · "
+              "MMStar reported only.", ""]
+    for a in ("plain", "gated", "gated_raw"):
+        chk = out / f"gate_check_{a}.txt"
+        if chk.exists():
+            lines += [f"check_gate.py, {a}:", "", "```", chk.read_text().strip(), "```", ""]
     return lines
 
 
@@ -520,7 +600,7 @@ def section_status(out: Path) -> list[str]:
     done = {p.stem for p in out.glob("*.done")}
     skipped = {p.name.removesuffix(".skipped") for p in out.glob("*.skipped")}
     failed_roles = {p.name.removesuffix(".failed") for p in out.glob("*.failed")}
-    phases = PHASES_RUN2 if RUN == "run2" else PHASES
+    phases = {"run2": PHASES_RUN2, "run3": PHASES_RUN3}.get(RUN, PHASES)
     for key, label in phases:
         hit = re.compile(rf"FAILED {re.escape(key)}\b")   # "p1" must not match a "p1e" failure
         state = ("done" if key in done else "skipped" if key in skipped else
@@ -542,6 +622,8 @@ def section_status(out: Path) -> list[str]:
 
 def section_diagnostic(out: Path) -> list[str]:
     """Run 2: the throughput diagnostic (scripts/diagnose_throughput.py) and the calibrated budget."""
+    if RUN == "run3":
+        return section_data_run3(out)
     if RUN != "run2":
         return []
     lines = ["## Throughput: diagnostic and budget", ""]
@@ -575,16 +657,54 @@ def section_diagnostic(out: Path) -> list[str]:
     return lines
 
 
+def section_data_run3(out: Path) -> list[str]:
+    """Run 3: what the data preparation kept, the calibrated budget, the one-step profile."""
+    lines = ["## Data and budget", ""]
+    prep = out / "PREPARED.md"
+    if prep.exists():
+        body = [ln for ln in prep.read_text(errors="replace").splitlines() if ln.startswith(("|", "**"))]
+        lines += [ln for ln in body if ln.startswith("|")] + [""] + [ln for ln in body if ln.startswith("**")] + [""]
+    else:
+        lines += ["Mix not prepared yet (`PREPARED.md`).", ""]
+    dm = out / "reference_data" / "DATA.md"
+    if dm.exists():
+        ov = [ln for ln in dm.read_text(errors="replace").splitlines() if "in VSI-Bench" in ln]
+        lines += [f"Data pass: `{dm}` ({len(ov)} datasets with scene ids in their paths)."]
+        hits = [ln for ln in ov if "**0 in VSI-Bench**" not in ln.replace(", **0 in VSI-Bench**", "")]
+        lines += (["Scene overlap with VSI-Bench found - read DATA.md:", "", *hits] if any(
+            re.search(r"\*\*[1-9]\d* in VSI-Bench\*\*", ln) for ln in ov) else ["No VSI-Bench scene in the training paths."]) + [""]
+    b = out / "budget.env"
+    if b.exists():
+        env = dict(ln.split("=", 1) for ln in b.read_text().split() if "=" in ln)
+        n, eff = int(env.get("N_TRAIN", 0) or 0), int(env.get("EFF_BATCH", 64) or 64)
+        steps, sps = int(env.get("STEPS", 0) or 0), float(env.get("CALIB_SPS", 0) or 0)
+        lines += ["Budget: " + " · ".join(f"{k} {v}" for k, v in env.items()), ""]
+        if n and steps:
+            lines += [f"- each arm: {steps} steps x {eff} = {steps * eff:,} samples = {steps * eff / n:.2f} of a pass of "
+                      f"{n:,}" + (f" at {sps:.2f} samples/s = {steps * eff / sps / 3600:.1f} h" if sps else "")
+                      + " (the reference: 2.03 M samples, 6.48 samples/s, 87 h)", ""]
+    prof = out / "d1_profile" / "profile.txt"
+    if prof.exists():
+        head = prof.read_text(errors="replace").splitlines()
+        cut = next((i for i, ln in enumerate(head) if ln.startswith("== by CPU")), len(head))
+        lines += ["One training step of the gated arm, profiled (d1):", "", "```", *head[:min(cut, 26)], "```", ""]
+    return lines
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("out", nargs="?", default="outputs/weekend")
-    ap.add_argument("--run", choices=("weekend", "run2"), default=None,
+    ap.add_argument("--run", choices=("weekend", "run2", "run3"), default=None,
                     help="which run's phases and comparisons (default: the RUN file in the output directory)")
     args = ap.parse_args()
     out = Path(args.out)
     global RUN
     RUN = args.run or ((out / "RUN").read_text().strip() if (out / "RUN").exists() else "weekend")
-    if RUN == "run2":
+    if RUN == "run3":
+        parts = ["# Run 3 report - our implementation of the reference design, on the VG-LLM data", "",
+                 f"Generated {datetime.now():%Y-%m-%d %H:%M} from `{out}`. Plan and reading guide: docs/SERVER_RUN3.md; "
+                 "the design: docs/REFERENCE_70_ANALYSIS.md §6-7.", ""]
+    elif RUN == "run2":
         parts = ["# Run 2 report - Sensenova, one epoch per arm, new stack", "",
                  f"Generated {datetime.now():%Y-%m-%d %H:%M} from `{out}`. Plan and reading guide: docs/SERVER_RUN2.md; "
                  "why this run: docs/SERVER_RESULTS_20260929.md.", ""]

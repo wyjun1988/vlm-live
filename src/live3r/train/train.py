@@ -230,7 +230,8 @@ class HoldoutProbe:
         self.path = out_dir / "probe.jsonl"
         self.no_geometry = bool(getattr(args, "no_geometry", False))
         self.ds = SpatialVQADataset(
-            ann_path=args.probe_ann, media_root=args.media_root, prompt=prompt, spec=live.spec,
+            ann_path=args.probe_ann, media_root=getattr(args, "probe_media_root", None) or args.media_root,
+            prompt=prompt, spec=live.spec,
             geom_long_side=cfg.geometry.image_size, geom_unit=getattr(live.geometry, "patch_size", 16),
             data_cfg=cfg.data, max_samples=args.probe_n, seed=args.seed, require_media=True)
         self.items: list[dict] | None = None
@@ -310,7 +311,8 @@ class HoldoutProbe:
                     got = self._generate(it, g)
                     if got is not None:
                         gens.append({"id": it.get("id"), "truth": got[1], "answer": got[0]})
-            self.live.injector.clear()
+            if self.live.injector is not None:
+                self.live.injector.clear()
             mean = {k: (sum(v) / len(v) if v else None) for k, v in loss.items()}
             paired = list(zip(loss["real"], loss["shuffled"]))
             row = {"step": step, "n": len(items), "loss": mean,
@@ -331,7 +333,8 @@ class HoldoutProbe:
         except Exception as exc:  # noqa: BLE001 - the probe must never take the run down
             logger.warning("probe at step %d failed: %r", step, exc)
             try:
-                self.live.injector.clear()
+                if self.live.injector is not None:
+                    self.live.injector.clear()
             except Exception:  # noqa: BLE001
                 pass
             return None
@@ -376,6 +379,9 @@ def build_model(args, cfg: Live3RConfig, is_main: bool) -> Live3RModel:
     if model.pose_projector is not None:
         for p in model.pose_projector.parameters():
             p.requires_grad_(True)
+    if model.input_fusion is not None:
+        for p in model.input_fusion.parameters():
+            p.requires_grad_(True)
 
     if args.stage == "sft":
         if cfg.lora.enabled:
@@ -388,7 +394,7 @@ def build_model(args, cfg: Live3RConfig, is_main: bool) -> Live3RModel:
                 logger.info("S1 결과 로드: %d/%d 텐서 (%s)", loaded, len(state), args.init_from)
             if loaded == 0:
                 raise RuntimeError(f"{args.init_from} 에서 로드된 텐서가 0개다 — 키가 안 맞는다")
-        elif is_main and not no_geometry:
+        elif is_main and not no_geometry and cfg.fusion.mode != "gated_input":   # gated_input is one stage by design
             logger.warning(
                 "S2(sft) 를 S1 정렬 없이 시작한다 — LLM 이 기하를 무시하는 지름길을 배울 수 있다. "
                 "--init-from 으로 S1 결과를 넣는 걸 권장."
@@ -397,6 +403,38 @@ def build_model(args, cfg: Live3RConfig, is_main: bool) -> Live3RModel:
             logger.info("--no-geometry: plain SFT reference - the encoder is never run, the projector stays at "
                         "its zero-init (so an eval that loads these weights injects nothing)")
     return model
+
+
+def build_dataset(args, cfg: Live3RConfig, live: Live3RModel, prompt: PromptBuilder, rank: int, is_main: bool):
+    """--ann + --media-root (one annotation file), or --mix over the registry (MixtureDataset: one part per source,
+    each with its own media root; subsets and repeats fixed by --seed alone, so every rank and every resume sees the
+    same mixture)."""
+    def part(ann, media, max_samples=None):
+        return SpatialVQADataset(
+            ann_path=ann, media_root=media, prompt=prompt, spec=live.spec, geom_long_side=cfg.geometry.image_size,
+            geom_unit=getattr(live.geometry, "patch_size", 16), data_cfg=cfg.data, max_samples=max_samples,
+            seed=args.seed + rank,
+            require_media=args.stage == "align",  # S1: a text-only record has no gradient path
+        )
+
+    mix = getattr(args, "mix", None)
+    if not mix:
+        if not (args.ann and args.media_root):
+            raise SystemExit("give --ann and --media-root, or --mix")
+        return part(args.ann, args.media_root, args.max_samples)
+    from ..data.mixture import MixtureDataset, load_registry, resolve_mix
+
+    sources = resolve_mix(mix, load_registry(args.registry, getattr(args, "data_root", None)))
+    ds = MixtureDataset(
+        sources, lambda s: part(s.annotation_for_training(args.prepared_dir), s.media_root, args.max_samples),
+        seed=args.seed)
+    if is_main:
+        logger.info("mix %r: %d sources, %s samples per pass", mix, len(sources), f"{len(ds):,}")
+        for name, n_file, n_pass, share in ds.summary():
+            src = next(s for s in sources if s.name == name)
+            logger.info("  %-22s %9s records -> %9s samples (%5.1f %%)  %s", name, f"{n_file:,}", f"{n_pass:,}",
+                        100 * share, src.annotation_for_training(args.prepared_dir))
+    return ds
 
 
 def dump_samples(ds: SpatialVQADataset, prompt: PromptBuilder, n: int) -> None:
@@ -446,6 +484,10 @@ def train(args) -> int:
     if args.max_length:
         cfg.data.max_length = args.max_length
 
+    if cfg.fusion.mode == "none" and not args.no_geometry:
+        args.no_geometry = True
+        if is_main:
+            logger.info("fusion.mode none: nothing to inject - the geometry encoder is not run (as --no-geometry)")
     model = build_model(args, cfg, is_main)
     model.to(device)
     if args.grad_checkpointing:
@@ -458,22 +500,12 @@ def train(args) -> int:
 
     if is_main:
         s = live.trainable_parameter_summary()
-        logger.info("파라미터: 전체 %.2fB / 학습 %.1fM (프로젝터 %.1fM, LoRA %.1fM)",
-                    s["total"] / 1e9, s["trainable"] / 1e6, s["projector"] / 1e6, s["lora"] / 1e6)
+        logger.info("파라미터: 전체 %.2fB / 학습 %.1fM (프로젝터 %.1fM, fusion %.2fM, LoRA %.1fM) · fusion.mode %s",
+                    s["total"] / 1e9, s["trainable"] / 1e6, s["projector"] / 1e6, s["fusion"] / 1e6, s["lora"] / 1e6,
+                    cfg.fusion.mode)
 
     prompt = PromptBuilder.from_model(live)
-    ds = SpatialVQADataset(
-        ann_path=args.ann,
-        media_root=args.media_root,
-        prompt=prompt,
-        spec=live.spec,
-        geom_long_side=cfg.geometry.image_size,
-        geom_unit=getattr(live.geometry, "patch_size", 16),
-        data_cfg=cfg.data,
-        max_samples=args.max_samples,
-        seed=args.seed + rank,
-        require_media=args.stage == "align",  # S1: a text-only record has no gradient path
-    )
+    ds = build_dataset(args, cfg, live, prompt, rank, is_main)
     if is_main and args.dump_samples:
         dump_samples(ds, prompt, args.dump_samples)
 
@@ -594,6 +626,7 @@ def train(args) -> int:
     micro = 0
     stop_early = False
     guard = DivergenceGuard()
+    by_source: dict[str, int] = {}          # samples per data source on this rank (the mixture, as trained)
     t_start = time.perf_counter()
     skipped = 0
     run_loss, run_n = 0.0, 0
@@ -626,7 +659,8 @@ def train(args) -> int:
                    for k in ("pixel_values", "image_grid_thw", "pixel_values_videos", "video_grid_thw")
                    if k in batch}
             measure = is_main and ((step + 1) % args.log_every == 0) and micro == args.grad_accum - 1
-            live.injector.measure = measure
+            if live.injector is not None:
+                live.injector.measure = measure
 
             is_sync = (micro == args.grad_accum - 1)
             ctx = ddp.no_sync() if (world > 1 and not is_sync) else contextlib.nullcontext()
@@ -659,7 +693,8 @@ def train(args) -> int:
                     if is_sync:
                         (loss / args.grad_accum).backward()
                     loss = loss.detach() * 0.0
-            live.injector.clear()  # 역전파 재계산까지 끝난 뒤에만 비운다
+            if live.injector is not None:
+                live.injector.clear()  # 역전파 재계산까지 끝난 뒤에만 비운다
             if device.type == "mps":
                 # MPS 캐시 할당기는 모양이 제각각인 샘플마다 새 버퍼를 잡고 잘 놓지 않는다. 상한 기본값이
                 # 권장 작업 세트의 1.7배(32GB 맥에서 ~45GB)라 물리 메모리를 넘겨 스왑으로 빠진다
@@ -669,6 +704,7 @@ def train(args) -> int:
             t_fb += t0 - t2
             run_loss += float(loss.detach())
             run_n += 1
+            by_source[batch.get("data_source", "?")] = by_source.get(batch.get("data_source", "?"), 0) + 1
             skipped += int(batch.get("retries", 0))
             samples_since += 1
             micro += 1
@@ -698,15 +734,19 @@ def train(args) -> int:
                 dt = time.perf_counter() - t_last
                 sps = all_mean(samples_since / max(dt, 1e-9), world, device) * world
                 if is_main:
-                    ratios = " ".join(f"L{k}:{v:.3f}" for k, v in sorted(live.injector.last_ratio.items()))
-                    worst = max(live.injector.last_ratio.values(), default=0.0)
+                    last_ratio = live.injector.last_ratio if live.injector is not None else {}
+                    ratios = " ".join(f"L{k}:{v:.3f}" for k, v in sorted(last_ratio.items()))
+                    worst = max(last_ratio.values(), default=0.0)
                     if worst > args.inj_warn:
                         # M2 실측(2026-09-24): lr 1e-3 이면 10스텝 만에 레이어 0 비율이 15~30 이 된다.
                         # 잔차 스트림 노름은 깊이에 따라 커지므로 레이어 0 에서 같은 주입이 상대적으로 가장 크다.
                         logger.warning(
                             "기하 주입이 비전 표현을 압도한다 (최대 비율 %.1f > %.1f) — 시각 정보가 묻힌다. "
                             "lr 을 낮춰라 (S1 권장 3e-5).", worst, args.inj_warn)
-                    gates = " ".join(f"{p.gate.item():+.2f}" for p in live.projectors)
+                    if getattr(live.injector, "last_gate", None) is not None:   # gated_input: the per-token mix
+                        gates = "g {:.3f}±{:.3f}".format(*live.injector.last_gate)
+                    else:
+                        gates = " ".join(f"{p.gate.item():+.2f}" for p in live.projectors if p.gate is not None) or "-"
                     if device.type == "cuda":
                         mem = f"{torch.cuda.max_memory_allocated(device) / 1e9:.1f}GB"
                     elif device.type == "mps":  # 살아 있는 텐서 / 드라이버 전체(캐시 포함 — 스왑 위험의 지표)
@@ -770,6 +810,10 @@ def train(args) -> int:
         if donors is not None:
             logger.info(donors.summary())
         logger.info(guard.summary())
+        tot = max(1, sum(by_source.values()))
+        logger.info("samples by source (rank 0): %s", " · ".join(
+            f"{k} {v} ({100 * v / tot:.1f} %)" for k, v in sorted(by_source.items(), key=lambda kv: -kv[1])))
+        (out_dir / "sources_rank0.json").write_text(json.dumps(by_source, indent=1))
         logger.info("완료. 건너뛴 샘플 %d (랭크0 기준, 사유는 워커 로그의 '건너뜀' 경고 참고)", skipped)
     if world > 1:
         dist.barrier()
@@ -789,9 +833,18 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Live3R 학습 (torchrun 지원)")
     ap.add_argument("--config", required=True)
     ap.add_argument("--stage", choices=["align", "sft"], default="align")
-    ap.add_argument("--ann", required=True, help="어노테이션 (json/jsonl, 인덱스 있으면 지연 로딩)")
-    ap.add_argument("--media-root", "--video-root", dest="media_root", required=True,
+    ap.add_argument("--ann", default=None, help="어노테이션 (json/jsonl, 인덱스 있으면 지연 로딩)")
+    ap.add_argument("--media-root", "--video-root", dest="media_root", default=None,
                     help="이미지/영상 경로의 기준 디렉터리")
+    ap.add_argument("--mix", default=None,
+                    help="train on a mixture instead of --ann: a mix or dataset names of --registry, each optionally "
+                         "with a percentage ('ref70', 'all6,sqa3d%%200', 'spar_234k,sensenova_800k%%25')")
+    ap.add_argument("--registry", default="configs/data/vgllm.yaml", help="the dataset registry for --mix")
+    ap.add_argument("--data-root", default=None, help="override the registry's root (another mount point)")
+    ap.add_argument("--prepared-dir", default="data/vgllm",
+                    help="where scripts/prepare_mix.py wrote <name>.jsonl + index (lazy loading); a source without "
+                         "one is read from its annotation file")
+    ap.add_argument("--probe-media-root", default=None, help="media root of --probe-ann (default: --media-root)")
     ap.add_argument("--output", required=True)
     ap.add_argument("--init-from", default=None, help="S2 에서 S1 결과(프로젝터)를 이어받는다")
     # 설정 덮어쓰기 (스모크용)

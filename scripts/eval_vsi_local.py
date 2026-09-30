@@ -119,7 +119,7 @@ def detect_objects(live, pb, frame, vocab, device, max_new_tokens: int = 256):
     from live3r.data.vision import prepare_image, tokens_per_step
     from live3r.serve.object_map import detection_prompt, parse_detections
 
-    spec = replace(live.spec, max_pixels=640 * 480)          # native VSI resolution — small objects matter
+    spec = replace(live.spec, max_pixels=640 * 480, long_side=0)   # native VSI resolution — small objects matter
     pv, grid = prepare_image(frame, spec)
     ids = pb.build_query("<image>" + detection_prompt(vocab), [pb.image_segment(tokens_per_step(grid[0], spec))])
     ids = ids.to(device)

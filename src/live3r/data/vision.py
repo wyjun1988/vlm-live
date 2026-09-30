@@ -45,6 +45,11 @@ class VisionSpec:
     #: 기본값은 lmms-eval qwen3_5 와 같게 (64~128)×32×32 → 이미지당 LLM 토큰 64~128개.
     min_pixels: int = 64 * 32 * 32
     max_pixels: int = 128 * 32 * 32
+    #: > 0: resize so the long side is this many pixels, each side rounded to a multiple of `factor`, instead of the
+    #: pixel range. The geometry encoder's rule (CUT3R: long side 512, `geometry_frame`), so the two token grids
+    #: coincide (a 2x2 merge of CUT3R's patch-16 grid = the LLM's 32-px grid) - the reference's operating point
+    #: (512: 16x9 = 144 tokens for 16:9 frames, 16x12 = 192 for 4:3).
+    long_side: int = 0
 
     @property
     def factor(self) -> int:
@@ -145,11 +150,20 @@ def unpatchify(flat: torch.Tensor, grid_thw: torch.Tensor, spec: VisionSpec) -> 
 
 
 # ---------------------------------------------------------------- 고수준 API
+def target_size(h: int, w: int, spec: VisionSpec) -> tuple[int, int]:
+    """The VLM input size of an h x w image: the pixel range (smart_resize, the official rule) or, with
+    `spec.long_side`, the long-side rule `geometry_frame` uses (same rounding, so the grids line up)."""
+    if spec.long_side > 0:
+        s, f = spec.long_side / max(h, w), spec.factor
+        return max(f, int(round(h * s / f)) * f), max(f, int(round(w * s / f)) * f)
+    return smart_resize(h, w, spec.factor, spec.min_pixels, spec.max_pixels)
+
+
 def prepare_image(img, spec: VisionSpec) -> tuple[torch.Tensor, torch.Tensor]:
-    """이미지 1장 → (pixel_values, image_grid_thw[1,3]). 공식 이미지 프로세서와 같은 결과."""
+    """이미지 1장 → (pixel_values, image_grid_thw[1,3]). 공식 이미지 프로세서와 같은 결과 (long_side 가 0 일 때)."""
     x = to_float01(img)
     _, _, h, w = x.shape
-    th, tw = smart_resize(h, w, spec.factor, spec.min_pixels, spec.max_pixels)
+    th, tw = target_size(h, w, spec)
     return patchify(normalize(resize01(x, (th, tw))), spec)
 
 
@@ -161,7 +175,7 @@ def prepare_video(frames, spec: VisionSpec) -> tuple[torch.Tensor, torch.Tensor]
     """
     x = to_float01(frames)
     _, _, h, w = x.shape
-    th, tw = smart_resize(h, w, spec.factor, spec.min_pixels, spec.max_pixels)
+    th, tw = target_size(h, w, spec)
     return patchify(normalize(resize01(x, (th, tw))), spec)
 
 

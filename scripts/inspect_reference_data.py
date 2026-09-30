@@ -34,6 +34,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
+from live3r.data.datasets import iter_json_records as iter_records  # noqa: E402
 from live3r.data.mixture import Source, load_registry  # noqa: E402
 
 IMAGE_EXT = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
@@ -50,28 +51,6 @@ COT = re.compile(r"<think>|</think>|step by step|let me|first,|therefore", re.I)
 
 
 # --------------------------------------------------------------------------------------------- reading
-def iter_records(path: Path):
-    """A JSON array (one record at a time, via raw_decode) or JSONL."""
-    with open(path, "rb") as f:
-        head = f.read(4096).lstrip()
-    if not head.startswith(b"["):
-        with open(path, errors="replace") as f:
-            for line in f:
-                if line.strip():
-                    yield json.loads(line)
-        return
-    text = path.read_text(errors="replace")
-    dec = json.JSONDecoder()
-    i, n = text.index("[") + 1, len(text)
-    while True:
-        while i < n and text[i] in " \t\r\n,":
-            i += 1
-        if i >= n or text[i] == "]":
-            return
-        obj, i = dec.raw_decode(text, i)
-        yield obj
-
-
 def conversations(rec: dict) -> list[dict]:
     conv = rec.get("conversations")
     if isinstance(conv, str):

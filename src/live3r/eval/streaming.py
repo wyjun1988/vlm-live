@@ -460,7 +460,7 @@ class StreamingSession:
                 raise ValueError("장면 지도는 점·포즈를 내는 기하 인코더(CUT3R)가 필요하다 — dummy 는 안 된다")
             from dataclasses import replace
 
-            self.map_spec = replace(model.spec, max_pixels=map_max_pixels)
+            self.map_spec = replace(model.spec, max_pixels=map_max_pixels, long_side=0)
 
     # ------------------------------------------------------------------ 인제스트
     @torch.no_grad()

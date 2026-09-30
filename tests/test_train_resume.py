@@ -195,3 +195,51 @@ def test_profile_writes_a_table_of_the_profiled_micro_steps(monkeypatch, tmp_pat
     _run(monkeypatch, tmp_path, out, "--max-steps", "1", "--grad-accum", "4", "--save-every", "0", "--profile", "2")
     text = (out / "profile.txt").read_text()
     assert "--profile 2 micro-steps" in text and "by CPU time" in text and "aten::" in text
+
+
+@needs_tok
+def test_gated_fusion_trains_on_a_mixture_of_images_and_frame_directories(monkeypatch, tmp_path):
+    """--mix over a registry: two sources with their own media roots (image records; videos as frame directories,
+    given as images), gated input fusion in one stage. Both sources are trained on; the fusion is saved."""
+    from PIL import Image
+
+    from live3r.train import train as T
+
+    rng = np.random.default_rng(0)
+    root = tmp_path / "vg"
+    (root / "train").mkdir(parents=True)
+    img_recs, vid_recs = [], []
+    for i in range(6):
+        d = root / "media/a"
+        d.mkdir(parents=True, exist_ok=True)
+        Image.fromarray(rng.integers(0, 255, (64, 96, 3), dtype=np.uint8)).save(d / f"{i}.jpg")
+        img_recs.append({"id": f"a{i}", "images": [f"a/{i}.jpg"],
+                         "conversations": [{"from": "human", "value": "<image>How far?"}, {"from": "gpt", "value": "2 m"}]})
+        v = root / "media_b/vids" / f"v{i}"
+        v.mkdir(parents=True)
+        for k in range(6):
+            Image.fromarray(rng.integers(0, 255, (48, 64, 3), dtype=np.uint8)).save(v / f"{k:03d}.jpg")
+        vid_recs.append({"id": f"b{i}", "video": f"vids/v{i}",
+                         "conversations": [{"from": "human", "value": "<video>\nWhat moves?"}, {"from": "gpt", "value": "A cup."}]})
+    (root / "train/a.json").write_text(json.dumps(img_recs))
+    (root / "train/b.json").write_text(json.dumps(vid_recs))
+    reg = tmp_path / "reg.yaml"
+    reg.write_text(f"root: {root}\ndatasets:\n  a: {{annotation: train/a.json, media: media}}\n"
+                   "  b: {annotation: train/b.json, media: media_b}\n")
+    cfg = yaml.safe_load(open("configs/live3r_dummy.yaml"))
+    cfg["geometry"].update(tap_layers=[23], expose_pose_token=False)
+    cfg["fusion"] = {"mode": "gated_input", "merge_size": 2, "gate_bias_init": -1.0}
+    cfg["data"] = {"video_as_images": True, "video_min_frames": 2, "video_max_frames": 3, "vlm_long_side": 128}
+    (tmp_path / "gated.yaml").write_text(yaml.safe_dump(cfg))
+    out = tmp_path / "out"
+    argv = ["train", "--config", str(tmp_path / "gated.yaml"), "--base-model", "tiny", "--tokenizer", TOK,
+            "--geometry", "dummy", "--stage", "sft", "--mix", "a,b%50", "--registry", str(reg),
+            "--prepared-dir", str(tmp_path / "none"), "--output", str(out), "--device", "cpu", "--workers", "0",
+            "--grad-accum", "3", "--max-steps", "3", "--lr", "1e-3", "--log-every", "1", "--warmup-ratio", "0"]
+    monkeypatch.setattr(sys, "argv", argv)
+    assert T.main() == 0
+    state = torch.load(out / "final.pt")
+    assert any(k.startswith("input_fusion.") for k in state) and any(k.startswith("projectors.0.") for k in state)
+    seen = json.load(open(out / "sources_rank0.json"))
+    assert set(seen) == {"a", "b"} and sum(seen.values()) == 9
+    assert json.load(open(out / "config.json"))["fusion"]["mode"] == "gated_input"

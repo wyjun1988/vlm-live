@@ -1,5 +1,12 @@
 # 서버 다음 진행사항 — 2026-09-23 (09-24 M2 실측 반영)
 
+> ## 2026-09-30 — next: run 3 (after run 2)
+> **Run [`docs/SERVER_RUN3.md`](SERVER_RUN3.md)**: `scripts/server_run3.sh`, one command on every node. Our
+> implementation of the 70.83 reference's design (gated input fusion, long side 512, one stage) trained on the VG-LLM
+> data mix, against plain SFT at equal data. Before it, when convenient: `python scripts/inspect_reference_data.py`
+> (data only, CPU) and send `outputs/reference_data/reference_data_bundle.tar.gz` - the SPAR marks need its record
+> format. Why: [`docs/REFERENCE_70_ANALYSIS.md`](REFERENCE_70_ANALYSIS.md).
+>
 > ## 2026-09-30 — start here: run 2
 > **Run [`docs/SERVER_RUN2.md`](SERVER_RUN2.md)**: `scripts/server_run2.sh`, one `ROLE` per node (`real`, `control`,
 > `sft`, `recover`). One epoch per arm on the fixed stack (linear patch embed, fla, budget from the production
