@@ -41,6 +41,8 @@ DEFAULTS = {
                "20260728_140541_results.json",
     "our_cut3r": "checkpoints/cut3r_512_dpt_4_64.pth",
     "out": "outputs/reference_70",
+    # second pass (2026-09-30): what the first bundle could not show - the dataset annotations of the training mix,
+    # the gated-token fusion code, their own 1 fps latency profiles, the train.log
 }
 RUN_NAME = "qwen3.5-4b-allcot-sqa-gt-cut3r-lora2"
 SECRET = re.compile(r"(?i)((?:api[_-]?key|token|secret|passw(?:or)?d|wandb_api_key|hf_token)\s*[=:]\s*)(\S+)")
@@ -321,7 +323,7 @@ def grep(root: Path, pattern: str, globs: tuple[str, ...], limit: int = 80) -> l
     rx = re.compile(pattern, re.I)
     for g in globs:
         for p in sorted(root.rglob(g)):
-            if any(part in (".git", "__pycache__", "node_modules", "ckpt", "logs", "wandb") for part in p.parts):
+            if any(part in (".git", "__pycache__", "node_modules", "ckpt", "logs", "wandb", "lmms_eval") for part in p.parts):
                 continue
             try:
                 if p.stat().st_size > (1 << 20):
@@ -393,6 +395,122 @@ def section_repo(inv: Inventory, a) -> None:
         inv.copy(base / f, "repo/src/" + f)
 
 
+def training_package(vg: Path) -> Path:
+    """The package the training scripts run (src/<pkg>/train/train_*.py), e.g. src/qwen35."""
+    for sc in sorted((vg / "scripts" / "train").glob("*.sh")):
+        m = re.search(r"src/(\w+)/train/\w+\.py", sc.read_text(errors="replace"))
+        if m and (vg / "src" / m.group(1)).is_dir():
+            return vg / "src" / m.group(1)
+    return vg / "src"
+
+
+def section_data(inv: Inventory, a) -> None:
+    """Every dataset name the training scripts use, resolved in the training package's registry."""
+    inv.h("Training data (the datasets named in the training scripts, resolved)")
+    vg = Path(a.vg)
+    pkg = training_package(vg)
+    names: dict[str, set] = defaultdict(set)
+    for sc in sorted((vg / "scripts" / "train").glob("*.sh")):
+        for m in re.finditer(r'^DATASETS="([^"]+)"', sc.read_text(errors="replace"), re.M):
+            for n in m.group(1).split(","):
+                names[n.strip().split("%")[0]].add(sc.name)
+    if not names:
+        inv.add("No DATASETS= line in scripts/train/*.sh.")
+        return
+    inv.add(f"Training package: `{pkg.relative_to(vg)}`. {len(names)} dataset names across the training scripts.", "")
+    py = [p for p in pkg.rglob("*.py") if "__pycache__" not in p.parts]
+    text = {p: p.read_text(errors="replace") for p in py if p.stat().st_size < (2 << 20)}
+    inv.add("| dataset | used by (scripts) | defined in | annotation | size | records | media root |", "|---|---|---|---|---|---|---|")
+    for n in sorted(names):
+        hit, ann, root = "-", "-", "-"
+        for p, t in text.items():
+            # NAME = {...} dict entries (VG-LLM / Qwen2.5-VL finetune style), keyed by the upper-case name
+            m = re.search(rf"^{re.escape(n.upper())}\s*=\s*\{{(.*?)\}}", t, re.M | re.S) or \
+                re.search(rf"[\"']{re.escape(n)}[\"']\s*:\s*([A-Z0-9_]+|\{{.*?\}})", t, re.S)
+            if m:
+                hit = str(p.relative_to(vg))
+                body = m.group(1)
+                if re.fullmatch(r"[A-Z0-9_]+", body.strip()):
+                    m2 = re.search(rf"^{body.strip()}\s*=\s*\{{(.*?)\}}", t, re.M | re.S)
+                    body = m2.group(1) if m2 else body
+                am = re.search(r"annotation_path[\"']?\s*[:=]\s*[\"']([^\"']+)", body)
+                rm = re.search(r"data_path[\"']?\s*[:=]\s*[\"']([^\"']+)", body)
+                ann = am.group(1) if am else "-"
+                root = rm.group(1) if rm else "-"
+                break
+        size, recs = "-", "-"
+        ap_ = Path(ann) if ann != "-" else None
+        if ap_ is not None and not ap_.is_absolute():
+            ap_ = vg / ap_
+        if ap_ is not None and ap_.is_file():
+            size = human(ap_.stat().st_size)
+            try:
+                if ap_.suffix == ".jsonl":
+                    recs = str(sum(1 for _ in open(ap_, "rb")))
+                elif ap_.stat().st_size < (1500 << 20):
+                    d = json.loads(ap_.read_text())
+                    recs = str(len(d)) if isinstance(d, (list, dict)) else "?"
+                else:
+                    recs = "(too large to load)"
+            except Exception as exc:  # noqa: BLE001
+                recs = f"({type(exc).__name__})"
+        inv.add(f"| {n} | {', '.join(sorted(names[n]))[:80]} | `{hit}` | `{ann}` | {size} | {recs} | `{root}` |")
+    for p in py:
+        if re.search(r"annotation_path", text.get(p, "")):
+            inv.copy(p, "repo/" + str(p.relative_to(vg)))
+
+
+def section_fusion(inv: Inventory, a) -> None:
+    """The model code of the training package: the geometry merger, the feature fusion, the encoder call."""
+    inv.h("Geometry fusion in the training package")
+    vg = Path(a.vg)
+    pkg = training_package(vg)
+    hits = grep(pkg, r"gated_token|feature_fusion|geometry_merger|class \w*(Fusion|Merger)\w*|geometry_encoder\(|"
+                     r"reference_frame|geometry_layer_index", ("*.py",), 150)
+    inv.code("\n".join(hits) or "(no match)")
+    for f, _ in Counter(h.split(":")[0] for h in hits).most_common(8):
+        inv.copy(pkg / f, "repo/" + str((pkg / f).relative_to(vg)))
+
+
+def section_profiling(inv: Inventory, a) -> None:
+    """Their own latency profiles of the 70.83 model at 1 fps on long videos (profiling/results/*/profile.jsonl)."""
+    inv.h("Their latency profiles (profiling/results)")
+    root = Path(a.vg) / "profiling" / "results"
+    files = sorted(root.glob("*/profile.jsonl")) if root.is_dir() else []
+    if not files:
+        inv.add(f"No `{root}/*/profile.jsonl`.")
+        return
+    for f in files:
+        rows = []
+        for ln in f.read_text(errors="replace").splitlines():
+            try:
+                rows.append(json.loads(ln))
+            except json.JSONDecodeError:
+                continue
+        keys = sorted({k for r in rows for k in r})
+        num = {k: [r[k] for r in rows if isinstance(r.get(k), (int, float))] for k in keys}
+        summ = ", ".join(f"{k} median {statistics.median(v):.3g}" for k, v in num.items() if v)[:1500]
+        inv.add(f"- `{f.parent.name}`: {len(rows)} rows · keys {keys[:30]}", f"  {summ}")
+        inv.copy(f, f"profiling/{f.parent.name}/profile.jsonl")
+    for f in sorted(root.glob("*/run.log"))[:8]:
+        tail = f.read_text(errors="replace").splitlines()[-40:]
+        (inv.bundle / "profiling" / f.parent.name).mkdir(parents=True, exist_ok=True)
+        (inv.bundle / "profiling" / f.parent.name / "run.log.tail").write_text(redact("\n".join(tail)))
+
+
+def section_trainlog(inv: Inventory, a) -> None:
+    """The head and tail of the checkpoint's train.log (the whole file is over the copy limit)."""
+    p = Path(a.lora) / "train.log"
+    if not p.is_file():
+        return
+    lines = p.read_text(errors="replace").splitlines()
+    (inv.bundle / "lora").mkdir(parents=True, exist_ok=True)
+    (inv.bundle / "lora" / "train.log.head_tail").write_text(redact("\n".join(lines[:300] + ["...", ""] + lines[-300:])))
+    inv.h("train.log (head and tail copied to the bundle)")
+    inv.add(f"{len(lines)} lines; first lines:", "")
+    inv.code(redact("\n".join(lines[:40]))[:6000])
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     for k, v in DEFAULTS.items():
@@ -405,7 +523,8 @@ def main() -> int:
                 "docs/QUESTIONS_FOR_EXISTING_SYSTEM.md: data (repo: registry + training script), evaluation protocol "
                 "(results config + eval script + samples prompt), per-type scores (results), encoder operating point "
                 "and fusion (repo, checkpoint tensor groups), recipe (adapter config + training args).")
-    for section in (section_paths, section_lora, section_results, section_samples, section_repo):
+    for section in (section_paths, section_lora, section_results, section_samples, section_repo, section_data,
+                    section_fusion, section_profiling, section_trainlog):
         try:
             section(inv, a)
         except Exception as exc:  # noqa: BLE001 - one unreadable part must not hide the others
