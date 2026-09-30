@@ -3,7 +3,7 @@
 Script: `scripts/server_run2.sh`. Why: `docs/SERVER_RESULTS_20260929.md` — the weekend arms trained on ~2 % of an
 epoch (16 GPU-s per sample against a planned ~0.42), plain SFT beat the geometry arm by 1.6, and the key comparison
 (real − control) was never produced. The lead's call (2026-09-29): run one proper training round, take it as the
-reference, recover every missing weekend result; 4B first; the existing-system (70.2) recipe arrives on 09-30 and
+reference, recover every missing weekend result; 4B first; the existing-system (70.2) recipe arrives on 09-30/10-01 and
 feeds the round after this one.
 
 ## What changed relative to the weekend
@@ -14,7 +14,7 @@ feeds the round after this one.
 | **flash-linear-attention** installed by p0 (`--no-deps`); d0 compares it with the torch fallback | transformers silently runs the Gated DeltaNet in pure torch without it (~67k extra kernel launches per sample) |
 | **d0 diagnostic** (`scripts/diagnose_throughput.py`, ~10 min, first node) | settles both suspects; its verdict lines go to STATUS and the report; a fla mismatch bans fla on every node |
 | **Budget from the production configuration**: calib = 12 S1 + 12 S2 steps at 8 GPUs × accum 16 | the weekend sized from a smoke at accum 2 that ran 1.7× slower, so every arm stopped at ~53 % of its hours |
-| S1 short (5 % of an epoch = 41.5k samples), S2 **one epoch** (830k), capped by `S1_HOURS=4`, `S2_HOURS=22` | S1 learned the answer format (both arms alike); the content question needs data (the weekend S2 had 17.4k samples) |
+| S1 short (5 % of an epoch = 41.5k samples), S2 **one epoch** (830k), capped by `S1_HOURS=6`, `S2_HOURS=72`; no-go below half an epoch (`GO_EPOCHS`) | S1 learned the answer format (both arms alike); the content question needs data (the weekend S2 had 17.4k samples) |
 | Control donors: buffer 64 (`--donor-buffer`) | the weekend's 8 gave a same-shape donor only 60 % of the time — a real/control confound |
 | **VSI sharded 8 ways per node** + `scripts/merge_vsi_shards.py`; 12 h timeout per shard | the weekend's 6 h cap killed whole evaluations; the merge re-aggregates with lmms-eval's own function (tested: identical to one process) |
 | Every trained arm evaluated **plain, + hint, + room facts** | every comparison gets a same-prompt partner (the weekend mixed prompt conditions) |
@@ -23,43 +23,48 @@ feeds the round after this one.
 | Gate: a 4-sample `--verbosity DEBUG` smoke first; a gate step is done only if lmms-eval wrote results | the weekend's three gate runs exited 0 with no results and left false markers |
 | Report: run-2 comparisons, a Debiased column, every FAILED line, the d0 / budget section | results §8.2 |
 
-## Start (4 nodes × 8 H100)
+## Start — one command, runs to the end
 
 ```bash
 cd /group-volume/wooyeol/vlm-live && git pull && mkdir -p outputs/run2
-ROLE=real     nohup bash scripts/server_run2.sh > outputs/run2/master.real.log 2>&1 &      # node 1
-ROLE=control  nohup bash scripts/server_run2.sh > outputs/run2/master.control.log 2>&1 &   # node 2
-ROLE=sft      nohup bash scripts/server_run2.sh > outputs/run2/master.sft.log 2>&1 &       # node 3
-ROLE=recover  nohup bash scripts/server_run2.sh > outputs/run2/master.recover.log 2>&1 &   # node 4
+nohup bash scripts/server_run2.sh > outputs/run2/master.$(hostname -s).log 2>&1 &
 tail -f outputs/run2/STATUS
 ```
 
-Fewer nodes: roles run in order on one node, e.g. `ROLE=real,control`. The weekend's checkpoints and results are
-read from `outputs/weekend` (`WK=`) and never modified. Allocation shorter than ~1.5 days: lower `S2_HOURS` (the
-budget then covers less than an epoch, and the report says how much).
+Nothing else is needed: no `ROLE`, no check-ins, no manual stop. On **one node** (8 H100) the script runs every role
+in order. The **same command on more nodes** shares the work — each node claims the next unfinished role; a node whose
+heartbeat stops for 30 min loses its claims and the role resumes on the next free node. Re-running the command after
+an interruption resumes (markers, `resume.pt`, finished VSI shards are kept). `bash scripts/server_run2.sh stop` ends a
+node's run. The weekend's `outputs/weekend` is read, never modified.
 
-## Timeline (estimates; d0 and calib replace them with measurements within the first hour)
+Order (the queue): **real → control → sft → recover → joint**, after p0 / d0 / calib / d1 which run once.
 
-| phase | if the fixes work (~0.5 GPU-s/sample) | if they do not (16 GPU-s/sample) |
+| step | what | time if the fixes work (~16 samples/s per node) |
 |---|---|---|
-| p0 + d0 + calib | ~30 min | ~2 h |
-| S1 (41.5k samples) | ~45 min | capped at 4 h (~0.5 % of an epoch) |
-| S2 (1 epoch) | ~14-18 h | capped at 22 h (~1.5 % of an epoch — stop and profile instead, see below) |
-| evaluations per arm (3 VSI views + curve, 8 shards) | ~1-2 h | ~20 h |
-| recover node: 26 VSI runs + 4 ablations, then joint | ~5-8 h, then joint | days — reduce the list |
+| p0, d0, calib, d1 | environment + fla; diagnostic (~10 min); 12 + 12 steps at the production settings -> budget.env; one profiled training step | ~40 min |
+| real | S1 (5 % of an epoch) -> S2 (one epoch) -> VSI plain / hint / room facts, S1, learning curve | ~16 h + ~2 h |
+| control | the same with shuffled geometry -> VSI -> holdout ablations S1, S2 (real vs control) | ~16 h + ~2 h |
+| sft | plain SFT, no geometry, one epoch -> VSI -> latency -> gate (4-sample debug smoke first) | ~15 h + ~6 h |
+| recover | the weekend on this stack (26 VSI runs, 4 ablations) | ~5-8 h |
+| joint | S2 without S1, one epoch -> VSI | ~16 h + ~1 h |
+| **total, one node** | | **~3.5-4 days** (4 nodes: ~1 day) |
 
-**Go / no-go (read STATUS within the first hour):** the `calib:` line prints the measured samples/s per node. At
-≥ ~8 samples/s the plan above holds. Below ~2 samples/s the fixes did not take — stop the training roles
-(`bash scripts/server_run2.sh stop`), keep `recover` running, and send `d0_throughput.txt` + `calib_s*.log`.
+**The go / no-go is automatic.** calib measures the real speed; if the S2 cap (`S2_HOURS=72`) then covers less than
+`GO_EPOCHS=0.5` of an epoch — the weekend's speed would give 0.15 — the script writes `NO_GO` with the numbers, skips
+the training roles, still runs the weekend re-evaluation and the diagnostics, and the report leads with the reason.
+Between 0.5 and 1 epoch it trains what fits (e.g. 3 samples/s -> 0.89 epoch) and the report says how much. To run
+after fixing the stack: `rm outputs/run2/{NO_GO,calib.done,role.*.skipped}` and start the command again.
 
-## Roles
+Knobs (environment variables, all optional): `S2_EPOCHS_WANT` (1), `S2_HOURS` (72), `S1_FRAC` (0.05), `S1_HOURS`
+(6), `GO_EPOCHS` (0.5), `JOINT` (1; 0 drops the joint role), `VSI_HOURS` (12 per shard), `DONOR_BUFFER` (64).
+`ROLE=real,control` runs just those roles in that order (the old one-role-per-node mode, no claims).
 
-| node | work |
-|---|---|
-| `real` | S1 real → S2 real → VSI `s2_real`, `s2_real_hint`, `s2_real_routed_room`, `s1_real`, curve `s2_real_step*` |
-| `control` | the same with shuffled geometry (`s2_control*`, `s1_control`) → holdout ablations `p5_ablation_s1`, `p7_ablation_s2` (real vs control) |
-| `sft` | plain SFT, no geometry → VSI `s2_sft*` → latency (gate 3) → gate smoke → gate base / base_video / trained (`s2_real`) → verdict |
-| `recover` | the weekend on this stack: `wk_s2_{real,control,sft}`, `base_hint`, seed-1 pair, `wk_s2_joint`, `wk_s1_*`, hint views, `base_plain` (image + video), `base_routed_room`, the 2B (`base_*_2b`, `wk_s2_*_2b` + hint); ablations `wk_p5_ablation_s1`, `wk_p7_ablation_s2{,_seed1}`, `wk_p7_ablation_2b`; then **S2 joint** (no S1, one epoch) → VSI |
+## What happens when something fails
+
+A failed step writes a `FAILED` line naming its log and the role is marked `failed`; everything that does not need its
+output continues, and steps that do stop waiting at once ("s2_real will not come: role real failed") instead of
+hanging. Tested on the M2 with stubbed training and evaluation: one node end to end, two nodes sharing the queue (each
+role ran once; d0, calib and the profile once), the automatic no-go at three speeds, and a failing S2 real.
 
 ## Reading the report — pre-registered (write nothing else into the conclusions)
 
@@ -78,7 +83,8 @@ Every Δ is also read on VSI-Debiased (the report's last column); per-type claim
 
 ## What to send back
 
-- `outputs/run2/REPORT.md`, `outputs/run2/d0_throughput.txt`, `outputs/run2/budget.env`, `grep FAILED outputs/run2/STATUS`.
+- `outputs/run2/REPORT.md`, `outputs/run2/d0_throughput.txt`, `outputs/run2/d1_profile/profile.txt`,
+  `outputs/run2/budget.env`, `grep FAILED outputs/run2/STATUS` (and `NO_GO` if it exists).
 - The VSI result files `outputs/run2/vsi/*.json` (not the shards) — the per-question analysis needs them.
 - If anything failed: the log each FAILED line names (last 50 lines).
 - Checkpoints only on request (`s2_{real,control,sft}/final.pt` with sha256): M2-side ablations use them.

@@ -45,13 +45,13 @@ PHASES = [("p0", "shared preflight"), ("p2_vsibench", "VSI-Bench data"), ("p2_mm
           ("role.real", "role real"), ("role.control", "role control"), ("role.sft", "role sft"), ("role.small", "role small")]
 # run 2 (scripts/server_run2.sh): one epoch per arm, the new stack (linear patch embed, fla), all weekend checkpoints
 # re-evaluated on the same stack under the prefix wk_
-PHASES_RUN2 = [("p0", "shared preflight"), ("d0", "throughput diagnostic (first node)"), ("calib", "speed calibration"),
+PHASES_RUN2 = [("d0", "throughput diagnostic"), ("calib", "speed calibration + budget"), ("d1", "one-step profile"),
                ("s1_real", "S1 real (short)"), ("s1_control", "S1 control (short)"), ("s2_real", "S2 real"),
                ("s2_control", "S2 control"), ("s2_sft", "plain SFT (no geometry)"), ("recover_vsi", "weekend re-evaluation"),
                ("recover_abl", "weekend ablations"), ("s2_joint", "S2 joint (no S1)"), ("gate_base", "gate: base"),
                ("gate_base_video", "gate: base video"), ("gate_trained", "gate: trained"), ("gate_check", "gate verdict"),
                ("role.real", "role real"), ("role.control", "role control"), ("role.sft", "role sft"),
-               ("role.recover", "role recover")]
+               ("role.recover", "role recover"), ("role.joint", "role joint")]
 COMPARISONS_RUN2 = [
     ("S2: real - control (geometry content)  <- key", "s2_real:oracle-image", "s2_control:oracle-image"),
     ("S2 real - plain SFT (value of the whole geometry path)", "s2_real:oracle-image", "s2_sft:oracle-image"),
@@ -518,15 +518,21 @@ def section_status(out: Path) -> list[str]:
         lines += [f"Nodes seen: {', '.join(nodes)} · roles: {', '.join(roles) or '-'}", ""]
     lines += ["| step | state |", "|---|---|"]
     done = {p.stem for p in out.glob("*.done")}
+    skipped = {p.name.removesuffix(".skipped") for p in out.glob("*.skipped")}
+    failed_roles = {p.name.removesuffix(".failed") for p in out.glob("*.failed")}
     phases = PHASES_RUN2 if RUN == "run2" else PHASES
     for key, label in phases:
         hit = re.compile(rf"FAILED {re.escape(key)}\b")   # "p1" must not match a "p1e" failure
-        state = "done" if key in done else ("FAILED" if any(hit.search(ln) for ln in failed) else "-")
+        state = ("done" if key in done else "skipped" if key in skipped else
+                 "FAILED" if key in failed_roles or any(hit.search(ln) for ln in failed) else "-")
         lines.append(f"| {key} {label} | {state} |")
     other = sorted(k for k in done if k not in {k for k, _ in phases} and not k.startswith(("p0.", "p1.")))
     if other:
         lines.append(f"| other markers | {', '.join(other)} |")
     lines.append("")
+    if (out / "NO_GO").exists():
+        lines += [f"**NO-GO (the script's speed check): {(out / 'NO_GO').read_text().strip()}** The training roles were "
+                  "skipped; see the diagnostic section.", ""]
     if failed:
         lines += [f"Failures (from STATUS, all {len(failed)}):", "", "```", *failed, "```", ""]
     if status:
@@ -548,6 +554,11 @@ def section_diagnostic(out: Path) -> list[str]:
         lines += ["```", *keep, "```", ""]
     else:
         lines += ["Diagnostic not run yet (`d0_throughput.txt`).", ""]
+    prof = out / "d1_profile" / "profile.txt"
+    if prof.exists():
+        head = prof.read_text(errors="replace").splitlines()
+        cut = next((i for i, ln in enumerate(head) if ln.startswith("== by CPU")), len(head))
+        lines += ["One training step, profiled (d1, top operators by CUDA time):", "", "```", *head[:min(cut, 26)], "```", ""]
     b = out / "budget.env"
     if b.exists():
         env = dict(ln.split("=", 1) for ln in b.read_text().split() if "=" in ln)

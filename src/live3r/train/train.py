@@ -581,6 +581,16 @@ def train(args) -> int:
                     args.probe_ann, args.probe_every, args.probe_gen)
         probe.run(step)                      # the starting point (zero-init projector: real == shuffled)
 
+    # --profile N: a torch.profiler table of N micro-steps (after 1 skipped + 1 warm-up) -> <output>/profile.txt.
+    # Where a training sample's time actually goes, measured instead of inferred (SERVER_RESULTS_20260929 §2.3, C4).
+    prof = None
+    if args.profile and is_main:
+        from torch.profiler import ProfilerActivity, profile, schedule
+
+        acts = [ProfilerActivity.CPU] + ([ProfilerActivity.CUDA] if device.type == "cuda" else [])
+        prof = profile(activities=acts, schedule=schedule(wait=1, warmup=1, active=args.profile))
+        prof.__enter__()
+
     micro = 0
     stop_early = False
     guard = DivergenceGuard()
@@ -662,6 +672,8 @@ def train(args) -> int:
             skipped += int(batch.get("retries", 0))
             samples_since += 1
             micro += 1
+            if prof is not None:
+                prof.step()
 
             if micro < args.grad_accum:
                 continue
@@ -741,6 +753,15 @@ def train(args) -> int:
         if step >= total_steps or stop_early:
             break
 
+    if prof is not None:
+        prof.__exit__(None, None, None)
+        ka = prof.key_averages()
+        tables = [f"--profile {args.profile} micro-steps on {device} (after 1 skipped + 1 warm-up)"]
+        if device.type == "cuda":
+            tables += ["", "== by CUDA time", ka.table(sort_by="cuda_time_total", row_limit=30)]
+        tables += ["", "== by CPU time", ka.table(sort_by="cpu_time_total", row_limit=30)]
+        (out_dir / "profile.txt").write_text("\n".join(tables))
+        logger.info("profile written to %s", out_dir / "profile.txt")
     if is_main:
         probe.run(step)                      # the endpoint (skipped when this step was just probed)
         _save(live, out_dir / "final.pt")
@@ -829,6 +850,9 @@ def main() -> int:
     ap.add_argument("--geom-cache", type=int, default=0, help="LRU 용량 (0=끔)")
     ap.add_argument("--log-every", type=int, default=10)
     ap.add_argument("--save-every", type=int, default=1000)
+    ap.add_argument("--profile", type=int, default=0,
+                    help="profile N micro-steps with torch.profiler (after 1 skipped + 1 warm-up; rank 0) and write "
+                         "<output>/profile.txt - run with --max-steps 1 --grad-accum N+2 on one GPU")
     ap.add_argument("--resume-every", type=int, default=0,
                     help="write <output>/resume.pt every N steps (default: with every --save-every checkpoint)")
     ap.add_argument("--dump-samples", type=int, default=0, help="학습 전 샘플 N개를 사람이 읽게 출력")

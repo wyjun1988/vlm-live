@@ -187,3 +187,11 @@ def test_resume_every_writes_the_resume_point_without_step_checkpoints(monkeypat
     _run(monkeypatch, tmp_path, out, "--max-steps", "2", "--save-every", "0", "--resume-every", "1")
     assert (out / "resume.pt").exists() and not list(out.glob("step*.pt"))
     assert torch.load(out / "resume.pt")["step"] == 2
+
+
+@needs_tok
+def test_profile_writes_a_table_of_the_profiled_micro_steps(monkeypatch, tmp_path):
+    out = tmp_path / "prof"
+    _run(monkeypatch, tmp_path, out, "--max-steps", "1", "--grad-accum", "4", "--save-every", "0", "--profile", "2")
+    text = (out / "profile.txt").read_text()
+    assert "--profile 2 micro-steps" in text and "by CPU time" in text and "aten::" in text

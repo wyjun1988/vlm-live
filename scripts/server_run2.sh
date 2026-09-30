@@ -1,25 +1,27 @@
 #!/usr/bin/env bash
 # Run 2: one training round, one epoch per arm, as the new reference - and every weekend checkpoint re-evaluated on
 # the same stack. Why and how to read it: docs/SERVER_RUN2.md (the analysis behind it: docs/SERVER_RESULTS_20260929.md).
-# Up to 4 nodes x 8 H100, one ROLE per node; the nodes coordinate through the shared outputs directory (markers).
 #
-#   on every node:  cd /group-volume/wooyeol/vlm-live && git pull && mkdir -p outputs/run2
-#   node 1:  ROLE=real     nohup bash scripts/server_run2.sh > outputs/run2/master.real.log 2>&1 &
-#   node 2:  ROLE=control  nohup bash scripts/server_run2.sh > outputs/run2/master.control.log 2>&1 &
-#   node 3:  ROLE=sft      nohup bash scripts/server_run2.sh > outputs/run2/master.sft.log 2>&1 &
-#   node 4:  ROLE=recover  nohup bash scripts/server_run2.sh > outputs/run2/master.recover.log 2>&1 &
-#   tail -f outputs/run2/STATUS           # every node writes here, lines tagged [role]
+# ONE command, run to the end without anyone stepping in:
+#   cd /group-volume/wooyeol/vlm-live && git pull && mkdir -p outputs/run2
+#   nohup bash scripts/server_run2.sh > outputs/run2/master.$(hostname -s).log 2>&1 &
+# On one node (8 H100) it does everything in order (~3 days if the throughput fixes work). The SAME command on more
+# nodes shares the work: each node claims the next unfinished role from the queue below (a claim lives on the shared
+# volume; a node whose heartbeat stops for 30 min loses its claims, and the role resumes on the next node free).
+#   tail -f outputs/run2/STATUS           # every node writes here, lines tagged with its host
 #   bash scripts/server_run2.sh stop      # on a node: ends that node's run and everything it started
 #
-#   every node   p0 environment (installs flash-linear-attention if missing), then waits for d0 and calib
-#   first node   d0: scripts/diagnose_throughput.py (~10 min, one GPU) -> d0_throughput.txt; bans fla if it does not
-#                match the torch path. calib: 12 S1 + 12 S2 steps at the production settings (8 GPUs x accum 16) ->
-#                the measured speed sizes every arm (budget.env) - the weekend sized from a slower smoke
+#   first        p0 environment on every node (installs flash-linear-attention if missing); once: d0 diagnostic
+#                (scripts/diagnose_throughput.py, ~10 min: patch embed, fla vs torch), calib (12 S1 + 12 S2 steps at
+#                the production settings -> the measured speed sizes every arm, budget.env) and d1 (a torch.profiler
+#                table of one training step). If at the measured speed S2_HOURS covers less than GO_EPOCHS of an epoch,
+#                NO_GO is written: the training roles are skipped with the reason, the rest still runs.
 #   real         S1 real (short) -> S2 real (1 epoch) -> VSI plain / hint / room facts, S1, learning curve
 #   control      the same with shuffled geometry (control) -> VSI -> holdout ablations S1 + S2 (real vs control)
 #   sft          plain SFT, no geometry (1 epoch) -> VSI -> latency -> lmms-eval gate (debug smoke first)
-#   recover      the weekend: base runs + every checkpoint re-evaluated on this stack (wk_*), ablations;
-#                then S2 joint (no S1, 1 epoch) -> VSI
+#   recover      the weekend: base runs + every checkpoint re-evaluated on this stack (wk_*), ablations
+#   joint        S2 joint (no S1, 1 epoch) -> VSI
+# ROLE=real,control,... runs just those roles, in that order, without claims (the old one-role-per-node mode).
 # Resumable: a finished step leaves a marker and is skipped on a re-run; a training arm continues from resume.pt.
 set -uo pipefail
 
@@ -38,8 +40,12 @@ export TOKENIZERS_PARALLELISM=false
 # hours at the calibrated speed. Pairs share one budget file, so real and control see the same steps.
 S1_FRAC="${S1_FRAC:-0.05}"          # S1 samples as a fraction of an epoch (0.05 = 41.5k; the weekend had 13.6k)
 S2_EPOCHS_WANT="${S2_EPOCHS_WANT:-1}"
-S1_HOURS="${S1_HOURS:-4}"; S2_HOURS="${S2_HOURS:-22}"; JOINT_HOURS="${JOINT_HOURS:-$S2_HOURS}"
-JOINT="${JOINT:-1}"                 # the recover node trains S2 joint (no S1) after the weekend re-evaluation
+S1_HOURS="${S1_HOURS:-6}"; S2_HOURS="${S2_HOURS:-72}"; JOINT_HOURS="${JOINT_HOURS:-$S2_HOURS}"
+JOINT="${JOINT:-1}"                 # the joint role (S2 without S1) is in the queue
+# go / no-go, decided by the script: if at the calibrated speed the S2 cap covers less than this many epochs, a
+# "1 epoch" arm would silently become another small-fraction run (the weekend's 2 %) - the training roles are skipped.
+# 0.5 epoch in 72 h = 1.6 samples/s per node (the weekend stack ran at 0.5).
+GO_EPOCHS="${GO_EPOCHS:-0.5}"
 EFF_BATCH=128; ACCUM=16             # 8 GPUs x 16 micro-steps
 DONOR_BUFFER="${DONOR_BUFFER:-64}"  # control arm: donors kept (the weekend's 8 gave a same-shape donor 60 % of the time)
 LR=3e-5; LORA_LR=1e-4
@@ -62,8 +68,14 @@ if [[ "${1:-}" == stop ]]; then
   echo "$(date '+%F %T') [$HOST] stopped by hand (pid $pid)" >> "$OUT/STATUS"
   exit 0
 fi
-ROLE="${ROLE:?set ROLE=real|control|sft|recover (or a comma list, run in order) - see docs/SERVER_RUN2.md}"
-RTAG=${ROLE//,/+}
+ROLE="${ROLE:-auto}"
+if [[ "$ROLE" == auto ]]; then
+  RTAG=$HOST
+  QUEUE=(real control sft recover); [[ "$JOINT" == 1 ]] && QUEUE+=(joint)
+else
+  RTAG=${ROLE//,/+}
+  QUEUE=(${ROLE//,/ })
+fi
 echo $$ > "$OUT/PID.$HOST"
 
 # ----------------------------------------------------------------------------------------------- helpers
@@ -80,9 +92,12 @@ sps_of()   { grep -ao '[0-9.]* samp/s' "$1" 2> /dev/null | tail -n "${2:-4}" \
 report()   { local t; t=$(mktemp "$OUT/REPORT.md.XXXXXX") || return 1
              python scripts/weekend_report.py "$OUT" > "$t" 2> "$OUT/report.$RTAG.err" && mv "$t" "$OUT/REPORT.md" || rm -f "$t"; }
 base_model() { python -c "import sys, yaml; print(yaml.safe_load(open(sys.argv[1]))['base_model'])" "$1"; }
-wait_marker() {   # marker, hours before giving up
-  local n=$1 limit; limit=$(hours_s "${2:-1}" 1 0); local t=0
+wait_marker() {   # marker, hours before giving up, [the role that produces it: stop waiting once it failed/skipped]
+  local n=$1 limit role=${3:-}; limit=$(hours_s "${2:-1}" 1 0); local t=0
   while ! is_done "$n"; do
+    if [[ -n "$role" && ( -f "$OUT/role.$role.failed" || -f "$OUT/role.$role.skipped" ) ]]; then
+      log "$n will not come: role $role $( [[ -f "$OUT/role.$role.failed" ]] && echo failed || echo was skipped)"; return 1
+    fi
     (( t >= limit )) && { fail "waited ${2:-1} h for $n - not produced (is the node that makes it running?)"; return 1; }
     sleep 60; t=$(( t + 60 ))
   done
@@ -98,6 +113,19 @@ with_lock() {     # a shared-filesystem lock for one-time work any node may do (
   rm -rf "$OUT/lock.$name"
   return $rc
 }
+
+alive() { [[ -n "$(find "$OUT/alive.$1" -mmin -30 2> /dev/null)" ]]; }   # heartbeat within 30 min
+_claim() {   # role: 0 if this node may run it now
+  local r=$1 d="$OUT/claim.$1" owner
+  if mkdir "$d" 2> /dev/null; then echo "$HOST" > "$d/owner"; return 0; fi
+  owner=$(cat "$d/owner" 2> /dev/null)
+  [[ "$owner" == "$HOST" ]] && return 0                           # our own claim: a restart on the same node
+  if [[ -n "$owner" ]] && ! alive "$owner"; then                   # the claimant stopped: take the role over
+    echo "$HOST" > "$d/owner"; log "took over role $r from $owner (no heartbeat for 30 min)"; return 0
+  fi
+  return 1
+}
+claim() { with_lock claims _claim "$1"; }
 
 # ============================================================================================ p0 environment
 p0_local() {
@@ -187,6 +215,18 @@ _calib() {
   log "calib: S1 $CALIB_SPS_S1 / S2 $CALIB_SPS_S2 samples/s per node (weekend: 0.5) -> S1 $S1_STEPS steps" \
       "($(awk -v s="$S1_STEPS" -v n="$N_TRAIN" 'BEGIN { printf "%.3f", s * 128 / n }') ep), S2 $S2_STEPS steps" \
       "($(awk -v s="$S2_STEPS" -v n="$N_TRAIN" 'BEGIN { printf "%.2f", s * 128 / n }') ep)"
+  # d1: where one training step's time goes (one GPU, a few minutes) - read with d0 whatever the verdict
+  on_gpu 0 timeout 2h python -m live3r.train.train --config "$CFG" --ann data/sensenova.jsonl --media-root "$MEDIA" \
+    --grad-checkpointing --stage sft --init-from "$OUT/calib_s1/final.pt" --lora-lr "$LORA_LR" --lr "$LR" \
+    --max-steps 1 --grad-accum 6 --profile 4 --save-every 0 --log-every 1 --output "$OUT/d1_profile" \
+    > "$OUT/d1_profile.log" 2>&1 && mark d1 || log "d1 profile failed - $OUT/d1_profile.log (not fatal)"
+  if awk -v st="$S2_STEPS" -v n="$N_TRAIN" -v g="$GO_EPOCHS" 'BEGIN { exit !(st * 128 / n < g) }'; then
+    printf 'at the calibrated %s samples/s per node one epoch takes %s h; the S2 cap of %s h covers %s epochs (< GO_EPOCHS %s).\n' \
+      "$CALIB_SPS_S2" "$(awk -v n="$N_TRAIN" -v s="$CALIB_SPS_S2" 'BEGIN { printf "%.0f", n / (s > 0 ? s : 1e-9) / 3600 }')" \
+      "$S2_HOURS" "$(awk -v st="$S2_STEPS" -v n="$N_TRAIN" 'BEGIN { printf "%.2f", st * 128 / n }')" "$GO_EPOCHS" > "$OUT/NO_GO"
+    log "NO-GO: $(cat "$OUT/NO_GO") Training roles are skipped; the weekend re-evaluation and the diagnostics" \
+        "(d0_throughput.txt, d1_profile/profile.txt) still run - send them."
+  fi
   mark calib
 }
 load_budget() { wait_marker calib 8 || return 1; source "$OUT/budget.env"; }   # shellcheck disable=SC1090
@@ -289,8 +329,8 @@ role_control() {
   chain control || return 1
   eval_arm s2_control "$OUT/s2_control/final.pt" "$CFG" || rc=1
   vsi_sharded s1_control --config "$CFG" --weights "$OUT/s1_control/final.pt" --modes oracle-image || rc=1
-  { wait_marker s1_real 24 && ablation 0 p5_ablation_s1 align "$OUT/s1_real/final.pt" "$OUT/s1_control/final.pt" "$CFG"; } & a=$!
-  { wait_marker s2_real 24 && ablation 1 p7_ablation_s2 sft "$OUT/s2_real/final.pt" "$OUT/s2_control/final.pt" "$CFG"; } & b=$!
+  { wait_marker s1_real 48 real && ablation 0 p5_ablation_s1 align "$OUT/s1_real/final.pt" "$OUT/s1_control/final.pt" "$CFG"; } & a=$!
+  { wait_marker s2_real 48 real && ablation 1 p7_ablation_s2 sft "$OUT/s2_real/final.pt" "$OUT/s2_control/final.pt" "$CFG"; } & b=$!
   wait_all $a $b || rc=1
   report
   return $rc
@@ -318,7 +358,7 @@ role_sft() {
   fi
   gate_job 0 base "$OUT/s2_sft/final.pt" & a=$!
   gate_job 1 base_video "$OUT/s2_sft/final.pt" & b=$!
-  { wait_marker s2_real 30 && gate_job 2 trained "$OUT/s2_real/final.pt"; } & c=$!
+  { wait_marker s2_real 48 real && gate_job 2 trained "$OUT/s2_real/final.pt"; } & c=$!
   wait_all $a $b $c || rc=1
   if is_done gate_base && is_done gate_base_video && is_done gate_trained; then
     local genv=(GENERAL=mmstar REFERENCE=)
@@ -365,38 +405,46 @@ role_recover() {
     if wait_all $a $b $c $d; then mark recover_abl; else rc=1; fi
     report
   fi
-  if [[ "$JOINT" == 1 ]]; then
-    { is_done calib || with_lock calib _calib; } && load_budget || return 1   # calibrates itself if alone
-    # joint: projector + LoRA from scratch with real geometry, no S1. Is the alignment stage needed?
-    train_arm s2_joint "$JOINT_HOURS" "$S2_EPOCHS" "$S2_SAVE" "$S2_PROBE" --stage sft --max-steps "$S2_STEPS" \
-      --lora-lr "$LORA_LR" || return 1
-    eval_arm s2_joint "$OUT/s2_joint/final.pt" "$CFG" || rc=1
-  fi
+  return $rc
+}
+role_joint() {   # projector + LoRA from scratch with real geometry, no S1: is the alignment stage needed?
+  local rc=0
+  train_arm s2_joint "$JOINT_HOURS" "$S2_EPOCHS" "$S2_SAVE" "$S2_PROBE" --stage sft --max-steps "$S2_STEPS" \
+    --lora-lr "$LORA_LR" || return 1
+  eval_arm s2_joint "$OUT/s2_joint/final.pt" "$CFG" || rc=1
   return $rc
 }
 
 # ============================================================================================ run
-log "started on $HOST at $(git log --oneline -1 2> /dev/null)"
-roles=(${ROLE//,/ })
-if ! is_done "p0.$RTAG"; then
+log "started on $HOST at $(git log --oneline -1 2> /dev/null) - roles: ${QUEUE[*]}"
+touch "$OUT/alive.$HOST"
+# heartbeat every 5 min (claims), REPORT.md every 30 min through the long phases
+( n=0; while true; do touch "$OUT/alive.$HOST"; (( n % 6 == 5 )) && report; n=$(( n + 1 )); sleep 300; done ) &
+REFRESH_PID=$!
+trap 'kill "$REFRESH_PID" 2> /dev/null' EXIT
+if ! is_done "p0.$HOST"; then
   log "p0 on $HOST"
-  if p0_local; then mark "p0.$RTAG"; else exit 1; fi
+  if p0_local; then mark "p0.$HOST"; else exit 1; fi
 fi
 is_done d0 || with_lock d0 _d0 || exit 1
 ban_fla_here
-for r in "${roles[@]}"; do   # the training roles need the budget; recover starts its evaluations right away
-  if [[ "$r" != recover ]]; then { is_done calib || with_lock calib _calib; } && load_budget || exit 1; break; fi
-done
-( while true; do sleep 1800; report; done ) &   # REPORT.md stays current through the long phases
-REFRESH_PID=$!
-trap 'kill "$REFRESH_PID" 2> /dev/null' EXIT
+{ is_done calib || with_lock calib _calib; } && load_budget || exit 1
 report
-for r in "${roles[@]}"; do
-  case "$r" in real|control|sft|recover) ;; *) fail "unknown role '$r'"; continue ;; esac
-  is_done "role.$r" && { log "role $r already finished"; continue; }
-  log "role $r starts"
-  if "role_$r"; then mark "role.$r"; else fail "role $r ended with failures (see the lines above)"; fi
+for r in "${QUEUE[@]}"; do
+  case "$r" in real|control|sft|recover|joint) ;; *) fail "unknown role '$r'"; continue ;; esac
+  is_done "role.$r" && continue
+  [[ -f "$OUT/role.$r.skipped" ]] && continue
+  if [[ "$ROLE" == auto ]]; then claim "$r" || continue; fi
+  if [[ "$r" != recover && -f "$OUT/NO_GO" ]]; then     # the speed check decided against training
+    log "role $r skipped: NO_GO - $(cat "$OUT/NO_GO")"; touch "$OUT/role.$r.skipped"; continue
+  fi
+  log "role $r starts on $HOST"
+  rm -f "$OUT/role.$r.failed"
+  if "role_$r"; then mark "role.$r"
+  else touch "$OUT/role.$r.failed"; fail "role $r ended with failures (see the lines above)"; fi
   report
 done
 report && log "REPORT: $OUT/REPORT.md"
-log "finished on $HOST"
+left=(); for r in real control sft recover joint; do
+  is_done "role.$r" || [[ -f "$OUT/role.$r.skipped" ]] || left+=("$r"); done
+log "finished on $HOST$([[ ${#left[@]} -gt 0 ]] && echo " - still running or failed elsewhere: ${left[*]}")"
