@@ -81,3 +81,72 @@ Second inspection pass (CPU, ~1 min, `python scripts/inspect_reference_system.py
 annotation file's path, size and record count; the gated-token fusion code; their 1-fps latency profiles; the head and
 tail of the checkpoint's `train.log`. The first bundle's searches were drowned by their lmms-eval fork (under `src/`);
 the second pass searches the training package only.
+
+---
+
+## 6. Second pass (2026-09-30, `outputs/reference_70_v2/`)
+
+### The data (all under `/group-volume/VG-LLM_data`, which we may use)
+
+| dataset | records | | dataset (CoT variant, `*_qwen_reasoning_jcho_cleaning.json`) | records |
+|---|---|---|---|---|
+| spar_234k | 234,277 | | spar_234k_cot | 87,433 |
+| llava_hound_64k | 63,750 | | llava_hound_64k_cot | 61,122 |
+| vlm3r_scannet | 53,821 | | vlm3r_scannet_cot | 24,898 |
+| vlm3r_scannetpp | 152,462 | | vlm3r_scannetpp_cot | 70,143 |
+| vlm3r_arkit | 1,375 | | vlm3r_arkit_cot | 770 |
+| sensenova_800k | 832,132 | | sensenova_800k_cot | 340,857 |
+| sqa3d | 79,445 | | scanqa | 26,515 |
+
+Also registered: vsi_590k (302,005), vsti_camera (66,513), vsti_camera_obj (48,628), spatial457_20k, robot datapacks.
+**The 70.83 run's mix reconciles exactly:** the six "all" sets (1,337,817) + the six CoT variants (585,223) + sqa3d +
+scanqa = 2,029,000 records against 31,704 planned steps × 64 = 2,029,056. Training input: images ≤ 576 tokens; a video
+becomes 4-8 frames (one per 2 s) given as images; SPAR records carry `spar_info` marks drawn onto the frames.
+
+### Their speed on the same cluster
+
+`train.log`: **6.48 samples/s on one 8-GPU node** (1.23 GPU-s per sample; 87 h for the 2.03 M-sample epoch) with
+DeepSpeed ZeRO-2, FlashAttention-3, gradient checkpointing, batch 1 × accumulation 8. Our weekend arms: 0.5 samples/s
+(16 GPU-s) — the cluster is fine, our software stack was not (run 2's d0 / calib measure ours; their environment is the
+proven fast one).
+
+Their own profiles of the 70.83 model (`profiling/results`, 1 fps sampling, whole video at query time, medians):
+
+| frames | visual tokens | CUT3R | vision tower | LLM prefill | video decode | total per question |
+|---|---|---|---|---|---|---|
+| 63 | 9,070 | 2.86 s | 0.13 s | 0.18 s | 1.87 s | 6.95 s |
+| 159 | 22,900 | 7.75 s | 0.32 s | 0.47 s | 3.79 s | 19.3 s |
+| 331 | 47,700 | 14.8 s | 0.67 s | 1.08 s | 8.84 s | 37.9 s |
+| 533 | 76,800 | 25.5 s | 1.11 s | 1.95 s | 21.2 s | 71.5 s |
+| 1,000 | 144,000 | 48 s | 2.05 s | 4.57 s | 31.7 s | 120 s |
+
+Per frame: CUT3R ~48 ms, vision ~2 ms; LLM prefill ~20-32 µs per token. Offline, everything happens after the
+question; live, CUT3R and the vision tower run as frames arrive, and a 32-keyframe prefix (8,192 tokens) prefills in
+~0.16 s — **their model on their stack fits the 1 s answer budget even without prefix caching.**
+
+### The fusion, exactly
+
+`GeometryFeatureMerger(mlp)`: CUT3R's final decoder tokens (768-d, patch 16) → 2×2 spatial merge → LayerNorm → Linear
+(3,072 → 4,096) → GELU → Linear (→ 2,560), i.e. one geometry token per visual token (both 32 px). `FeatureFusionModule
+(gated_token)`: `g = sigmoid(Linear([LN1(v), LN2(geo)]) → 1)`, `fused = (1 − g)·LN1(v) + g·LN2(geo)`, replacing the
+image embeddings at the LLM input. CUT3R runs over the sample's frames in one call, `reference_frame first`.
+
+## 7. Recommendation: make the 70.83 model live, rather than re-deriving it
+
+The reference already has the score; what it lacks is the live form — which is our harness (streaming CUT3R, causal
+keyframes, prefix cache, question-only latency). For VSI (questions at the end of a video) a causal selector that keeps
+a uniform subset of the stream sees nearly the frames offline sampling sees, and their stack is fast enough; so the open
+risks are narrow and measurable:
+1. **Port their architecture into our harness** (merger + gated-token fusion at the input, their CUT3R feature read,
+   their preprocessing and prompt; load the PEFT adapter + `modules_to_save`). Validate by reproducing their answers on
+   the 50 sample records we hold (greedy, same frames and prompt).
+2. **Evaluate it live** on VSI: streaming CUT3R over the keyframes (and at ~1 fps with the read-time scale calibration),
+   causal keyframe selection, measured question-time latency — the achievable live score.
+3. **Fine-tune only what the live form costs** (e.g. CUT3R features from the streaming state instead of an offline
+   pass), on their data mix, with their trainer or ours.
+
+Our deepstack / S1→S2 design becomes an optional A/B at equal data, not the main line. Run 2 (running) still settles
+our stack's speed and a Sensenova-only baseline for it.
+
+Third inspection pass needed for step 1 (CPU, ~1 min): their CUT3R wrapper, their lmms-eval model (frame
+preprocessing, prompt), the SPAR marker code, the training entry point, and 3 records of every dataset of the mix.

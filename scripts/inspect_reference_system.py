@@ -45,7 +45,8 @@ DEFAULTS = {
     # the gated-token fusion code, their own 1 fps latency profiles, the train.log
 }
 RUN_NAME = "qwen3.5-4b-allcot-sqa-gt-cut3r-lora2"
-SECRET = re.compile(r"(?i)((?:api[_-]?key|token|secret|passw(?:or)?d|wandb_api_key|hf_token)\s*[=:]\s*)(\S+)")
+SECRET = re.compile(r"(?i)\b((?:[A-Z0-9_]*API[_-]?KEY|[A-Z0-9_]*(?:ACCESS|AUTH|HF|HUB|WANDB|GITHUB|GH|OPENAI)[_-]?TOKEN|"
+                    r"SECRET[_-]?KEY|PASSW(?:OR)?D)\s*[=:]\s*[\"']?)([A-Za-z0-9_\-\.]{8,})")
 URL_CRED = re.compile(r"(https?://)[^/\s:@]+(?::[^/\s@]+)?@")
 TEXT_EXT = {".json", ".yaml", ".yml", ".txt", ".md", ".sh", ".py", ".cfg", ".toml", ".jsonl"}
 MAX_COPY = 2 << 20                     # copy text files up to 2 MB into the bundle
@@ -511,6 +512,67 @@ def section_trainlog(inv: Inventory, a) -> None:
     inv.code(redact("\n".join(lines[:40]))[:6000])
 
 
+PORT_GLOBS = (   # what porting their model into our live harness needs (relative to the repo)
+    "src/qwen35/model/geometry_encoders/*.py", "src/qwen35/model/cut3r/*.py", "src/qwen35/data/draw_marker.py",
+    "src/qwen35/train/train_qwen.py", "src/qwen35/train/argument.py", "src/qwen35/train/*.py",
+    "src/lmms_eval/models/simple/vgllm*.py", "src/lmms_eval/models/chat/vgllm*.py", "src/lmms_eval/models/*vgllm*.py",
+    "src/lmms_eval/tasks/vsibench/*.py", "src/lmms_eval/tasks/vsibench/*.yaml",
+)
+MIX_70 = ("spar_234k", "llava_hound_64k", "vlm3r_scannet", "vlm3r_scannetpp", "vlm3r_arkit", "sensenova_800k",
+          "spar_234k_cot", "llava_hound_64k_cot", "vlm3r_scannet_cot", "vlm3r_scannetpp_cot", "vlm3r_arkit_cot",
+          "sensenova_800k_cot", "sqa3d", "scanqa")
+
+
+def section_port(inv: Inventory, a) -> None:
+    """Files for porting (their CUT3R wrapper, eval model, SPAR marks) and 3 records of every dataset of the mix."""
+    inv.h("For porting: encoder wrapper, eval model, marker drawing; record samples of the 70.83 mix")
+    vg = Path(a.vg)
+    got = []
+    for g in PORT_GLOBS:
+        for f in sorted(vg.glob(g)):
+            if "__pycache__" in f.parts or ".ipynb_checkpoints" in f.parts:
+                continue
+            if inv.copy(f, "repo/" + str(f.relative_to(vg))):
+                got.append(str(f.relative_to(vg)))
+    inv.add(f"Copied {len(got)} files:", "")
+    inv.code("\n".join(got) or "(none found)")
+    pkg = training_package(vg)
+    reg = (pkg / "data" / "__init__.py")
+    text = reg.read_text(errors="replace") if reg.exists() else ""
+    out = inv.bundle / "records"
+    out.mkdir(parents=True, exist_ok=True)
+    inv.add("", "| dataset | annotation | first record keys | image / video field |", "|---|---|---|---|")
+    for n in MIX_70:
+        m = re.search(rf"^{re.escape(n.upper())}\s*=\s*\{{(.*?)\}}", text, re.M | re.S)
+        ap_ = re.search(r"annotation_path[\"']?\s*[:=]\s*[\"']([^\"']+)", m.group(1)).group(1) if m else None
+        p = Path(ap_) if ap_ else None
+        if p is None or not p.is_file():
+            inv.add(f"| {n} | `{ap_}` | (not found) | |")
+            continue
+        try:
+            if p.suffix == ".jsonl":
+                recs = []
+                with open(p, errors="replace") as f:
+                    for ln in f:
+                        recs.append(json.loads(ln))
+                        if len(recs) == 3:
+                            break
+            elif p.stat().st_size < (900 << 20):
+                d = json.loads(p.read_text(errors="replace"))
+                recs = (d[:3] if isinstance(d, list) else list(d.values())[:3])
+            else:
+                inv.add(f"| {n} | `{ap_}` | (too large for a sample: {human(p.stat().st_size)}) | |")
+                continue
+        except Exception as exc:  # noqa: BLE001
+            inv.add(f"| {n} | `{ap_}` | ({exc!r})[:80] | |")
+            continue
+        (out / f"{n}.first3.json").write_text(redact(json.dumps(recs, indent=1, ensure_ascii=False, default=str))[:200000])
+        r0 = recs[0] if recs else {}
+        vis = {k: (v if isinstance(v, str) else (f"list[{len(v)}]: {v[0] if v else ''}" if isinstance(v, list) else type(v).__name__))
+               for k, v in r0.items() if k in ("image", "images", "video", "spar_info")}
+        inv.add(f"| {n} | `{ap_}` | `{sorted(r0.keys())}` | `{json.dumps(vis, ensure_ascii=False)[:160]}` |")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     for k, v in DEFAULTS.items():
@@ -524,7 +586,7 @@ def main() -> int:
                 "(results config + eval script + samples prompt), per-type scores (results), encoder operating point "
                 "and fusion (repo, checkpoint tensor groups), recipe (adapter config + training args).")
     for section in (section_paths, section_lora, section_results, section_samples, section_repo, section_data,
-                    section_fusion, section_profiling, section_trainlog):
+                    section_fusion, section_profiling, section_trainlog, section_port):
         try:
             section(inv, a)
         except Exception as exc:  # noqa: BLE001 - one unreadable part must not hide the others
