@@ -91,6 +91,10 @@ in video mode (the offline protocol) and at every quarter checkpoint; the lmms-e
 general-ability target) per arm against base runs at this resolution; latency of the gated design; the holdout
 ablation gated vs control.
 
+Open details of the reference (template, resolution rule, CUT3R feature, other runs' scores - incl. its no-CoT
+"all" mix, our expected level): requested in [`docs/REFERENCE_70_REQUEST.md`](REFERENCE_70_REQUEST.md); answers that
+arrive before the start are folded into the configs.
+
 ## Knobs
 
 `MIX` (live | ref70 | all6 | any registry spec, e.g. `live,sqa3d%50`), `TRAIN_HOURS` (0 = no cap; > 0 caps each arm

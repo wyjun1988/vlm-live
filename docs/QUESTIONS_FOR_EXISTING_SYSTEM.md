@@ -12,6 +12,8 @@
 >   (two read-only passes, 2026-09-30; findings in `docs/REFERENCE_70_ANALYSIS.md`). **We do not take their code** -
 >   the local copies of their scripts were deleted; we implement the design ourselves. Their training data may be used:
 >   `configs/data/vgllm.yaml`, read by `scripts/inspect_reference_data.py` (data only).
+> - **2026-10-01: the remaining questions (settings, input samples, other runs' results - no code) are in
+>   [`docs/REFERENCE_70_REQUEST.md`](REFERENCE_70_REQUEST.md)**, the request to forward to the reference team.
 
 코드를 가져올 수 없으므로, 아래 항목을 그쪽 담당자에게 물어 채워주면 Live3R 이 **같은 데이터·같은 운영점**에서
 비교 가능해진다. 답이 없으면 추측으로 맞춰야 하고, 그러면 격차의 원인을 못 가린다.

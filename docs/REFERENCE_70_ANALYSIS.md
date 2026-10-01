@@ -174,3 +174,7 @@ reference-style start (LayerNorm on both streams, g = 0.5) changes 75 % of the f
 model but lowers the held-out loss (1.71 → 1.51): the LayerNorm alone makes the visual tokens 5.6× louder. A start
 without the norm and g = 0.018 stays at the base model (8 %, 1.72). Run 3 trains both (gated, gated_raw); the loss
 drop from louder visual tokens is a zero-shot idea of its own (BRAINSTORM I-44).
+
+What is left to ask (settings, rendered input samples, the geometry path's details, other runs' results incl. the
+no-CoT "all" mix, general-ability scores, environment): [`docs/REFERENCE_70_REQUEST.md`](REFERENCE_70_REQUEST.md)
+(2026-10-01, in Korean for the reference team). Answers that arrive before run 3 starts go into its configs.
