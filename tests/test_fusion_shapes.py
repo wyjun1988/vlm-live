@@ -56,3 +56,26 @@ def test_injector_adds_only_at_visual_positions():
     assert torch.allclose(out[0, 1], torch.ones(4))
     assert torch.allclose(out[0, 2], torch.ones(4))
     assert out[0, 3].abs().sum() == 0
+
+
+def test_merger_norm_before_the_merge_normalises_each_token():
+    """norm_position "before" (the reference's merger): a LayerNorm per C-dim token, then the 2x2 merge. Scaling one
+    token of a 2x2 block leaves the output unchanged; with the norm after the merge it does not."""
+    import torch
+
+    from live3r.fusion.projector import GeometryProjector
+
+    torch.manual_seed(0)
+    x = torch.randn(1, 16, 8)                      # a 4x4 grid of 8-dim tokens
+    y = x.clone()
+    y[0, 0] *= 10.0                                # token (0, 0): scaled
+    for pos, same in (("before", True), ("after", False)):
+        p = GeometryProjector(c_geo=8, d_llm=12, merge_size=2, zero_init=False, norm_position=pos)
+        assert p.norm.normalized_shape == ((8,) if pos == "before" else (32,))
+        a, b = p(x, (4, 4), (2, 2)), p(y, (4, 4), (2, 2))
+        assert a.shape == (1, 4, 12)
+        assert torch.allclose(a, b, atol=1e-4) is same, pos
+    import pytest
+
+    with pytest.raises(ValueError):
+        GeometryProjector(c_geo=8, d_llm=12, norm_position="middle")

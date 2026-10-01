@@ -63,6 +63,9 @@ class FusionConfig:
     merger_hidden: int = 0
     gate_norm: bool = True
     gate_bias_init: float = 0.0
+    # the merger's LayerNorm: "after" the 2x2 merge (over 4 x 768) or "before" it (over each 768-d token, as the 70.83
+    # reference's merger does - its checkpoint holds a 768-wide norm)
+    merger_norm: str = "after"
 
 
 @dataclass
@@ -162,6 +165,8 @@ class Live3RConfig:
             raise ValueError(f"data.marks must be 'skip', 'draw' or 'ignore', got {self.data.marks!r}")
         if self.patch_embed not in ("conv", "linear"):
             raise ValueError(f"patch_embed must be 'conv' or 'linear', got {self.patch_embed!r}")
+        if self.fusion.merger_norm not in ("after", "before"):
+            raise ValueError(f"fusion.merger_norm must be 'after' or 'before', got {self.fusion.merger_norm!r}")
         if self.fusion.mode == "gated_input" and len(self.geometry.tap_layers) != 1:
             raise ValueError(f"fusion.mode gated_input merges one geometry tap; geometry.tap_layers is "
                              f"{self.geometry.tap_layers} (CUT3R: (12,), its last decoder layer)")

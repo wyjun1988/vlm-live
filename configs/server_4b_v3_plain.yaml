@@ -25,6 +25,9 @@ lora:
   r: 16
   alpha: 32
   dropout: 0.05
+  # every linear layer of the LLM, as the reference's adapter (248 modules on the 4B; ours had left out in_proj_a/b)
+  target_modules: [q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj, in_proj_qkv, in_proj_z, in_proj_a,
+                   in_proj_b, out_proj]
 
 data:
   vlm_long_side: 512

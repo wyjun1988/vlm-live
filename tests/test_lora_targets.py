@@ -35,3 +35,25 @@ def test_apply_lora_rejects_unknown_names():
     m = build()
     with pytest.raises(RuntimeError, match="in_proj_qkvz"):
         apply_lora(m, LoRAConfig(target_modules=("q_proj", "in_proj_qkvz")), verbose=False)
+
+
+def test_run3_targets_every_llm_linear_like_the_reference_adapter():
+    """configs/server_4b_v3*.yaml: the reference's 12 target names - 8 per DeltaNet layer, 7 per attention layer,
+    nothing in the vision tower. On the 4B (24 + 8 layers) that is 248 modules, the count in its adapter."""
+    from test_train_step import build
+
+    from live3r.config import Live3RConfig
+    from live3r.model.lora import _resolve_targets
+
+    cfg = Live3RConfig.from_yaml("configs/server_4b_v3.yaml").lora
+    m = build()
+    names = _resolve_targets(m, cfg)
+    assert all(".language_model." in n for n in names)
+    per_layer: dict[int, int] = {}
+    for n in names:
+        layer = int(n.split(".layers.")[1].split(".")[0])
+        per_layer[layer] = per_layer.get(layer, 0) + 1
+    types = m.base.config.text_config.layer_types
+    for i, t in enumerate(types):
+        assert per_layer[i] == (7 if t == "full_attention" else 8), (i, t, per_layer[i])
+    assert 24 * 8 + 8 * 7 == 248

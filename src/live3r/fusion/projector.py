@@ -29,6 +29,8 @@ class GeometryProjector(nn.Module):
         hidden: the MLP's hidden width; None = d_llm × mlp_ratio.
         scalar_gate: the learned output scale (deepstack). The gated input fusion normalises this output right away,
             which would leave the scale without a gradient - it builds the projector without one.
+        norm_position: "after" the m×m merge (LayerNorm over C·m·m, ours) or "before" it (LayerNorm over each C-dim
+            token, then the merge - the 70.83 reference's merger).
 
     ⚠️ 초기화 교착 (2026-09-23 수정):
         예전엔 fc2=0 **그리고** gate=0 으로 뒀다. 출력이 fc2(h)·gate 라서
@@ -50,6 +52,7 @@ class GeometryProjector(nn.Module):
         dropout: float = 0.0,
         hidden: int | None = None,
         scalar_gate: bool = True,
+        norm_position: str = "after",
     ) -> None:
         super().__init__()
         self.c_geo = c_geo
@@ -58,7 +61,10 @@ class GeometryProjector(nn.Module):
         c_in = c_geo * self.merge_size * self.merge_size
         hidden = int(hidden) if hidden else int(d_llm * mlp_ratio)
 
-        self.norm = nn.LayerNorm(c_in)
+        if norm_position not in ("after", "before"):
+            raise ValueError(f"norm_position must be 'after' or 'before', got {norm_position!r}")
+        self.norm_position = norm_position
+        self.norm = nn.LayerNorm(c_in if norm_position == "after" else c_geo)
         self.fc1 = nn.Linear(c_in, hidden)
         self.act = nn.GELU()
         self.drop = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
@@ -91,6 +97,8 @@ class GeometryProjector(nn.Module):
         if c != self.c_geo:
             raise ValueError(f"기하 차원 {c} != 설정값 {self.c_geo}")
 
+        if self.norm_position == "before":
+            tokens = self.norm(tokens)
         x = tokens.transpose(1, 2).reshape(b, c, sh, sw)  # [B,C,h,w]
 
         m = self.merge_size
@@ -105,7 +113,8 @@ class GeometryProjector(nn.Module):
             x = F.interpolate(x.float(), size=(dh, dw), mode="bilinear", align_corners=False).to(tokens.dtype)
 
         x = x.flatten(2).transpose(1, 2)  # [B, H*W, C*m*m]
-        x = self.norm(x)
+        if self.norm_position == "after":
+            x = self.norm(x)
         x = self.fc2(self.drop(self.act(self.fc1(x))))
         return x if self.gate is None else x * self.gate
 

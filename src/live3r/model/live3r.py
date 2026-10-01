@@ -100,7 +100,8 @@ class Live3RModel(nn.Module):
             self.projectors = nn.ModuleList([
                 GeometryProjector(c_geo=c_geo, d_llm=self.d_llm, merge_size=fusion.merge_size,
                                   mlp_ratio=fusion.mlp_ratio, zero_init=False, dropout=fusion.dropout,
-                                  hidden=fusion.merger_hidden or None, scalar_gate=False)])
+                                  hidden=fusion.merger_hidden or None, scalar_gate=False,
+                                  norm_position=fusion.merger_norm)])
             self.input_fusion = GatedTokenFusion(self.d_llm, norm=fusion.gate_norm, bias_init=fusion.gate_bias_init)
         else:
             self.projectors = nn.ModuleList(

@@ -35,7 +35,11 @@ elsewhere.
 | **gated_raw** | `server_4b_v3_raw.yaml`: no norm, g = 0.018 at step 0 | whether the start matters: near the base model vs the reference-style start |
 | base | no training, same resolution | the reference point for every arm |
 
-Recipe (the reference's): LoRA r16 α32 (our target modules), lr 5e-5 LoRA / 1e-5 merger + gate, global batch 64
+Recipe (the reference's, read from its adapter and trainer state): LoRA r16 α32 on every linear layer of the LLM
+(the same 12 names: 248 modules on the 4B, none in the vision tower), the merger's LayerNorm on each 768-d token
+before the 2×2 merge (`fusion.merger_norm: before`; 3,072 → 4,096 → 2,560), lr 5e-5 LoRA / 1e-5 merger + gate
+(warmup 3 % to 5e-5 matches its log), the VSI prompt "These are frames of a video.\n{q}\n{post}" (lmms-eval's default,
+also the form of the vlm3r training records), global batch 64
 (8 GPUs × accum 8, or 4 × 16), cosine, warmup 3 %, weight decay 0.01, one full pass of the `live` mix (no time cap).
 
 Step-0 check on the M2 (`scripts/check_fusion_init.py`, 4B, 12 Sensenova holdout samples, random merger):
