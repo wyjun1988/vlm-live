@@ -28,14 +28,16 @@ geometry:
   expose_pose_token: false
   options:
     repo_path: third_party/CUT3R
+    autocast: bf16         # CUT3R's encoder + rollout under bf16 autocast (the reference's setting; ~2x on H100)
 
 fusion:
   mode: gated_input
   merge_size: 2
   merger_hidden: 4096
   merger_norm: before   # LayerNorm per 768-d token, then the 2x2 merge (the reference's merger)
-  gate_norm: true
+  gate_norm: both         # the reference's gated_token (its config.json)
   gate_bias_init: 0.0
+  gate_init_std: 0.02     # the gate started at N(0, 0.02) weights in the reference (checkpoint: std 0.0193, bias 0)
 
 lora:
   enabled: true
@@ -56,6 +58,7 @@ data:
   video_max_frames: 8
   marks: draw           # spar_info marks drawn where their frame is certain (data/marks.py)
   strip_reasoning: true  # live: no chain of thought is trained (a leftover <think> block is cut)
+  image_newline: false   # "<image>\n" -> the image block, as the reference renders training text (= the eval form)
 
 stream:
   max_visual_tokens: 16384

@@ -1,5 +1,8 @@
 # 레퍼런스(VSI 70.83) 시스템 추가 정보 요청
 
+> **2026-10-01 답변 받음** — `outputs/reference_answers/` (반영 내용: `docs/REFERENCE_70_ANALYSIS.md` §9). 남은 질문은
+> 담당자만 답할 수 있는 3개: 70.83 을 학습한 융합 forward(gated_token / wonorm), `add_empty_think_block` 값, 학습 GPU.
+
 **대상:** Qwen3.5-4B + LoRA `ckpt/cot/qwen3.5-4b-allcot-sqa-gt-cut3r-lora2` (VSI-Bench 70.83) 를 만든 팀
 **작성:** Live3R (wooyeol), 2026-10-01
 

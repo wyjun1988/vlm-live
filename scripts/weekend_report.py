@@ -82,18 +82,18 @@ COMPARISONS_RUN2 = [
 # run 3 (scripts/server_run3.sh): our implementation of the 70.83 reference's design on the VG-LLM data
 PHASES_RUN3 = [("data", "data pass + mix preparation"), ("calib", "speed calibration + budget"), ("d1", "one-step profile"),
                ("gated", "gated (reference-style start)"), ("plain", "plain SFT (no geometry)"),
-               ("control", "gated, shuffled geometry"), ("gated_raw", "gated (near-base start)"),
+               ("control", "gated, shuffled geometry"), ("gated_wn", "gated, wonorm variant"),
                ("gate_smoke", "gate smoke"), ("gate_base", "gate: base"), ("gate_base_video", "gate: base video"),
-               ("gate_plain", "gate: plain"), ("gate_gated", "gate: gated"), ("gate_gated_raw", "gate: gated_raw"),
+               ("gate_plain", "gate: plain"), ("gate_gated", "gate: gated"), ("gate_gated_wn", "gate: gated_wn"),
                ("role.gated", "role gated"), ("role.plain", "role plain"), ("role.control", "role control"),
-               ("role.base", "role base"), ("role.gated_raw", "role gated_raw")]
-ARMS_RUN3 = ("gated", "plain", "control", "gated_raw")
+               ("role.base", "role base"), ("role.gated_wn", "role gated_wn")]
+ARMS_RUN3 = ("gated", "plain", "control", "gated_wn")
 COMPARISONS_RUN3 = [
     ("gated - plain (the geometry path at this data scale)  <- key", "gated:oracle-image", "plain:oracle-image"),
     ("gated - control (geometry content)", "gated:oracle-image", "control:oracle-image"),
     ("control - plain (a content-free fusion)", "control:oracle-image", "plain:oracle-image"),
-    ("gated - gated_raw (reference-style start - near-base start)", "gated:oracle-image", "gated_raw:oracle-image"),
-    ("gated_raw - plain", "gated_raw:oracle-image", "plain:oracle-image"),
+    ("gated - gated_wn (gated_token - wonorm; the reference: 70.83 vs 70.86)", "gated:oracle-image", "gated_wn:oracle-image"),
+    ("gated_wn - plain", "gated_wn:oracle-image", "plain:oracle-image"),
     ("gated - base (what the training buys)", "gated:oracle-image", "base:oracle-image"),
     ("plain - base (what the data alone buys)", "plain:oracle-image", "base:oracle-image"),
     ("gated: + room facts - plain prompt", "gated_routed_room:oracle-image", "gated:oracle-image"),
@@ -533,7 +533,7 @@ def section_gate_run3(out: Path, cg) -> list[str]:
     """Run 3: the two base runs (gate/) and each trained arm's own run (gate_<arm>/trained)."""
     lines = ["## Pre-registered gate (lmms-eval, eval_path=live3r)", ""]
     dirs = {"base": out / "gate" / "base", "base_video": out / "gate" / "base_video"}
-    dirs.update({a: out / f"gate_{a}" / "trained" for a in ("plain", "gated", "gated_raw")})
+    dirs.update({a: out / f"gate_{a}" / "trained" for a in ("plain", "gated", "gated_wn")})
     table: dict[str, dict[str, float]] = {}
     for run, d in dirs.items():
         try:
@@ -563,7 +563,7 @@ def section_gate_run3(out: Path, cg) -> list[str]:
         lines.append(f"| {task} | " + " | ".join(cells) + " |")
     lines += ["", "(Δ against the base's better format.) Gate 1: vsibench Δ >= +1.0 · Gate 2: videomme Δ >= -1.0 · "
               "MMStar reported only.", ""]
-    for a in ("plain", "gated", "gated_raw"):
+    for a in ("plain", "gated", "gated_wn"):
         chk = out / f"gate_check_{a}.txt"
         if chk.exists():
             lines += [f"check_gate.py, {a}:", "", "```", chk.read_text().strip(), "```", ""]

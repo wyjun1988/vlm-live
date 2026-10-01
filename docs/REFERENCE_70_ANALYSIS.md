@@ -21,7 +21,7 @@ that collected them was replaced by a data-only one (`scripts/inspect_reference_
 | fusion | `feature_fusion_method gated_token`, `fusion_num_layers 1`, `geometry_merger_type mlp`: geometry tokens merged to the LLM width and combined with the visual tokens by a learned gate at the LLM input (one place) | `config.json`, training scripts |
 | training (the CUT3R "all" recipe) | datasets `spar_234k, llava_hound_64k, vlm3r_scannet, vlm3r_scannetpp, vlm3r_arkit, sensenova_800k`; 1 epoch; LoRA lr 5e-5, merger/fusion lr 1e-5, vision lr 1e-6 (vision frozen); global batch 64; cosine, warmup 3 %; ≤ 576 tokens per image, video 4-8 frames; one stage | `scripts/train/train_qwen35_4B_all_gt_cut3r_lora2.sh` |
 | the 70.83 run itself | `ckpt/cot/qwen3.5-4b-allcot-sqa-gt-cut3r-lora2` = the "all" mix + CoT data + SQA3D ("gt" = gated-token fusion, not ground truth); **31,702 steps × 64 ≈ 2.03 M samples**, one epoch, loss 1.45 → 0.33 | `trainer_state.json`, run name |
-| evaluation | their lmms-eval model `vgllm_qwen35`: the **video path**, 32 frames sampled uniformly over the whole video, `target_size 512` → **256 tokens per frame**, `max_length 12800`, batch 8, greedy; prompt "These are frames of a video. {question} {post-prompt}" with the standard VSI post-prompts | results `config` / task config / samples |
+| evaluation | 32 frames sampled uniformly over the whole video **given as 32 images** (no timestamps), long side 512 → **192 tokens per 4:3 frame** (6,144 in all), CUT3R over all 32, `max_length 12800`, batch 8, greedy; prompt "These are frames of a video.\n{question}\n{post-prompt}" after a system message, ending in an empty think block. (Corrected 2026-10-01 - this row first said "video path, 256 tokens per frame"; their team's answers, §9.) | results `config` / §9 |
 | answers | one word or letter: median 4 characters, max 54, **no chain of thought** in any answer (the CoT data did not make answers long) | samples (5,130) |
 
 ## 2. Per type: the reference against ours (all 5,130 questions)
@@ -178,3 +178,53 @@ drop from louder visual tokens is a zero-shot idea of its own (BRAINSTORM I-44).
 What is left to ask (settings, rendered input samples, the geometry path's details, other runs' results incl. the
 no-CoT "all" mix, general-ability scores, environment): [`docs/REFERENCE_70_REQUEST.md`](REFERENCE_70_REQUEST.md)
 (2026-10-01, in Korean for the reference team). Answers that arrive before run 3 starts go into its configs.
+
+## 9. The reference team's answers (2026-10-01, `outputs/reference_answers/`, read from their files and runs)
+
+Their answers came with two helper scripts they wrote; those were not extracted (we keep no code). What they settled:
+
+**The level to expect.** Their own 4B runs (32 frames as images, thinking off; `vsi_results_all.csv`, 116 rows):
+
+| run | data | geometry | VSI |
+|---|---|---|---|
+| the 70.83 model | all6 + CoT + SQA | CUT3R gt | 70.83 (70.86 as its wonorm branch) |
+| no geometry | all6 + CoT | - | **70.89** |
+| VGGT | all6 + CoT + SQA | VGGT gt | 72.20 / 71.85 (retrain) |
+| **= our `live` mix** | all6 + SQA (no CoT) | VGGT gt | **71.42** |
+| all6, no CoT | all6 | VGGT gt / gtwn / full FT | 71.05 / 70.22 / 71.61 |
+| plain SFT | all6 | - (full FT) | 69.58 |
+| Sensenova only | sn | VGGT gtwn / none | 70.86 / 67.23 |
+| the 70.83 model at **1 fps** (up to 512 frames) | | | **72.18** (rel dir +5.5, rel dist +3.7) |
+
+- **CUT3R added ≈ 0 over no geometry** (70.83 vs 70.89 on the same CoT data), VGGT +1.9; the 70.83 merger's weights
+  stayed near their initial spread. The score is the data's.
+- CoT costs −0.4 to −0.8 when dropped (VGGT runs). Our live mix with CUT3R: **≈ 70-70.5 expected**; the no-geometry
+  baseline ≈ 69.6-70.9. So run 3's gated − plain is expected near 0 - the run settles whether our implementation
+  reaches the level, and whether CUT3R helps in our live form, not whether geometry is a large lever.
+- More frames help: 1 fps beats 32 frames by 1.35 on the same model - good news for the live (streaming) form.
+- Data volume flattens after ~1 M samples (all6 + SQA 1.44 M → 71.4; + 1.8 M robot data → 71.3).
+
+**How the reference was built** (what run 3 now follows, `configs/server_4b_v3*.yaml`):
+- Resolution: shrink to long side 512 only when larger, sides to multiples of 32 (small images keep their size);
+  CUT3R gets the VLM's resized image itself (grids 1:1) - `VisionSpec.long_side` (shrink-only), `geometry_input`.
+- CUT3R: the `dec_norm` output of the last decoder layer without the pose token (= our tap 12), one recurrent
+  rollout per sample, under bf16 autocast - `geometry.options.autocast: bf16`.
+- Merger: LayerNorm(768) per token, 2×2 row-major, 3,072 → 4,096 → 2,560 (= ours with `merger_norm: before`).
+- Gate: `g = sigmoid(W[LN1(v); LN2(geo)] + b)`, started from W ~ N(0, 0.02), b = 0 (its intended zero init was
+  overwritten at load) - `gate_init_std: 0.02`. Which forward trained 70.83 is unclear: its config says
+  `gated_token`, its train.log `gated_token_wonorm` ((1−g)·v + g·LN2(geo)); run 3 trains both (`gated`, `gated_wn`).
+- Training text: "<image>\n" renders as the image block alone (`data.image_newline: false`); videos as 4-8 frames
+  (one per 2 s, frame folders at 1 fps); CoT answers trained whole after `<think>`; a system message ("You are a
+  helpful assistant.") in training and evaluation - **we keep none** (our training and evaluation agree without it).
+- SPAR marks: a fixed frame order per question type, some types never drawn, only the kind the question names
+  (dots for "red point", boxes for "red bbox"), 20 px on the original image, labels on the video and map types -
+  `src/live3r/data/marks.py`, checked against their renderings of two records (same frames, same marks). One
+  deliberate difference: "yellow" is drawn yellow (theirs draws it cyan in the video types).
+- Optimiser: AdamW (0.9, 0.999), clip 1.0, wd 0.01, cosine, warmup 3 % - `--adam-beta2 0.999`.
+- Their stack: torch 2.7 + transformers 5.7 + FlashAttention-3 + flash-linear-attention 0.5 + causal-conv1d 1.6;
+  ours on the server: torch 2.10 (nv25.12) + transformers 5.18 + sdpa - the first suspect for a speed gap. Our suite
+  passes under transformers 5.18 (checked on the M2).
+- General ability: no VideoMME / MMStar of the 70.83 model exists; its non-spatial scores fall below the base (ERQA
+  46.75 → 42.0, Spatial457 single-image 65.1 → 51.5) - run 3's gate measures ours.
+
+Still open (only their author can say): which fusion forward trained 70.83; its `add_empty_think_block`; the GPUs.

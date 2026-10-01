@@ -1,4 +1,5 @@
-# Run 3 (docs/SERVER_RUN3.md), arm "gated_raw": server_4b_v3.yaml with a start near the base model - no LayerNorm on
+# NOT in run 3's queue since 2026-10-01 (gated_wn took its place, the reference's own variant). Kept for later:
+# server_4b_v3.yaml with a start near the base model - no LayerNorm on
 # either stream, gate bias -4 (g = 0.018 at step 0). Step-0 check on the M2 (4B): 8 % of the first answer tokens
 # change against the base model, loss 1.72 vs 1.71 (the "gated" start: 75 %, 1.51). Everything else identical.
 patch_embed: linear

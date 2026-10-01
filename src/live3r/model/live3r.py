@@ -28,7 +28,7 @@ import torch
 from torch import nn
 
 from ..config import Live3RConfig
-from ..data.vision import VisionSpec, geometry_frame, llm_grid, unpatchify
+from ..data.vision import VisionSpec, geometry_input, llm_grid, unpatchify
 from ..fusion.deepstack import DeepStackInjector
 from ..fusion.gated import GatedTokenFusion, InputFusionInjector
 from ..fusion.projector import GeometryProjector, PoseProjector
@@ -102,7 +102,8 @@ class Live3RModel(nn.Module):
                                   mlp_ratio=fusion.mlp_ratio, zero_init=False, dropout=fusion.dropout,
                                   hidden=fusion.merger_hidden or None, scalar_gate=False,
                                   norm_position=fusion.merger_norm)])
-            self.input_fusion = GatedTokenFusion(self.d_llm, norm=fusion.gate_norm, bias_init=fusion.gate_bias_init)
+            self.input_fusion = GatedTokenFusion(self.d_llm, norm=fusion.gate_norm, bias_init=fusion.gate_bias_init,
+                                                 init_std=fusion.gate_init_std)
         else:
             self.projectors = nn.ModuleList(
                 [
@@ -307,7 +308,7 @@ class Live3RModel(nn.Module):
         """[T,3,H,W] ∈ [0,1] → 기하 인코더 입력 [T,3,h,w] (긴 변 기준, 정규화됨)."""
         unit = getattr(self.geometry, "patch_size", 16)
         size = self.cfg.geometry.image_size
-        return torch.stack([geometry_frame(f, size, unit) for f in frames01], 0)
+        return torch.stack([geometry_input(f, self.spec, size, unit) for f in frames01], 0)
 
     @torch.no_grad()
     def run_geometry(self, geom_frames) -> list[GeomOutput]:

@@ -42,7 +42,7 @@ from .prompt import PromptBuilder, PromptError
 from .vision import (
     VisionSpec,
     frame_timestamps,
-    geometry_frame,
+    geometry_input,
     llm_grid,
     prepare_image,
     prepare_video,
@@ -427,6 +427,12 @@ class SpatialVQADataset(Dataset):
             raise SkipRecord(f"record {rec.id} is text-only")
         return self._build_text(rec)
 
+    def _turns(self, rec: Record) -> list[tuple[str, str]]:
+        """The turns as rendered: with data.image_newline off, a placeholder's following newline is dropped."""
+        if self.cfg.image_newline:
+            return rec.turns
+        return [(re.sub(r"(<image>|<video>)\n", r"\1", u), a) for u, a in rec.turns]
+
     def _pack(self, rec: Record, built, **extra) -> dict:
         return {
             "id": rec.id,
@@ -455,14 +461,14 @@ class SpatialVQADataset(Dataset):
             pil = marks_mod.draw(pil, plan)          # the same marked frames go to the VLM and to the encoder
         vlm = [prepare_image(im, self.spec) for im in pil]
         segments = [self.prompt.image_segment(tokens_per_step(g[0], self.spec)) for _, g in vlm]
-        built = self.prompt.build(rec.turns, segments, "images", self.cfg.max_length)
+        built = self.prompt.build(self._turns(rec), segments, "images", self.cfg.max_length)
         return self._pack(
             rec,
             built,
             media_type="images",
             pixel_values=torch.cat([pv for pv, _ in vlm], 0),
             image_grid_thw=torch.cat([g for _, g in vlm], 0),
-            geom_frames=[geometry_frame(im, self.geom_long_side, self.geom_unit) for im in pil],
+            geom_frames=[geometry_input(im, self.spec, self.geom_long_side, self.geom_unit) for im in pil],
             llm_grids=[llm_grid(g[0], self.spec) for _, g in vlm],
             pool_temporal=False,
             cache_key="img|" + "|".join(rec.images),
@@ -488,14 +494,14 @@ class SpatialVQADataset(Dataset):
         pv, grid = prepare_video(raw, self.spec)
         ts = frame_timestamps(idx, fps or self.cfg.default_fps, self.spec.temporal_patch)
         segment = self.prompt.video_segment(tokens_per_step(grid[0], self.spec), ts)
-        built = self.prompt.build(rec.turns, [segment], "video", self.cfg.max_length)
+        built = self.prompt.build(self._turns(rec), [segment], "video", self.cfg.max_length)
         return self._pack(
             rec,
             built,
             media_type="video",
             pixel_values_videos=pv,
             video_grid_thw=grid,
-            geom_frames=[geometry_frame(f, self.geom_long_side, self.geom_unit) for f in raw],
+            geom_frames=[geometry_input(f, self.spec, self.geom_long_side, self.geom_unit) for f in raw],
             llm_grids=llm_grid(grid[0], self.spec),
             pool_temporal=True,
             cache_key=f"vid|{rec.video}|{','.join(map(str, idx))}",
@@ -535,19 +541,19 @@ class SpatialVQADataset(Dataset):
         segs = [self.prompt.image_segment(tokens_per_step(g[0], self.spec)) for _, g in vlm]
         n_ph = sum(u.count("<video>") + u.count("<image>") for u, _ in rec.turns)
         segments = ["".join(segs)] if n_ph == 1 else segs
-        built = self.prompt.build(rec.turns, segments, "images", self.cfg.max_length)
+        built = self.prompt.build(self._turns(rec), segments, "images", self.cfg.max_length)
         return self._pack(
             rec,
             built,
             media_type="images",
             pixel_values=torch.cat([pv for pv, _ in vlm], 0),
             image_grid_thw=torch.cat([g for _, g in vlm], 0),
-            geom_frames=[geometry_frame(f, self.geom_long_side, self.geom_unit) for f in frames],
+            geom_frames=[geometry_input(f, self.spec, self.geom_long_side, self.geom_unit) for f in frames],
             llm_grids=[llm_grid(g[0], self.spec) for _, g in vlm],
             pool_temporal=False,
             cache_key=f"vimg|{rec.video}|{','.join(map(str, idx))}",
         )
 
     def _build_text(self, rec: Record) -> dict:
-        built = self.prompt.build(rec.turns, [], "text", self.cfg.max_length)
+        built = self.prompt.build(self._turns(rec), [], "text", self.cfg.max_length)
         return self._pack(rec, built, media_type="text", geom_frames=[], cache_key="")

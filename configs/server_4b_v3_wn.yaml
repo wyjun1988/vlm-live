@@ -1,0 +1,56 @@
+# Run 3 (docs/SERVER_RUN3.md), arm "gated_wn": server_4b_v3.yaml with the reference's other fusion variant,
+# gated_token_wonorm - the gate reads both normalised streams, the output mixes the raw visual token with the
+# normalised geometry. The 70.83 run's train.log names this variant while its config.json names gated_token; its gtwn
+# checkpoint (resumed from step 21,000 of the same run) scored 70.86 against 70.83 (docs/REFERENCE_70_ANALYSIS.md §9).
+patch_embed: linear
+base_model: /group-volume/wooyeol/models/Qwen3.5-4B
+dtype: bf16
+attn_implementation: sdpa
+
+geometry:
+  name: cut3r
+  checkpoint: checkpoints/cut3r_512_dpt_4_64.pth
+  tap_layers: [12]
+  hidden_size: 768
+  image_size: 512
+  stride: 1
+  freeze: true
+  expose_pose_token: false
+  options:
+    repo_path: third_party/CUT3R
+    autocast: bf16         # CUT3R's encoder + rollout under bf16 autocast (the reference's setting; ~2x on H100)
+
+fusion:
+  mode: gated_input
+  merge_size: 2
+  merger_hidden: 4096
+  merger_norm: before   # LayerNorm per 768-d token, then the 2x2 merge (the reference's merger)
+  gate_norm: geo          # the reference's gated_token_wonorm: (1 - g) · v + g · LN(geo), the gate on both LN'd
+  gate_bias_init: 0.0
+  gate_init_std: 0.02     # the gate started at N(0, 0.02) weights in the reference (checkpoint: std 0.0193, bias 0)
+
+lora:
+  enabled: true
+  r: 16
+  alpha: 32
+  dropout: 0.05
+  # every linear layer of the LLM, as the reference's adapter (248 modules on the 4B; ours had left out in_proj_a/b)
+  target_modules: [q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj, in_proj_qkv, in_proj_z, in_proj_a,
+                   in_proj_b, out_proj]
+
+data:
+  vlm_long_side: 512
+  max_images: 32
+  max_length: 12800
+  video_as_images: true
+  video_fps: 0.5
+  video_min_frames: 4
+  video_max_frames: 8
+  marks: draw           # spar_info marks drawn where their frame is certain (data/marks.py)
+  strip_reasoning: true  # live: no chain of thought is trained (a leftover <think> block is cut)
+  image_newline: false   # "<image>\n" -> the image block, as the reference renders training text (= the eval form)
+
+stream:
+  max_visual_tokens: 16384
+  budget_policy: evict
+  target_fps: 30.0

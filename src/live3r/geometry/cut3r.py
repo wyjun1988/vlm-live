@@ -63,6 +63,7 @@ class CUT3RStream(GeometryStream):
         overlap: int = 3,
         scale_anchor=None,
         scale_anchor_apply: str = "global",
+        autocast: str | None = None,
     ) -> None:
         """net 을 직접 주면 체크포인트 없이 쓴다 (구조 검증·테스트용).
 
@@ -115,6 +116,11 @@ class CUT3RStream(GeometryStream):
         if scale_anchor_apply not in ("global", "per_frame"):
             raise ValueError(f"scale_anchor_apply must be 'global' or 'per_frame', got {scale_anchor_apply!r}")
         self.anchor_apply = scale_anchor_apply
+        # autocast "bf16": the encoder and the recurrent rollout run under CUDA bf16 autocast (the 70.83 reference's
+        # setting; ~2x faster on H100 for 32-frame samples). The tokens leave as fp32; the point heads stay in fp32.
+        if autocast not in (None, "bf16"):
+            raise ValueError(f"autocast must be None or 'bf16', got {autocast!r}")
+        self.autocast = autocast
         self.reset()
 
     # ------------------------------------------------------------------ 상태 관리
@@ -190,10 +196,17 @@ class CUT3RStream(GeometryStream):
         `ARCroco3DStereo.forward_recurrent` 의 한 스텝과 동일한 순서로 돈다:
           인코딩 → (첫 프레임이면) 상태 초기화 → 포즈 토큰 조회 → 재귀 롤아웃 → 상태·메모리 갱신
         """
+        import contextlib
+
         net = self.net
         b, _, h, w = frames.shape
         shape = torch.tensor([h, w], device=frames.device).unsqueeze(0).repeat(b, 1)
+        amp = (torch.autocast("cuda", dtype=torch.bfloat16) if self.autocast == "bf16" and frames.is_cuda
+               else contextlib.nullcontext())
+        with amp:
+            return self._ingest_raw_inner(net, frames, shape, b, h, w)
 
+    def _ingest_raw_inner(self, net, frames, shape, b, h, w) -> GeomOutput:
         img_out, img_pos, _ = net._encode_image(frames, shape)
         feat_i = img_out[-1]
 
@@ -233,7 +246,7 @@ class CUT3RStream(GeometryStream):
         )
 
         gh, gw = h // self.patch_size, w // self.patch_size
-        tokens = {t: dec[t][:, 1:] for t in self.tap_layers}  # index 0(포즈) 제거
+        tokens = {t: dec[t][:, 1:].float() for t in self.tap_layers}  # index 0(포즈) 제거; fp32 out of any autocast
         n = gh * gw
         got = next(iter(tokens.values())).shape[1]
         if got != n:
@@ -243,11 +256,16 @@ class CUT3RStream(GeometryStream):
         out = GeomOutput(
             tokens=tokens,
             grid_hw=(gh, gw),
-            pose_token=out_pose_feat,
+            pose_token=out_pose_feat.float(),
             frame_index=self._frame_index,
         )
         if self.decode_points:
-            self._decode(out, dec, shape, img_pos)
+            import contextlib
+
+            fp32 = (torch.autocast("cuda", enabled=False) if self.autocast and frames.is_cuda
+                    else contextlib.nullcontext())             # the point / pose heads in fp32 (metric facts)
+            with fp32:
+                self._decode(out, dec, shape, img_pos)
         self._frame_index += 1
         return out
 
@@ -434,4 +452,5 @@ def _build(cfg: GeometryConfig) -> CUT3RStream:
         overlap=int(cfg.options.get("overlap", 3)),
         scale_anchor=cfg.options.get("scale_anchor"),
         scale_anchor_apply=cfg.options.get("scale_anchor_apply", "global"),
+        autocast=cfg.options.get("autocast"),
     )

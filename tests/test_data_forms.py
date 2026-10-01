@@ -125,3 +125,46 @@ def test_video_file_becomes_images_without_placeholder(tmp_path):
     assert item["image_grid_thw"].shape[0] == 4 and len(item["geom_frames"]) == 4
     text = ds.prompt.tok.decode(item["input_ids"][0])
     assert text.index("<|vision_start|>") < text.index("How long")
+
+
+def test_long_side_only_shrinks_and_the_encoder_gets_the_same_image():
+    """The reference's rule: a small image keeps its size (rounded to 32), never enlarged; CUT3R gets the VLM's image."""
+    from live3r.data.vision import geometry_input
+
+    spec = VisionSpec(long_side=512)
+    assert target_size(192, 320, spec) == (192, 320)          # llava_hound frames: 6 x 10 = 60 tokens, as theirs
+    assert target_size(154, 154, spec) == (160, 160)
+    assert target_size(968, 1296, spec) == (384, 512)
+    for hw in ((192, 320), (968, 1296), (1440, 1920)):
+        img = np.zeros((*hw, 3), dtype=np.uint8)
+        _, grid = prepare_image(img, spec)
+        g = geometry_input(img, spec, 512, 16)
+        assert tuple(g.shape[1:]) == target_size(*hw, spec) and llm_grid(grid[0], spec) == (g.shape[1] // 32, g.shape[2] // 32)
+    # without long_side the encoder keeps its own rule
+    assert tuple(geometry_input(np.zeros((192, 320, 3), dtype=np.uint8), VisionSpec(), 512, 16).shape[1:]) == (304, 512)
+
+
+@pytest.mark.skipif(not TOK, reason="LIVE3R_TOKENIZER not set")
+def test_image_newline_switch(tmp_path):
+    """data.image_newline false: "<image>\\n" renders as the image block alone (the reference's training text)."""
+    from PIL import Image
+    from transformers import AutoTokenizer
+
+    from live3r.data.prompt import PromptBuilder
+
+    (tmp_path / "media").mkdir()
+    Image.fromarray(np.zeros((64, 64, 3), dtype=np.uint8)).save(tmp_path / "media" / "a.png")
+    recs = [{"id": 0, "images": ["a.png", "a.png"],
+             "conversations": [{"from": "human", "value": "<image>\n<image>\nThese are frames of a video.\nQ?"},
+                               {"from": "gpt", "value": "2"}]}]
+    (tmp_path / "a.json").write_text(json.dumps(recs))
+    pb = PromptBuilder(AutoTokenizer.from_pretrained(TOK), 248056, 248057, 248053, 248054)
+
+    def text(newline):
+        ds = SpatialVQADataset(tmp_path / "a.json", tmp_path / "media", pb, VisionSpec(long_side=64), geom_long_side=64,
+                               geom_unit=16, data_cfg=DataConfig(image_newline=newline), max_fail_rate=1.0)
+        return pb.tok.decode(ds[0]["input_ids"][0])
+
+    assert "<|vision_end|>\n<|vision_start|>" in text(True)
+    off = text(False)
+    assert "<|vision_end|><|vision_start|>" in off and "<|vision_end|>These are frames" in off

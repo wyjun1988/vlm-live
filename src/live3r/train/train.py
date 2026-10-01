@@ -550,7 +550,7 @@ def train(args) -> int:
     groups = [{"params": other_p, "lr": args.lr}]
     if lora_p:
         groups.append({"params": lora_p, "lr": args.lora_lr or args.lr})
-    opt = torch.optim.AdamW(groups, weight_decay=args.weight_decay, betas=(0.9, 0.98))
+    opt = torch.optim.AdamW(groups, weight_decay=args.weight_decay, betas=(0.9, getattr(args, "adam_beta2", 0.98)))
     total_steps = args.max_steps or max(1, math.ceil(len(dl) * args.epochs / args.grad_accum))
     warmup = max(1, int(total_steps * args.warmup_ratio))
     sched = torch.optim.lr_scheduler.LambdaLR(
@@ -893,6 +893,8 @@ def main() -> int:
                     help="--geom-control shuffled: recent samples kept as donors. A same-shape donor is preferred; "
                          "a larger buffer finds one more often (~30 MB of geometry per sample on the GPU)")
     ap.add_argument("--weight-decay", type=float, default=0.0)
+    ap.add_argument("--adam-beta2", type=float, default=0.98,
+                    help="AdamW beta2 (0.98 ours so far; the 70.83 reference trained with 0.999 - run 3 passes that)")
     ap.add_argument("--warmup-ratio", type=float, default=0.03)
     ap.add_argument("--grad-accum", type=int, default=16)
     ap.add_argument("--clip", type=float, default=1.0)

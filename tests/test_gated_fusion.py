@@ -215,3 +215,30 @@ def test_the_trainer_opens_the_fusion_parameters():
     m = tr.build_model(SimpleNamespace(stage="sft", init_from=None), cfg, is_main=False)
     s = m.trainable_parameter_summary()
     assert s["fusion"] == sum(p.numel() for p in m.input_fusion.parameters()) > 0 and s["projector"] > 0
+
+
+def test_wonorm_variant_keeps_the_raw_visual_token():
+    """gate_norm "geo" (the reference's gated_token_wonorm): the gate reads both normalised streams, the output mixes
+    the raw visual token with the normalised geometry."""
+    torch.manual_seed(0)
+    v, g = torch.randn(6, 16) * 4, torch.randn(6, 16)
+    f = GatedTokenFusion(16, norm="geo", bias_init=0.3)
+    out, a = f(v, g)
+    ln = torch.nn.functional.layer_norm
+    assert torch.allclose(out, (1 - a) * v + a * ln(g, (16,)), atol=1e-5)
+    # the gate input is the normalised pair, so scaling the raw visual token leaves the gate unchanged
+    _, a2 = f(v * 10, g)
+    assert torch.allclose(a, a2, atol=1e-5)
+    with pytest.raises(ValueError):
+        GatedTokenFusion(16, norm="half")
+
+
+def test_gate_starts_spread_like_the_reference():
+    """init_std 0.02 on normalised 2560-d inputs: logits ~N(0, 0.02^2 * 5120 = 1.43^2), g over ~0.14-0.86 (10-90 %)."""
+    torch.manual_seed(0)
+    f = GatedTokenFusion(2560, norm="both", init_std=0.02)
+    assert abs(float(f.gate.weight.detach().std()) - 0.02) < 0.002 and float(f.gate.bias.detach()) == 0.0
+    with torch.no_grad():
+        _, a = f(torch.randn(4000, 2560), torch.randn(4000, 2560))
+    q10, q50, q90 = torch.quantile(a.flatten(), torch.tensor([0.1, 0.5, 0.9])).tolist()
+    assert 0.08 < q10 < 0.25 and 0.4 < q50 < 0.6 and 0.75 < q90 < 0.92

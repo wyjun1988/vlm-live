@@ -22,7 +22,7 @@
 #              the gate's two base runs (every arm's verdict is taken against them) and its own gate
 #   control    the gated arm with shuffled geometry -> VSI -> holdout ablation gated vs control
 #   base       the untrained model at this resolution: VSI plain / room facts; run 2's results copied in for reference
-#   gated_raw  fusion gated_input, the near-base start (server_4b_v3_raw.yaml) -> VSI -> gate
+#   gated_wn   fusion gated_input, the reference's wonorm variant (server_4b_v3_wn.yaml) -> VSI -> gate
 # The queue runs in that order: on two nodes gated and plain start together (the key comparison comes first).
 # ROLE=gated,plain,... runs just those roles, in that order, without claims.
 # Resumable: a finished step leaves a marker and is skipped on a re-run; a training arm continues from resume.pt.
@@ -31,7 +31,7 @@ set -uo pipefail
 # ------------------------------------------------------------------------------------------------ settings
 ROOT="${ROOT:-/group-volume/wooyeol/vlm-live}"
 CFG="${CFG:-configs/server_4b_v3.yaml}"               # gated_input, LayerNorm, g = 0.5 at step 0
-CFG_RAW="${CFG_RAW:-configs/server_4b_v3_raw.yaml}"   # gated_input, no norm, g = 0.018 at step 0
+CFG_WN="${CFG_WN:-configs/server_4b_v3_wn.yaml}"      # gated_input, the reference's wonorm variant
 CFG_PLAIN="${CFG_PLAIN:-configs/server_4b_v3_plain.yaml}"   # fusion none
 MIX="${MIX:-live}"                                    # configs/data/vgllm.yaml: the 70.83 run's sources without
                                                       # its six CoT variants (live: no reasoning is trained)
@@ -50,6 +50,7 @@ TRAIN_HOURS="${TRAIN_HOURS:-0}"
 GO_EPOCHS="${GO_EPOCHS:-0.2}"       # with a cap: below this fraction of a pass the training roles are skipped (NO_GO)
 EFF_BATCH=64                        # the reference's global batch; micro-steps per GPU = 64 / GPUs on the node
 LR=1e-5; LORA_LR=5e-5; WD=0.01      # merger + gate / LoRA (the reference's rates); cosine, warmup 3 %
+BETA2=0.999                         # AdamW (0.9, 0.999) as the reference
 DONOR_BUFFER="${DONOR_BUFFER:-64}"
 PROBE_SRC="${PROBE_SRC:-vlm3r_scannet}"   # the probe's holdout: VSI-style QA on ScanNet training scenes
 VSI=(--videos 288 --seed 1)         # all of VSI-Bench: 288 videos, 5,130 questions
@@ -77,7 +78,7 @@ NGPU=${#GPUS[@]}
 [[ "$NGPU" == 4 || "$NGPU" == 8 ]] || { echo "this plan runs on 4 or 8 GPUs per node (found $NGPU: ${GPUS[*]})"; exit 1; }
 ALLG=$(IFS=,; echo "${GPUS[*]}"); ACCUM=$(( EFF_BATCH / NGPU )); SHARDS=$NGPU
 ROLE="${ROLE:-auto}"
-ALL_ROLES=(gated plain base control gated_raw)
+ALL_ROLES=(gated plain base control gated_wn)
 if [[ "$ROLE" == auto ]]; then
   RTAG=$HOST; QUEUE=("${ALL_ROLES[@]}")
 else
@@ -167,8 +168,13 @@ n = torch.cuda.device_count(); print(n, 'GPUs'); assert n in (4, 8), f'this plan
 bad = [s.name for s in resolve_mix(sys.argv[1], load_registry(sys.argv[2])) if not s.annotation.is_file()]
 assert not bad, f'annotation files missing: {bad}'" "$MIX" "$REGISTRY" >> "$L" 2>&1 \
     || { fail "p0: the $MIX annotation files are not all readable from $HOST - $L"; return 1; }
-  LIVE3R_TOKENIZER="$MODEL" python -m pytest tests -q -p no:cacheprovider >> "$L" 2>&1 \
-    || { fail "p0: tests on $HOST - the tail of $L is what to send"; return 1; }
+  # the suite on the shared checkout: one node at a time, nothing written into it (two nodes rewriting the same
+  # __pycache__ at once is the prime suspect for the 09-30 attempt's collection error in tests/test_sim3.py)
+  if ! with_lock tests env PYTHONDONTWRITEBYTECODE=1 LIVE3R_TOKENIZER="$MODEL" \
+       python -m pytest tests -q -p no:cacheprovider --import-mode=prepend >> "$L" 2>&1; then
+    fail "p0: tests on $HOST - $(grep -aE '^(ERROR|FAILED|E  )' "$L" | head -4 | tr '\n' ' ' | cut -c1-400) (all: $L)"
+    return 1
+  fi
 }
 
 # ============================================================================================ data + calib (once)
@@ -216,7 +222,8 @@ EOF
 }
 train_cmd() {   # the trainer's common arguments
   echo -m live3r.train.train --mix "$MIX" --registry "$REGISTRY" --prepared-dir "$PREP" --grad-checkpointing \
-    --stage sft --grad-accum "$ACCUM" --lr "$LR" --lora-lr "$LORA_LR" --weight-decay "$WD" --warmup-ratio 0.03
+    --stage sft --grad-accum "$ACCUM" --lr "$LR" --lora-lr "$LORA_LR" --weight-decay "$WD" --warmup-ratio 0.03 \
+    --adam-beta2 "$BETA2"
 }
 _calib() {
   is_done calib && return 0
@@ -401,12 +408,12 @@ role_base() {
   report
   return $rc
 }
-role_gated_raw() {
+role_gated_wn() {
   local rc=0
-  train_arm gated_raw "$CFG_RAW" || return 1
-  eval_arm gated_raw "$CFG_RAW" || rc=1
+  train_arm gated_wn "$CFG_WN" || return 1
+  eval_arm gated_wn "$CFG_WN" || rc=1
   report
-  gate_arm 0 gated_raw "$CFG_RAW" || rc=1
+  gate_arm 0 gated_wn "$CFG_WN" || rc=1
   return $rc
 }
 

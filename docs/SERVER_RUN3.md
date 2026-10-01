@@ -13,7 +13,7 @@ no-geometry arm at equal data, on our live evaluation path.
 | gated input fusion | a merger (CUT3R's last decoder layer, 2×2 merge, MLP 3,072 → 4,096 → d_llm) gives one geometry token per visual token; a per-token gate `g = sigmoid(w·[N(v); N(geo)] + b)` mixes it in, `(1 − g)·N(v) + g·N(geo)` replaces the visual embedding at the LLM input. One stage with LoRA | `src/live3r/fusion/gated.py`, `fusion.mode: gated_input` |
 | data registry and mixture | the 17 annotation files on `/group-volume/VG-LLM_data` with their media roots; mixes `ref70` (the 70.83 run's 2,029,000 records), `all6`, and **`live`** = ref70 without the six CoT variants (1,443,777 records: spar_234k, llava_hound_64k, vlm3r_scannet / scannetpp / arkit, sensenova_800k, sqa3d, scanqa); one dataset over several sources, fixed subsets and repeats (`name%N`) | `configs/data/vgllm.yaml`, `src/live3r/data/mixture.py`, `train.py --mix` |
 | record forms | `images` as the image key; system messages dropped; videos (files or frame directories - llava_hound is 10-56 JPEG frames per clip) given as 4-8 frames (one per 2 s) as images — the live path's form; a `<think>…</think>` block in any answer stripped to the final answer (no reasoning is trained) | `src/live3r/data/datasets.py`, `data.video_as_images` |
-| SPAR marks | `spar_info` points and boxes (red / blue / green / yellow, 0-1000 coordinates, `*_img_idx` = the frame of each mark, listed objects as `bbox{i}`) drawn by our code onto the frames both the VLM and CUT3R see; a mark's frame is taken from the order the question names the colors (all 13 sampled records agree) and a record whose placement is not certain is left out | `src/live3r/data/marks.py`, `data.marks: draw` |
+| SPAR marks | `spar_info` points and boxes drawn by our code onto the frames both the VLM and CUT3R see: a fixed frame order per question type (as the reference's team describes its rule), types the reference never draws kept unmarked, only the kind the question names, 20 px on the original image, labels on the video and map types; checked against their renderings of two records; a record of an unknown type whose placement is not certain is left out | `src/live3r/data/marks.py`, `data.marks: draw` |
 | no evaluation scene in training | the data pass found one VSI-Bench scene (`scene0685_00`, ScanNet) in the SPAR sets; every record whose media paths name a VSI-Bench scene is left out | `prepare_mix.py --exclude-scenes` |
 | resolution | the VLM input at long side 512, the rule CUT3R's input already follows, so the two token grids coincide (144 tokens for 16:9 frames, 192 for 4:3 — the reference's operating point) | `data.vlm_long_side`, `VisionSpec.long_side` |
 | preparation | each source once as JSONL + offset index (lazy loading; a 740 MB JSON array per rank would not fit), a 300-record holdout per source, a media check | `scripts/prepare_mix.py` |
@@ -29,17 +29,19 @@ elsewhere.
 
 | arm | config | what it answers |
 |---|---|---|
-| **gated** | `server_4b_v3.yaml`: gated_input, LayerNorm on both streams, g = 0.5 at step 0 | the design as the reference trains it |
+| **gated** | `server_4b_v3.yaml`: gated_input, LayerNorm on both streams, gate weights from N(0, 0.02) (g spread 0.14-0.86 at step 0, as the reference's) | the design as the reference trains it |
 | **plain** | `server_4b_v3_plain.yaml`: no geometry (fusion none), same LoRA / data / resolution | **gated − plain** = what the geometry path adds at this data scale (the key comparison) |
 | **control** | gated with shuffled geometry (`--geom-control shuffled`) | gated − control = the value of the geometry's content |
-| **gated_raw** | `server_4b_v3_raw.yaml`: no norm, g = 0.018 at step 0 | whether the start matters: near the base model vs the reference-style start |
+| **gated_wn** | `server_4b_v3_wn.yaml`: the reference's wonorm variant - the output mixes the raw visual token with the normalised geometry | the other forward the 70.83 run may have used (its train.log says wonorm, its config gated_token; their two branches scored 70.86 / 70.83) |
 | base | no training, same resolution | the reference point for every arm |
 
-Recipe (the reference's, read from its adapter and trainer state): LoRA r16 α32 on every linear layer of the LLM
-(the same 12 names: 248 modules on the 4B, none in the vision tower), the merger's LayerNorm on each 768-d token
-before the 2×2 merge (`fusion.merger_norm: before`; 3,072 → 4,096 → 2,560), lr 5e-5 LoRA / 1e-5 merger + gate
-(warmup 3 % to 5e-5 matches its log), the VSI prompt "These are frames of a video.\n{q}\n{post}" (lmms-eval's default,
-also the form of the vlm3r training records), global batch 64
+Recipe (the reference's, from its adapter, trainer state and its team's answers): LoRA r16 α32 on every linear
+layer of the LLM (the same 12 names: 248 modules on the 4B, none in the vision tower), the merger's LayerNorm on each
+768-d token before the 2×2 merge (`fusion.merger_norm: before`; 3,072 → 4,096 → 2,560), the gate from N(0, 0.02)
+(`gate_init_std`), CUT3R under bf16 autocast (`geometry.options.autocast`), the VLM input shrunk to long side 512 only
+when larger and CUT3R fed the same image, training text without the newline after an image (`data.image_newline:
+false`), lr 5e-5 LoRA / 1e-5 merger + gate, AdamW (0.9, 0.999), the VSI prompt "These are frames of a video.\n{q}\n
+{post}" (lmms-eval's default, also the form of the vlm3r training records), global batch 64
 (8 GPUs × accum 8, or 4 × 16), cosine, warmup 3 %, weight decay 0.01, one full pass of the `live` mix (no time cap).
 
 Step-0 check on the M2 (`scripts/check_fusion_init.py`, 4B, 12 Sensenova holdout samples, random merger):
@@ -67,7 +69,7 @@ tail -f outputs/run3/STATUS
 Run the same command on **each of the two nodes**. A node may have 8 or 4 GPUs: it uses the GPUs it was given
 (the scheduler's `CUDA_VISIBLE_DEVICES`, else all it sees) with the global batch kept at 64. As run 2: the nodes share
 the roles (claims and heartbeats on the shared volume, takeover after 30 min without a heartbeat); re-running resumes;
-`bash scripts/server_run3.sh stop` ends a node's run. Queue: **gated → plain → base → control → gated_raw**, after
+`bash scripts/server_run3.sh stop` ends a node's run. Queue: **gated → plain → base → control → gated_wn**, after
 the one-time steps:
 
 1. **p0** on every node (packages, flash-linear-attention unless run 2 banned it, the tests, the annotation files).
@@ -77,7 +79,14 @@ the one-time steps:
    forms and a drawn mark) → `budget.env`: the steps of one pass. d1: one profiled step.
 
 On two nodes: gated and plain start together (the key comparison first); the node that finishes first runs base (hours)
-and then control; the other takes gated_raw.
+and then control; the other takes gated_wn.
+
+**What to expect (their own runs, `docs/REFERENCE_70_ANALYSIS.md` §9):** the same data with VGGT scored 71.42; CUT3R
+scored the same as no geometry in their CoT runs (70.83 vs 70.89). So **gated ≈ 70-70.5 and gated − plain ≈ 0** are the
+reproduction's expected outcome; the run tells whether our implementation reaches that level and whether CUT3R helps
+in our form. **The 09-30 attempt** (2 × 8 GPUs) stopped in p0: collecting `tests/test_sim3.py` failed on the new container.
+The suite passes under its transformers (5.18, checked on the M2); p0 now runs the tests one node at a time without
+writing bytecode into the shared checkout, and the FAILED line carries the error itself.
 
 | one arm, one pass of `live` (≈1.4 M samples) | 8 GPUs | 4 GPUs |
 |---|---|---|

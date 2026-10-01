@@ -37,7 +37,7 @@ def test_colored_marks_follow_the_order_the_question_names_them():
     where = {(m.kind, m.color): m.image for m in plan}
     g, b, r, y = (mk.COLORS[c] for c in ("green", "blue", "red", "yellow"))
     assert where[("bbox", g)] == 16 and where[("bbox", b)] == 21 and where[("bbox", r)] == 16 and where[("bbox", y)] == 22
-    assert where[("point", g)] == 16 and len(plan) == 8
+    assert len(plan) == 4 and all(m.kind == "bbox" for m in plan), "the question names boxes: no dots (as the reference)"
     # scene0534_00_31: backpack (in Frame-30) (green bbox), map (in Frame-0) (blue bbox), board (in Frame-0) (red)
     info = {"green_bbox": [[892, 336, 1000, 599]], "red_bbox": [[311, 0, 677, 289]], "blue_bbox": [[0, 0, 198, 411]],
             "point_img_idx": [[30, 0, 0]], "bbox_img_idx": [[30, 0, 0]]}
@@ -47,10 +47,14 @@ def test_colored_marks_follow_the_order_the_question_names_them():
 
 
 def test_ambiguous_placement_is_not_guessed():
-    # scene0092_04_5: three colored marks on frames [[29, 27, 7]], but the question names no color
+    # three colored marks on frames [[29, 27, 7]], no type, and the question names no color
     info = {"green_bbox": [[244, 123, 529, 392]], "red_bbox": [[0, 314, 704, 998]], "blue_bbox": [[651, 433, 1000, 815]],
             "bbox_img_idx": [[29, 27, 7]]}
-    assert mk.plan(info, "Where is blanket (Object2) once they settle at bed (Object0) and turn toward sink (Object1)?", 32) is None
+    q = "Where is blanket (Object2) once they settle at bed (Object0) and turn toward sink (Object1)?"
+    assert mk.plan(info, q, 32) is None
+    # the same record as it is in the data (scene0092_04_5): a "hard" type - kept, nothing drawn (as the reference)
+    assert mk.plan(dict(info, type="spatial_imagination_oc_video_hard"), q, 32) == []
+    assert mk.plan({"red_bbox": [[1, 2, 3, 4]], "type": "obj_count"}, "how many?", 32) == []
     assert mk.plan({"red_point": [[1, 2]], "point_img_idx": [[5]]}, "the chair (red point)", 3) is None   # frame 5 of 3
     assert mk.plan({"red_point": [[1, 2]], "blue_point": [[3, 4]], "point_img_idx": [[0]]},
                    "the chair (red point) and the desk (blue point)", 2) is None                       # 2 marks, 1 index
@@ -60,7 +64,8 @@ def test_single_images_and_unindexed_marks_go_on_the_first_image():
     # depth_prediction_oc (one image): "Given that paper (red point) is at 2.7 meters, ... box (blue point)"
     info = {"red_bbox": [[208, 33, 226, 131]], "blue_bbox": [[646, 553, 668, 586]], "red_point": [[217, 82]],
             "blue_point": [[657, 569]]}
-    assert {m.image for m in mk.plan(info, "paper (red point) ... box (blue point)", 1)} == {0}
+    plan = mk.plan(info, "paper (red point) ... box (blue point)", 1)
+    assert {m.image for m in plan} == {0} and {m.kind for m in plan} == {"point"}, "points named: dots only"
     # spatial_volume_infer names no color, one image: nothing ambiguous
     assert [m.image for m in mk.plan({"red_bbox": [[749, 539, 897, 793]]}, "the recycling bin's size?", 1)] == [0]
     # position_matching: "shown with a red bbox in the first image", two images, no index
@@ -72,10 +77,52 @@ def test_listed_objects_are_labelled():
     info = {"point_list": [[[596, 674], [931, 904], [713, 486], [725, 675], [591, 520], [628, 582], [589, 866]]],
             "bbox_list": [[[546, 591, 647, 751], [903, 861, 960, 949], [675, 395, 750, 570], [651, 585, 800, 756],
                            [551, 438, 632, 594], [595, 538, 661, 629], [547, 787, 632, 956]]],
-            "point_img_idx": [[0, 0, 0, 0, 0, 1, 0]], "bbox_img_idx": [[0, 0, 0, 0, 0, 1, 0]]}
+            "point_img_idx": [[0, 0, 0, 0, 0, 1, 0]], "bbox_img_idx": [[0, 0, 0, 0, 0, 1, 0]],
+            "type": "spatial_imagination_map_mv"}
     plan = mk.plan(info, "For 7 objects: Object0 (bbox0), ...", 3)
-    assert [m.label for m in plan] == [f"bbox{i}" for i in range(7)] and all(m.kind == "bbox" for m in plan)
+    assert [m.label for m in plan] == [f"object{i}" for i in range(7)] and all(m.kind == "bbox" for m in plan)
     assert [m.image for m in plan] == [0, 0, 0, 0, 0, 1, 0]
+    assert all(m.color == mk.COLORS["blue"] and m.label_style == "green" for m in plan)
+    # distance_infer_center_oo_video: the anchor first - objectA, object0, object1
+    pts = {"point_list": [[[1, 2], [3, 4], [5, 6]]], "point_img_idx": [[4, 9, 9]], "type": "distance_infer_center_oo_video"}
+    plan = mk.plan(pts, "...", 32)
+    assert [(m.label, m.image) for m in plan] == [("objectA", 4), ("object0", 9), ("object1", 9)]
+
+
+def test_placement_by_question_type():
+    """The fixed per-type orders (the reference's rule as its team describes it), whatever the question says."""
+    r, b, g, y = (mk.COLORS[c] for c in ("red", "blue", "green", "yellow"))
+    pt = lambda: [[500, 500]]  # noqa: E731
+    bx = lambda: [[100, 100, 200, 200]]  # noqa: E731
+
+    def where(info, n=8, q=""):
+        return {(m.kind, m.color): m.image for m in mk.plan(info, q, n)}
+
+    # scene imagination (mv): green -> idx[0], blue -> idx[1], red -> idx[2], yellow -> idx[3]
+    w = where({"red_point": pt(), "green_point": pt(), "blue_point": pt(), "point_img_idx": [[5, 6, 7]],
+               "type": "spatial_imagination_oc_mv"})
+    assert w == {("point", g): 5, ("point", b): 6, ("point", r): 7}
+    # distance_infer_center_oo_mv: red, green, blue
+    w = where({"red_bbox": bx(), "green_bbox": bx(), "blue_bbox": bx(), "bbox_img_idx": [[1, 2, 3]],
+               "type": "distance_infer_center_oo_mv"})
+    assert w == {("bbox", r): 1, ("bbox", g): 2, ("bbox", b): 3}
+    # obj_spatial_relation_oc_mv: every box on idx[0]
+    w = where({"red_bbox": bx(), "blue_bbox": bx(), "green_bbox": bx(), "bbox_img_idx": [[4]],
+               "type": "obj_spatial_relation_oc_mv"})
+    assert set(w.values()) == {4}
+    # obj_spatial_relation_oo_mv: the two present colors in the order red, blue, green
+    w = where({"green_bbox": bx(), "red_bbox": bx(), "bbox_img_idx": [[2, 0]], "type": "obj_spatial_relation_oo_mv"})
+    assert w == {("bbox", r): 2, ("bbox", g): 0}
+    # position_matching: the first image, whatever the index
+    assert where({"red_bbox": bx(), "bbox_img_idx": [[3]], "type": "position_matching"}) == {("bbox", r): 0}
+    # video types label their colored marks by the type's object order; yellow stays yellow
+    plan = mk.plan({"yellow_bbox": bx(), "green_bbox": bx(), "bbox_img_idx": [[16, 21, 16, 22]],
+                    "red_bbox": bx(), "blue_bbox": bx(), "type": "spatial_imagination_oo_video"}, "", 32)
+    labels = {m.color: (m.label, m.image) for m in plan}
+    assert labels == {g: ("object0", 16), b: ("object1", 21), r: ("object2", 16), y: ("object3", 22)}
+    # a type's index list too short for one of its colors: not certain
+    assert mk.plan({"red_point": pt(), "blue_point": pt(), "point_img_idx": [[0]], "type": "distance_prediction_oo_mv"},
+                   "", 3) is None
 
 
 def test_drawing_puts_the_colors_where_the_marks_are():
@@ -90,7 +137,8 @@ def test_drawing_puts_the_colors_where_the_marks_are():
     assert tuple(a1[484, 648]) == (255, 0, 0)                          # the disc's centre: x 0.5 * 1296, y 0.5 * 968
     assert tuple(a0[int(0.25 * 968), int(0.1 * 1296) + 1]) == (0, 0, 255)   # the left edge of the blue box
     assert tuple(a0[int(0.25 * 968), int(0.2 * 1296)]) == (128, 128, 128)   # the inside stays untouched
-    label = a0[int(0.6 * 968) + 8:int(0.6 * 968) + 30, int(0.6 * 1296) + 8:int(0.6 * 1296) + 60]
+    by, bx = int(0.9 * 968 + 20), int(0.9 * 1296 + 20)                    # the box's lower right (expanded by 20)
+    label = a0[by - 40:by - 4, bx - 140:bx - 4]
     assert (label == [255, 255, 255]).all(-1).any() and (label == [255, 0, 0]).all(-1).any()   # white text on red
     assert np.array(imgs[0]).std() == 0, "the originals are not modified"
 

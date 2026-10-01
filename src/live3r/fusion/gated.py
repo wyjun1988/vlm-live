@@ -7,7 +7,9 @@ Our implementation of the input fusion design the 70.83 reference trains (docs/R
     g   = sigmoid(w · [N_v(v); N_g(geo)] + b)          one scalar per token
     out = (1 - g) · N_v(v) + g · N_g(geo)              replaces v
 
-N_v, N_g are LayerNorms (`norm=True`) or identities (`norm=False`).
+N_v, N_g are LayerNorms or identities - `norm`: "both" (the reference's gated_token), "geo" (its gated_token_wonorm:
+the gate still reads both normalised streams, the output mixes the raw visual token with the normalised geometry -
+out = (1 - g) · v + g · N_g(geo)), or "none". True / False mean "both" / "none".
 
 Against deepstack (fusion/deepstack.py): one place instead of several, a replacement instead of a residual add, and
 not the identity at the start. With `norm=True` the visual tokens are renormalised and mixed half-and-half with
@@ -30,16 +32,37 @@ import torch
 from torch import nn
 
 
-class GatedTokenFusion(nn.Module):
-    """[n, d] visual and [n, d] geometry tokens -> [n, d] fused tokens and the [n, 1] gate. Computed in fp32."""
+NORM_MODES = ("both", "geo", "none")
 
-    def __init__(self, d_llm: int, norm: bool = True, bias_init: float = 0.0) -> None:
+
+def norm_mode(norm) -> str:
+    """True / False / "both" / "geo" / "none" -> one of NORM_MODES."""
+    if norm is True:
+        return "both"
+    if norm is False:
+        return "none"
+    if norm not in NORM_MODES:
+        raise ValueError(f"gate norm must be one of {NORM_MODES} (or a bool), got {norm!r}")
+    return norm
+
+
+class GatedTokenFusion(nn.Module):
+    """[n, d] visual and [n, d] geometry tokens -> [n, d] fused tokens and the [n, 1] gate. Computed in fp32.
+
+    init_std 0: the gate weights start at 0 - every token at the same mix sigmoid(bias_init). init_std 0.02: weights
+    N(0, 0.02) as the reference's gate actually started (its checkpoint: std 0.0193, bias 0) - with normalised inputs
+    the starting logit is ~N(0, 1.43^2) per token, g spread over 0.14-0.86 (10-90 %)."""
+
+    def __init__(self, d_llm: int, norm=True, bias_init: float = 0.0, init_std: float = 0.0) -> None:
         super().__init__()
-        self.norm_v = nn.LayerNorm(d_llm) if norm else nn.Identity()
-        self.norm_g = nn.LayerNorm(d_llm) if norm else nn.Identity()
+        self.mode = norm_mode(norm)
+        self.norm_v = nn.LayerNorm(d_llm) if self.mode != "none" else nn.Identity()
+        self.norm_g = nn.LayerNorm(d_llm) if self.mode != "none" else nn.Identity()
         self.gate = nn.Linear(2 * d_llm, 1)
-        # w = 0: every token starts at the same mix sigmoid(bias_init); the gate learns which tokens want geometry
-        nn.init.zeros_(self.gate.weight)
+        if init_std > 0:
+            nn.init.normal_(self.gate.weight, std=float(init_std))
+        else:
+            nn.init.zeros_(self.gate.weight)
         nn.init.constant_(self.gate.bias, float(bias_init))
 
     def forward(self, visual: torch.Tensor, geo: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
@@ -47,7 +70,8 @@ class GatedTokenFusion(nn.Module):
             raise ValueError(f"visual {tuple(visual.shape)} and geometry {tuple(geo.shape)} tokens differ in shape")
         v, g = self.norm_v(visual), self.norm_g(geo)
         a = torch.sigmoid(self.gate(torch.cat([v, g], dim=-1)))
-        return v + a * (g - v), a
+        base = visual if self.mode == "geo" else v                   # "geo": the visual token itself is not normalised
+        return base + a * (g - base), a
 
 
 class InputFusionInjector:

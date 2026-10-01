@@ -61,8 +61,11 @@ class FusionConfig:
     # and the gate's starting bias (0 -> g = 0.5 everywhere at step 0; -4 -> g = 0.018). The merger is never
     # zero-initialised in this mode: a zero geometry token has no LayerNorm (0/0) and no direction to learn from.
     merger_hidden: int = 0
-    gate_norm: bool = True
+    # True / "both" (the reference's gated_token), "geo" (its gated_token_wonorm: the output keeps the raw visual
+    # token), False / "none"; gate_init_std > 0 starts the gate weights at N(0, std) as the reference's did (0.02)
+    gate_norm: bool | str = True
     gate_bias_init: float = 0.0
+    gate_init_std: float = 0.0
     # the merger's LayerNorm: "after" the 2x2 merge (over 4 x 768) or "before" it (over each 768-d token, as the 70.83
     # reference's merger does - its checkpoint holds a 768-wide norm)
     merger_norm: str = "after"
@@ -126,6 +129,9 @@ class DataConfig:
     # (data/marks.py - a record whose mark placement is not certain is left out), "skip" such records, or "ignore"
     # the marks (inspection only - the question then points at nothing)
     marks: str = "skip"
+    # False: an image placeholder's following newline is dropped ("<image>\n" -> the image block), as the reference
+    # renders its training text - then training text reads like the evaluation prompt (images, then the question)
+    image_newline: bool = True
     # a `<think>…</think>` block leading an answer is cut away, the final answer kept (run 3: the live system answers at
     # once, so no reasoning is trained). Off by default so earlier runs read their data exactly as before.
     strip_reasoning: bool = False
@@ -165,6 +171,9 @@ class Live3RConfig:
             raise ValueError(f"data.marks must be 'skip', 'draw' or 'ignore', got {self.data.marks!r}")
         if self.patch_embed not in ("conv", "linear"):
             raise ValueError(f"patch_embed must be 'conv' or 'linear', got {self.patch_embed!r}")
+        from .fusion.gated import norm_mode
+
+        norm_mode(self.fusion.gate_norm)               # raises on an unknown value
         if self.fusion.merger_norm not in ("after", "before"):
             raise ValueError(f"fusion.merger_norm must be 'after' or 'before', got {self.fusion.merger_norm!r}")
         if self.fusion.mode == "gated_input" and len(self.geometry.tap_layers) != 1:

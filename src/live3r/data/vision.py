@@ -45,10 +45,10 @@ class VisionSpec:
     #: 기본값은 lmms-eval qwen3_5 와 같게 (64~128)×32×32 → 이미지당 LLM 토큰 64~128개.
     min_pixels: int = 64 * 32 * 32
     max_pixels: int = 128 * 32 * 32
-    #: > 0: resize so the long side is this many pixels, each side rounded to a multiple of `factor`, instead of the
-    #: pixel range. The geometry encoder's rule (CUT3R: long side 512, `geometry_frame`), so the two token grids
-    #: coincide (a 2x2 merge of CUT3R's patch-16 grid = the LLM's 32-px grid) - the reference's operating point
-    #: (512: 16x9 = 144 tokens for 16:9 frames, 16x12 = 192 for 4:3).
+    #: > 0: shrink so the long side is at most this many pixels (a smaller image keeps its size), each side rounded
+    #: to a multiple of `factor`, instead of the pixel range - the reference's rule (512: 16x9 = 144 tokens for 16:9
+    #: frames, 16x12 = 192 for 4:3). The geometry encoder then gets the same resized image (`geometry_input`), so a
+    #: 2x2 merge of CUT3R's patch-16 grid is the LLM's 32-px grid exactly.
     long_side: int = 0
 
     @property
@@ -154,7 +154,7 @@ def target_size(h: int, w: int, spec: VisionSpec) -> tuple[int, int]:
     """The VLM input size of an h x w image: the pixel range (smart_resize, the official rule) or, with
     `spec.long_side`, the long-side rule `geometry_frame` uses (same rounding, so the grids line up)."""
     if spec.long_side > 0:
-        s, f = spec.long_side / max(h, w), spec.factor
+        s, f = min(1.0, spec.long_side / max(h, w)), spec.factor
         return max(f, int(round(h * s / f)) * f), max(f, int(round(w * s / f)) * f)
     return smart_resize(h, w, spec.factor, spec.min_pixels, spec.max_pixels)
 
@@ -205,6 +205,16 @@ def geometry_frame(img, long_side: int, unit: int) -> torch.Tensor:
     th = max(unit, int(round(h * scale / unit)) * unit)
     tw = max(unit, int(round(w * scale / unit)) * unit)
     return normalize(resize01(x, (th, tw)))[0]
+
+
+def geometry_input(img, spec: VisionSpec | None, long_side: int, unit: int) -> torch.Tensor:
+    """The geometry encoder's input [3,h,w] for one image: with `spec.long_side` the VLM input itself (same size,
+    same resampling - the two grids coincide, as in the reference), otherwise the encoder's own long-side rule."""
+    if spec is not None and spec.long_side > 0:
+        x = to_float01(img)
+        _, _, h, w = x.shape
+        return normalize(resize01(x, target_size(h, w, spec)))[0]
+    return geometry_frame(img, long_side, unit)
 
 
 def frame_timestamps(indices: list[int], fps: float, temporal_patch: int) -> list[float]:
