@@ -281,3 +281,30 @@ def test_on_geometry_hook_fires_for_every_geometry_frame_with_the_keyframe_flag(
     assert {i for i in range(T) if i % 3 == 0} <= seen and all(g for _, _, g in calls)
     assert any(k for _, k, _ in calls), "keyframes must be flagged"
     assert len(calls) == len(seen), "one call per frame"
+
+
+def test_facts_selector_decouples_measurement_frames_from_llm_keyframes():
+    """I-45d: the LLM's keyframes (here 40) and the frames the measurements use (8 uniform) are chosen apart; the
+    geometry encoder runs on the stride frames and the facts frames only - not on every LLM keyframe."""
+    m = make_model()
+    calls: list[tuple[int, bool]] = []
+    s = StreamingSession(m, UniformOracleSelector(40, 600), geom_stride=100, audit=StreamingAudit(),
+                         facts_selector=UniformOracleSelector(8, 600),
+                         on_geometry=lambda i, raw, g, key: calls.append((i, key)))
+    s.begin(fps=30)
+    frames = torch.randint(0, 255, (600, 72, 96, 3), dtype=torch.uint8)
+    for i in range(600):
+        s.push(i, frames[i])
+    facts = s.facts_frames()
+    assert len(facts) == 8 and facts == sorted(facts)
+    assert all(s.facts_kept(i).geom is not None and s.facts_kept(i).index == i for i in facts)
+    ingested = {i for i, _ in calls}
+    assert ingested == {i for i in range(0, 600, 100)} | set(facts)       # stride + facts frames, nothing else
+    assert {i for i, key in calls if key} == set(facts)
+    assert s.prefill()["n_keyframes"] == 40                                   # the LLM still gets its 40
+    # without a facts selector the LLM's keyframes are the facts frames, as before
+    s2 = StreamingSession(m, UniformOracleSelector(8, 600), geom_stride=100, audit=StreamingAudit())
+    s2.begin(fps=30)
+    for i in range(600):
+        s2.push(i, frames[i])
+    assert s2.facts_frames() == facts and s2.facts_kept(facts[0]).index == facts[0]

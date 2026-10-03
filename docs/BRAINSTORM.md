@@ -79,7 +79,8 @@ time (I-21). The rule that held every time: attach geometry only for what the fr
 | keyframes only (the table above) | 57.8 | — | |
 | CUT3R fed ~1 fps, maps from every frame (I-05) | 56.9 | −0.9 | [−2.2, +0.4] |
 | + frame-count scale calibration on the metric facts at read time (I-37) | 58.0 | +1.1 vs 56.9 | [+0.3, +2.1] |
-| + a scale-prior hint for room size, object size and distance questions (I-40b) | **58.3** | +0.3 vs 58.0 | [−0.0, +0.6] |
+| + a scale-prior hint for room size, object size and distance questions (I-40b) | 58.3 | +0.3 vs 58.0 | [−0.0, +0.6] |
+| + every frame at 1 fps to the LLM, the measurements still from the 32 frames (I-45d, 2026-10-04) | **61.8** | +3.5 vs 58.3 | [+0.3, +6.7] |
 
 Directions 69.2 → 75.0 from the accumulation; room 67.0 → 66.2 and abs distance 42.1 → 39.8 remain the cost of the
 drift; size 65.3 → 66.8 from the prior. vs keyframes only +0.5 [−0.9, +2.1]: the best measured configuration, and
@@ -610,6 +611,32 @@ counting +1.4, size +1.0, abs distance +0.4; relative distance **−4.7**, room 
 The cross-frame types gain as the reference's did (theirs: rel dir +5.5); the metric/relational ones that our routed
 facts already cover lose a little. → I-45b: the adopted streaming stack (58.3) with every frame at 1 fps.
 
+**I-45b** (the stack + every frame at 1 fps): **59.5 vs 58.3, +1.2 [−2.6, +4.8]** - the best zero-shot score so far,
+not significant. Order +11.5, route +5.4, rel distance +4.1, counting +3.4, size +2.6; but **rel direction −7.8**
+(75.0 → 67.1), room −5.0, abs distance −4.4 - exactly the types the facts serve. The facts got worse, not the
+model's use of them: direction facts right **83.4 → 71.6 %** (the model follows them 93 → 89 %), room-fact MRA
+0.658 → 0.633, the scale factor 0.944 → 0.884 (median). In this run CUT3R ingested the every-30th-frame stream plus
+the 1 fps keyframes - ~2 fps, outside the ~1 fps regime the calibration and the direction tracking were tuned on.
+Against 1 fps alone (56.4) the stack still adds +3.2 (room +12.2, rel distance +8.7). → I-45c: CUT3R fed only the 1
+fps keyframes.
+
+**I-45c** (CUT3R on the 1 fps keyframes only, ~1 fps): **59.9 vs 58.3, +1.6 [−2.3, +5.5]** - the best zero-shot score.
+But the facts did not come back: direction facts 73.4 % (I-45b 71.6, the 32-frame stack 83.4), room-fact MRA 0.620,
+the scale factor now 0.978 as calibrated. So the ingest rate was not the cause; what both 1 fps runs share is the
+frame set the object map detects and tracks on (every 2nd 1 fps keyframe instead of the 32 uniform frames).
+→ **I-45d**: decouple - the LLM gets every frame at 1 fps, the measurements are made exactly as in the 58.3 run
+(`--facts-budget 32`: CUT3R every 30th frame + the 32 uniform frames, detection on those 32; StreamingSession's
+`facts_selector`). If the facts come back to their 32-frame quality the expected score is ~61.5.
+
+**I-45d: 61.8 vs 58.3, +3.5 [+0.3, +6.7]** - significant, and the best zero-shot score. The attached facts are
+identical to the 58.3 run's on all 1,151 questions (direction facts 83.4 %, room-fact MRA 0.658, scale 0.944), so the
+gain is the frames alone: order +11.5, route +5.4, rel distance +4.1, counting +3.4, size +2.6, abs distance +1.4,
+rel direction +0.8, room −1.5. Against 1 fps alone (56.4) the facts add **+5.4 [+2.3, +9.8]** (room +15.7, rel
+direction +10.6, rel distance +8.7): the two levers stack. Cost: ~2.6x the visual tokens (median 82 frames x 128).
+Rule for the live design: **every frame at 1 fps goes to the LLM; the measurements are made on a sparse, fixed
+frame set** - a denser detection/tracking set made the direction facts worse (83 → 72 %). (The 32 measurement
+frames are uniform over the whole video here, an oracle choice; live they need a causal selector, e.g. halving.)
+
 ### Lessons so far (zero-shot, 4B)
 - **L6 Attach geometry only for scene-specific quantities; the model's prior already wins on canonical ones.**
   Object size is a property of the object category — a door is ~135 cm, a sofa ~180 cm — and the pretrained model
@@ -859,6 +886,8 @@ timestamps (I-04), recency weighting / decay, possibly state windows (I-05).
 | 43 | out-of-sample check of the adopted stacks on 60 *other* videos (seed 2): streaming stack (58.3 config) vs keyframes-only adopted (57.8 config) | I-37, I-40 | done: **55.3 vs 56.1, −0.8 [−1.9, +0.5]**; calibration holds (45 new videos: room ratio 1.10 → 0.96, MRA 54.2 → 63.3); direction −3.4 (facts 64.7 vs 69.6 %) — seed 1's direction gain was noise. **Pooled 105 videos: −0.1 [−1.1, +1.1] = parity** |
 | 44 | I-44 visual-token gain: held-out loss (200 samples) then VSI (60 videos, keyframes) with the visual embeddings × {1, 2, 3, 5.6} and LayerNorm'd | I-44 | ready (`--visual-scale`), after I-45b |
 | 45 | I-45 every frame at 1 fps in the LLM (`--budget-fps 1`), base + format hint, seed 1 | I-45 | done: **56.4 vs 53.7, +2.7 [−1.1, +6.4]**; order +11.5, rel dir +10.6, route +5.4; rel dist −4.7, room −4.2 |
-| 46 | I-45b the adopted streaming stack (58.3) with every frame at 1 fps | I-45 | running |
+| 46 | I-45b the adopted streaming stack (58.3) with every frame at 1 fps | I-45 | done: **59.5, +1.2 [−2.6, +4.8]** vs 58.3; facts degraded (direction facts 83 → 72 %, CUT3R at ~2 fps) |
+| 47 | I-45c as I-45b with CUT3R fed only the 1 fps keyframes (~1 fps, the calibrated regime) | I-45 | done: **59.9, +1.6 [−2.3, +5.5]**; facts still degraded (direction 73 %) - not the ingest rate |
+| 48 | I-45d every frame at 1 fps for the LLM, the measurements from the 58.3 run's 32 frames (`--facts-budget 32`) | I-45 | done: **61.8, +3.5 [+0.3, +6.7]** vs 58.3 - adopted; facts identical, the frames alone; stacks with the facts (+5.4 over 1 fps alone) |
 | 25 | I-35 encoder bake-off: VGGT window 8 behind the same maps (directions attached, metric facts logged) | I-35 | done: **CUT3R wins** — direction 76.4 vs 56.7 (72 vs 54 on common questions), room area MRA 65.8 vs 9.5 (scale-free 69.0 vs 16.2) |
 | 14 | **Sensenova-only baseline on 4 nodes x 8 H100**: zero-shot VSI (full); S1 and S2 (one epoch each) real vs control, two seeds; plain SFT (no geometry); S2 joint (no S1); the 2B pair; S2 learning curve; gate | I-12, I-16, I-18, I-22 | four-day run from 09-26 (docs/SERVER_WEEKEND.md) |

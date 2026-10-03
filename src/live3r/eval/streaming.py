@@ -420,6 +420,7 @@ class StreamingSession:
         map_max_pixels: int = 512 * 512,
         map_image: bool = True,
         on_geometry=None,
+        facts_selector=None,
     ) -> None:
         """on_geometry(frame_index, raw_frame, geom_output, is_keyframe): called for every frame the geometry
         encoder ingests (every `geom_stride`-th frame and every keyframe) - the hook for an object map that is
@@ -437,6 +438,11 @@ class StreamingSession:
         self.model = model
         self.selector = selector
         self.on_geometry = on_geometry
+        # facts_selector: a second selector for the frames the measurements are made on (CUT3R keyframes, object
+        # detection), so the LLM's keyframes can differ from them - e.g. every frame at 1 fps for the LLM, the
+        # measurements from 32 uniform frames as before (I-45d). None: the LLM's keyframes serve both, as always.
+        self.facts_selector = facts_selector
+        self._facts_kept: dict[int, _Kept] = {}
         self.geom_stride = max(1, geom_stride)
         self.mode = mode
         self.visual_mode = visual_mode
@@ -478,6 +484,9 @@ class StreamingSession:
         self.model.geometry.reset()
         self.selector.reset()
         self._kept.clear()
+        if self.facts_selector is not None:
+            self.facts_selector.reset()
+        self._facts_kept.clear()
         self._last_geom = None
         if self.scene_map is not None:
             self.scene_map.reset()
@@ -495,7 +504,11 @@ class StreamingSession:
         if count:
             self.audit.frames_seen += 1
         keep, evicted = self.selector.offer(i, raw)
-        run_geom = (i % self.geom_stride == 0) or keep
+        fkeep = False
+        if self.facts_selector is not None:
+            fkeep, _ = self.facts_selector.offer(i, raw)
+        geom_key = fkeep if self.facts_selector is not None else keep
+        run_geom = (i % self.geom_stride == 0) or geom_key
         if run_geom:
             self._last_geom = m.geometry.ingest(self._prep_geom(raw))
             self.audit.geometry_calls += 1
@@ -503,7 +516,9 @@ class StreamingSession:
             if self.scene_map is not None and self._last_geom.pointmap is not None:
                 self.scene_map.add(self._last_geom, frame_index=i)
             if self.on_geometry is not None:
-                self.on_geometry(i, raw, self._last_geom, keep)
+                self.on_geometry(i, raw, self._last_geom, geom_key)
+        if fkeep:
+            self._facts_kept[i] = _Kept(i, raw, self._last_geom)
 
         if evicted is not None:
             for e in (evicted if isinstance(evicted, (list, tuple, set)) else [evicted]):
@@ -513,6 +528,15 @@ class StreamingSession:
             self._kept[i] = _Kept(i, raw, self._last_geom)
             self.audit.keyframes_kept += 1
             self.audit.buffer_peak_frames = max(self.audit.buffer_peak_frames, len(self._kept))
+
+    def facts_frames(self) -> list[int]:
+        """The frames the measurements are made on, in order: the facts selector's, else the LLM's keyframes."""
+        if self.facts_selector is None:
+            return [i for i in self.selector.final_selection() if i in self._kept]
+        return [i for i in self.facts_selector.final_selection() if i in self._facts_kept]
+
+    def facts_kept(self, i: int) -> _Kept:
+        return self._facts_kept[i] if self.facts_selector is not None else self._kept[i]
 
     def _prep_geom(self, raw: torch.Tensor) -> torch.Tensor:
         unit = getattr(self.model.geometry, "patch_size", 16)

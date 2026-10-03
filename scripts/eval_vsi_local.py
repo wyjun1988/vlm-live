@@ -386,6 +386,9 @@ def main() -> int:
                     help="> 0: the keyframe budget per video = its length in seconds x this rate (1 = every frame at 1 fps, "
                          "the 70.83 reference's fps1 evaluation), capped by --budget-cap; replaces --budget")
     ap.add_argument("--budget-cap", type=int, default=256)
+    ap.add_argument("--facts-budget", type=int, default=0,
+                    help="> 0: the measurements (CUT3R keyframes, object detection) are made on this many uniform frames "
+                         "while the LLM gets its own keyframes (--budget / --budget-fps) - I-45d; 0: the same frames")
     ap.add_argument("--visual-scale", default="1",
                     help="I-44: multiply the visual tokens the LLM receives by this gain, or 'ln' to LayerNorm them "
                          "(live3r.model.visual_scale); 1 = unchanged")
@@ -629,11 +632,13 @@ def main() -> int:
             sel_name, vmode = m.split("-")
             sel = HalvingSelector(budget) if sel_name == "halving" else UniformOracleSelector(budget, total)
             # 기하는 키프레임에서만 돌린다 (dummy·zero-init 이라 출력과 무관 — 속도만 아낀다)
+            fsel = UniformOracleSelector(args.facts_budget, total) if args.facts_budget > 0 else None
             sessions[m] = StreamingSession(live, sel, geom_stride=args.geom_stride, visual_mode=vmode,
                                            device=dev, audit=StreamingAudit(),
                                            scene_map=SceneMap() if args.scene_map else None,
                                            map_image=args.map_image,
-                                           on_geometry=on_geometry if online_om is not None else None)
+                                           on_geometry=on_geometry if online_om is not None else None,
+                                           facts_selector=fsel)
 
         t1 = time.time()
         with av.open(str(path)) as c:
@@ -680,16 +685,18 @@ def main() -> int:
                 vocab = vsi_vocab([d["question"] for d in qs]) if oracle_vocab else None
                 om = ObjectMap(view_gap=args.view_gap)
                 n_det = 0
-                for rank, fi in enumerate(pre["frame_indices"]):
+                facts_frames = s.facts_frames()          # the LLM's keyframes unless --facts-budget
+                for rank, fi in enumerate(facts_frames):
                     if rank % args.detect_every:
                         continue
-                    frame = s._kept[fi].raw.numpy()
+                    kept = s.facts_kept(fi)
+                    frame = kept.raw.numpy()
                     if args.detector == "owlv2":
                         dets = owl(frame, vocab)   # vocab None -> fixed indoor list (question-agnostic)
                     else:
                         dets = detect_objects(live, pb, frame, vocab or [], dev)
-                    n_det += om.add(fi, dets, s._kept[fi].geom)   # the video frame index (was the keyframe rank)
-                obj_text = om.text(to_map=s.scene_map.to_map, n_frames=len(pre["frame_indices"]))
+                    n_det += om.add(fi, dets, kept.geom)   # the video frame index (was the keyframe rank)
+                obj_text = om.text(to_map=s.scene_map.to_map, n_frames=len(facts_frames))
                 timing["detect"] += time.time() - t_det
                 objects[f"{ds}/{scene}"] = {"vocab": vocab, "lifted": n_det, "text": obj_text}
                 if obj_text and not args.route_objects:
@@ -859,7 +866,7 @@ def main() -> int:
             "route_objects": args.route_objects, "min_frames": args.min_frames, "measurements": meas_log,
             "interpret": args.interpret, "interpretations": interp_log, "metric_scales": metric_scales,
             "type_hints": args.type_hints, "describe_first": args.describe_first, "descriptions": describe_log,
-            "facts_hint": args.facts_hint, "visual_scale": args.visual_scale, "budget": args.budget, "budget_fps": args.budget_fps,
+            "facts_hint": args.facts_hint, "visual_scale": args.visual_scale, "facts_budget": args.facts_budget, "budget": args.budget, "budget_fps": args.budget_fps,
             "budget_cap": args.budget_cap, "budgets": budgets,
             "hint_after": args.hint_after, "order_facts": args.order_facts, "count_facts": args.count_facts,
             "direction_facts": args.direction_facts, "direction_min_frames": args.direction_min_frames,
