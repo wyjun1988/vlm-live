@@ -600,6 +600,16 @@ QA, and a single scalar gain on the visual embeddings is a zero-shot lever. Test
 with the visual embeddings × {1, 2, 3, 5.6} and LayerNorm'd, per type; the loss effect first on 200 holdout samples.
 Watch the general side too (a louder image may drown the question).
 
+### I-45 Every frame at 1 fps in the LLM, not 32 keyframes — **tested: +2.7, not yet significant; strong per type (2026-10-03)**
+The reference team's numbers (docs/REFERENCE_70_ANALYSIS.md §9): their trained 70.83 model scored **72.18** when fed
+every frame at 1 fps (up to 512) instead of 32 uniform frames; and our own 8-keyframe run (I-36) lost 6.4. Live, the
+frames accumulate anyway (cached prefix). `eval_vsi_local.py --budget-fps 1 --budget-cap 256`: per video, its length in
+seconds frames (median 81.5, 24-219; 2 of 60 videos under 32), as images, base 4B + format hint, the 60 seed-1 videos:
+**56.4 vs 53.7, +2.7 [−1.1, +6.4]**. Per type: appearance order **+11.5**, relative direction **+10.6**, route +5.4,
+counting +1.4, size +1.0, abs distance +0.4; relative distance **−4.7**, room size **−4.2**. Format failures 2.7 %.
+The cross-frame types gain as the reference's did (theirs: rel dir +5.5); the metric/relational ones that our routed
+facts already cover lose a little. → I-45b: the adopted streaming stack (58.3) with every frame at 1 fps.
+
 ### Lessons so far (zero-shot, 4B)
 - **L6 Attach geometry only for scene-specific quantities; the model's prior already wins on canonical ones.**
   Object size is a property of the object category — a door is ~135 cm, a sofa ~180 cm — and the pretrained model
@@ -847,6 +857,8 @@ timestamps (I-04), recency weighting / decay, possibly state windows (I-05).
 | 41 | I-40b the three prior hints (room_size, size, abs_distance) on the streaming stack (~1 fps + facts + calibration, 58.0) | I-40, I-37 | done: **58.3**, +0.3 [−0.0, +0.6] — size +1.5, abs +0.6, room +0.5; +0.5 [−0.9, +2.1] vs keyframes. Adopted |
 | 42 | I-42 "trust the measurements" hint, 2B + routed facts (43.5, copy rate 53 %) | I-42, I-22 | done: **43.6**, +0.1 [−0.6, +0.8]; copy rate 49 % — null. Fact use in small models needs training (I-39) |
 | 43 | out-of-sample check of the adopted stacks on 60 *other* videos (seed 2): streaming stack (58.3 config) vs keyframes-only adopted (57.8 config) | I-37, I-40 | done: **55.3 vs 56.1, −0.8 [−1.9, +0.5]**; calibration holds (45 new videos: room ratio 1.10 → 0.96, MRA 54.2 → 63.3); direction −3.4 (facts 64.7 vs 69.6 %) — seed 1's direction gain was noise. **Pooled 105 videos: −0.1 [−1.1, +1.1] = parity** |
-| 44 | I-44 visual-token gain: held-out loss (200 samples) then VSI (60 videos, keyframes) with the visual embeddings × {1, 2, 3, 5.6} and LayerNorm'd | I-44 | open |
+| 44 | I-44 visual-token gain: held-out loss (200 samples) then VSI (60 videos, keyframes) with the visual embeddings × {1, 2, 3, 5.6} and LayerNorm'd | I-44 | ready (`--visual-scale`), after I-45b |
+| 45 | I-45 every frame at 1 fps in the LLM (`--budget-fps 1`), base + format hint, seed 1 | I-45 | done: **56.4 vs 53.7, +2.7 [−1.1, +6.4]**; order +11.5, rel dir +10.6, route +5.4; rel dist −4.7, room −4.2 |
+| 46 | I-45b the adopted streaming stack (58.3) with every frame at 1 fps | I-45 | running |
 | 25 | I-35 encoder bake-off: VGGT window 8 behind the same maps (directions attached, metric facts logged) | I-35 | done: **CUT3R wins** — direction 76.4 vs 56.7 (72 vs 54 on common questions), room area MRA 65.8 vs 9.5 (scale-free 69.0 vs 16.2) |
 | 14 | **Sensenova-only baseline on 4 nodes x 8 H100**: zero-shot VSI (full); S1 and S2 (one epoch each) real vs control, two seeds; plain SFT (no geometry); S2 joint (no S1); the 2B pair; S2 learning curve; gate | I-12, I-16, I-18, I-22 | four-day run from 09-26 (docs/SERVER_WEEKEND.md) |

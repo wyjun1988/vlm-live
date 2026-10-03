@@ -382,6 +382,13 @@ def main() -> int:
     ap.add_argument("--vsi-root", default="data/eval/vsibench")
     ap.add_argument("--videos", type=int, default=24)
     ap.add_argument("--budget", type=int, default=32)
+    ap.add_argument("--budget-fps", type=float, default=0.0,
+                    help="> 0: the keyframe budget per video = its length in seconds x this rate (1 = every frame at 1 fps, "
+                         "the 70.83 reference's fps1 evaluation), capped by --budget-cap; replaces --budget")
+    ap.add_argument("--budget-cap", type=int, default=256)
+    ap.add_argument("--visual-scale", default="1",
+                    help="I-44: multiply the visual tokens the LLM receives by this gain, or 'ln' to LayerNorm them "
+                         "(live3r.model.visual_scale); 1 = unchanged")
     ap.add_argument("--modes", default="halving-image,oracle-image,oracle-video")
     ap.add_argument("--geometry", default="dummy", help="학습 전이면 dummy 로 충분 (zero-init)")
     ap.add_argument("--weights", default=None, help="학습 결과 (.pt) — --config 와 같이 준다")
@@ -561,6 +568,11 @@ def main() -> int:
             print(f"가중치 로드 (unexpected {len(res.unexpected_keys)})")
     pb = PromptBuilder.from_model(live)
     print(f"모델 로드 {time.time() - t0:.1f}s ({args.model}, {args.device} {args.dtype})")
+    if str(args.visual_scale) not in ("1", "1.0"):
+        from live3r.model.visual_scale import scale_visual_tokens
+
+        scale_visual_tokens(live, args.visual_scale)
+        print(f"visual tokens scaled: {args.visual_scale}")
 
     @torch.no_grad()
     def ask_llm(prompt: str) -> str:   # --interpret llm: the model reads the question (text only, no geometry)
@@ -586,6 +598,7 @@ def main() -> int:
     meas_log: list = []
     think_log: list = []
     timing = collections.defaultdict(float)
+    budgets: dict[str, int] = {}
     for vi, (ds, scene) in enumerate(vids):
         path = root / ds / f"{scene}.mp4"
         qs = [d for d in todo if d["dataset"] == ds and d["scene_name"] == scene]
@@ -606,9 +619,15 @@ def main() -> int:
                 dets = owl(frame, _v) if args.detector == "owlv2" else detect_objects(live, pb, frame, _v or [], dev)
                 _c["frames"] += 1
                 _c["lifted"] += _om.add(i, dets, geom)          # the video frame index: time order and view gaps
+        budget = args.budget
+        if args.budget_fps > 0:                  # every frame at this rate: the budget follows the video's length
+            with av.open(str(path)) as c:
+                vfps = float(c.streams.video[0].average_rate or 30.0)
+            budget = max(1, min(args.budget_cap, round(total / vfps * args.budget_fps)))
+            budgets[f"{ds}/{scene}"] = budget
         for m in modes:
             sel_name, vmode = m.split("-")
-            sel = HalvingSelector(args.budget) if sel_name == "halving" else UniformOracleSelector(args.budget, total)
+            sel = HalvingSelector(budget) if sel_name == "halving" else UniformOracleSelector(budget, total)
             # 기하는 키프레임에서만 돌린다 (dummy·zero-init 이라 출력과 무관 — 속도만 아낀다)
             sessions[m] = StreamingSession(live, sel, geom_stride=args.geom_stride, visual_mode=vmode,
                                            device=dev, audit=StreamingAudit(),
@@ -840,7 +859,8 @@ def main() -> int:
             "route_objects": args.route_objects, "min_frames": args.min_frames, "measurements": meas_log,
             "interpret": args.interpret, "interpretations": interp_log, "metric_scales": metric_scales,
             "type_hints": args.type_hints, "describe_first": args.describe_first, "descriptions": describe_log,
-            "facts_hint": args.facts_hint,
+            "facts_hint": args.facts_hint, "visual_scale": args.visual_scale, "budget": args.budget, "budget_fps": args.budget_fps,
+            "budget_cap": args.budget_cap, "budgets": budgets,
             "hint_after": args.hint_after, "order_facts": args.order_facts, "count_facts": args.count_facts,
             "direction_facts": args.direction_facts, "direction_min_frames": args.direction_min_frames,
             "route_plan_facts": args.route_plan_facts, "detect_stride": args.detect_stride, "view_gap": args.view_gap,
