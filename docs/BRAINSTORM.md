@@ -71,6 +71,7 @@ time (I-21). The rule that held every time: attach geometry only for what the fr
 | One reasoning hint per type, all types (I-40) | −0.5 | prior hints +6.3 / +1.5 / +1.1 on room / size / distance, procedural hints −6.5 / −4.1 / −2.7 on direction / closest / route — keep the priors only |
 | The model places the named objects first (I-41) | **−4.4** | its own placement is wrong often enough to cost on every relational type; same failure as I-20 (−4.8) |
 | "Trust the measurements" sentence, 2B (I-42) | +0.1 | copy rate 53 → 49 %: a small model's fact use is not an instruction problem |
+| Utonia (PTv3 + ScanNet-20 probe) counts and room area on the CUT3R reconstruction (I-47) | not run: counts MRA 0.26-0.35 vs the model's 0.64; room 0.47-0.55 vs our room fact 0.66 | no instance head: clusters merge (chairs around a table) or split (fragments, drift); CUT3R sees the floor partially |
 
 ### Adopted for the streaming path (~1 fps accumulation)
 
@@ -655,6 +656,45 @@ every other answer identical. **More frames to the LLM (59.1, no CUT3R) is worth
 (58.3)**; the two add (61.8). For the live design: the frame budget of the LLM is the bigger lever, the CUT3R facts a
 consistent +3 on top.
 
+### I-47 Utonia on the CUT3R reconstruction: counts and floor area as facts — **worse than the model on both, not attached (2026-10-04)**
+Utonia (Pointcept PTv3, 2026, one encoder for all point clouds) with its released ScanNet-20 linear probe, as the
+user's floorplan-vlm project wraps it for MPS (`encoders/utonia_encoder.py`, `zeroshot/scene_text`), labels every
+point of our own streaming reconstruction: the captured CUT3R stream (stride 30 + the 32 keyframes,
+`outputs/geom_capture/stride30`), each frame's least confident 30 % dropped, colored from the video, the frame-count
+scale (I-37), z-up from the cameras' mean up vector. Objects per class two ways: every connected cluster (8 cm
+voxels, ≥ 50 points), and floorplan-vlm's own rules as they are (≥ 80 points and ≥ 0.3 m across; doors and windows
+≥ 0.5 m wide). Room area three ways: occupied 10 cm floor cells, the wall-aligned 2-98 % box of the floor points,
+and that box over all points (the room fact's rule). 3-17 s a scene on the M2 (`scripts/utonia_scene_probe.py`,
+`scripts/utonia_probe_report.py`).
+
+| 60 videos, MRA (VSI's metric for numbers) | Utonia | the model (61.8 run) | our room fact |
+|---|---|---|---|
+| counts: the 74 of 125 counting questions on a ScanNet-20 class | 0.255 every cluster · 0.350 floorplan rules | **0.642** | |
+| room size: 60 questions | 0.547 floor cells · 0.472 floor box | 0.647 | **0.658** |
+
+Every class with n ≥ 4 is worse under both rules, except doors under floorplan's rules (0.75 vs 0.55 on 12
+questions - the best of 18 class × rule cells, too few to act on). The labels look right (wall, floor, cabinet,
+chair, table in plausible shares; a bathroom gets its toilet, sink and tub); the instances are wrong, both ways.
+Chairs around a table merge into one cluster (classrooms: 23 → 4, 36 → 4, 16 → 4), while CUT3R's drift draws walls
+and objects twice (2 chairs → 5-6). floorplan's size rules trade over-counts for under-counts (39 / 20 → 22 / 33).
+(A repeat of the every-cluster pass gave 0.277: Utonia on MPS is not bit-stable.)
+
+Is it Utonia or the reconstruction? The 20 VSI ARKitScenes scenes that have a ground-truth scan in floorplan-vlm
+(`storage/data/gt/arkitscenes`, none among the 60) were probed on the scan and on a fresh CUT3R capture of the same
+videos (`capture_geometry.py --only`), same questions:
+
+| 20 ARKitScenes videos, MRA | counts (20 q): every cluster | floorplan rules | room (20 q): floor cells | floor box | box of all points |
+|---|---|---|---|---|---|
+| ground-truth scan | 0.200 | 0.195 | 0.565 | **0.630** (1.03 × truth) | 0.285 (1.52 ×) |
+| CUT3R stream | 0.355 | 0.250 | 0.405 | 0.245 (0.58 ×) | **0.595** (0.84 ×) |
+
+Counting fails on the clean scan too (14 over / 3 under): denser points leave more fragments, and the scan reaches
+into the neighbouring spaces. Utonia ships a semantic probe, not an instance head, and counting needs instances. The
+floor labels are right - the floor box of a complete scan is the best room estimate here - but CUT3R sees the floor
+partially and unevenly, so on our stream the floor box collapses and the box of all points (the rule we already use)
+stays best. **Nothing attached**: a wrong count gets copied (L1), and no room estimate beats ours. What would change
+it: an instance head on Utonia's features (training), or a reconstruction that sees the whole floor.
+
 ### Lessons so far (zero-shot, 4B)
 - **L6 Attach geometry only for scene-specific quantities; the model's prior already wins on canonical ones.**
   Object size is a property of the object category — a door is ~135 cm, a sofa ~180 cm — and the pretrained model
@@ -908,5 +948,6 @@ timestamps (I-04), recency weighting / decay, possibly state windows (I-05).
 | 47 | I-45c as I-45b with CUT3R fed only the 1 fps keyframes (~1 fps, the calibrated regime) | I-45 | done: **59.9, +1.6 [−2.3, +5.5]**; facts still degraded (direction 73 %) - not the ingest rate |
 | 48 | I-45d every frame at 1 fps for the LLM, the measurements from the 58.3 run's 32 frames (`--facts-budget 32`) | I-45 | done: **61.8, +3.5 [+0.3, +6.7]** vs 58.3 - adopted; facts identical, the frames alone |
 | 49 | I-46 vanilla Qwen (no CUT3R), the stack's prompt minus the facts, 32 frames and 1 fps | I-46 | done: 54.8 / 59.1 (1 fps spliced, see I-45's correction); CUT3R's share +3.5 / +2.7 |
+| 50 | I-47 Utonia + ScanNet-20 probe on the CUT3R stream: counts and room area vs the model's answers (60 videos); 20 ARKitScenes ground-truth scans vs CUT3R | I-47 | done: counts MRA 0.26 / 0.35 vs 0.64, room 0.55 / 0.47 vs our fact 0.66 - not attached; the clean scan does not fix counting (0.20) |
 | 25 | I-35 encoder bake-off: VGGT window 8 behind the same maps (directions attached, metric facts logged) | I-35 | done: **CUT3R wins** — direction 76.4 vs 56.7 (72 vs 54 on common questions), room area MRA 65.8 vs 9.5 (scale-free 69.0 vs 16.2) |
 | 14 | **Sensenova-only baseline on 4 nodes x 8 H100**: zero-shot VSI (full); S1 and S2 (one epoch each) real vs control, two seeds; plain SFT (no geometry); S2 joint (no S1); the 2B pair; S2 learning curve; gate | I-12, I-16, I-18, I-22 | four-day run from 09-26 (docs/SERVER_WEEKEND.md) |

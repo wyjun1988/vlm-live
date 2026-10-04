@@ -34,6 +34,7 @@ def main() -> int:
     ap.add_argument("--videos", type=int, default=60)
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--first-videos", type=int, default=0)
+    ap.add_argument("--only", default=None, help="comma list of <dataset>/<scene> instead of the seeded pick")
     ap.add_argument("--geom-stride", type=int, default=30)
     ap.add_argument("--budget", type=int, default=32, help="keyframes of the uniform-oracle selector (also ingested)")
     ap.add_argument("--pixel-stride", type=int, default=4, help="point-map subsample, as SceneMap(stride=...)")
@@ -63,6 +64,8 @@ def main() -> int:
     root = Path(args.vsi_root)
     docs = [json.loads(ln) for ln in open(root / "test.jsonl") if ln.strip()]
     vids = pick_videos(docs, args.videos, args.seed)
+    if args.only:
+        vids = [tuple(v.replace("__", "/").split("/", 1)) for v in args.only.split(",")]
     if args.first_videos:
         vids = vids[: args.first_videos]
     out = Path(args.out)
