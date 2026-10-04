@@ -716,7 +716,7 @@ the caps change only the LLM's frames (the cap binds on 37 / 12 of the 60 videos
 | (b) live, the LLM capped at 64 frames | 58.7 | −0.7 [−2.0, +0.6] vs (a) |
 | (c) live, the LLM capped at 128 frames | 59.6 | +0.2 [−0.4, +0.8] vs (a) |
 
-**The frame budget is cheap**: 128 frames (~25k visual tokens) lose nothing on VSI's 1-4 minute videos, 64 lose 0.7
+**The frame budget is cheap**: 128 frames (~15k visual tokens at ≤ 128 a frame) lose nothing on VSI's 1-4 minute videos, 64 lose 0.7
 (n.s.). **The measurements are not**: (a) loses on the types the facts serve - rel direction −5.6, room size −4.0 -
 because the facts degraded: direction facts 83.4 → 72.3 % right (coverage 77 → 78 %), room-fact MRA 66.0 → 60.7
 (scale 0.97 → 1.07 × truth, scale-free 65.0 → 61.8). The other types moved only with the frames' new positions
