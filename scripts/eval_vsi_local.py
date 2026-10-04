@@ -390,6 +390,9 @@ def main() -> int:
     ap.add_argument("--facts-budget", type=int, default=0,
                     help="> 0: the measurements (CUT3R keyframes, object detection) are made on this many uniform frames "
                          "while the LLM gets its own keyframes (--budget / --budget-fps) - I-45d; 0: the same frames")
+    ap.add_argument("--facts-selector", default="oracle", choices=("oracle", "live"),
+                    help="how the --facts-budget frames are chosen: uniform over the whole video (oracle - needs its "
+                         "length) or halving over the --geom-stride frames as they arrive (live, causal)")
     ap.add_argument("--visual-scale", default="1",
                     help="I-44: multiply the visual tokens the LLM receives by this gain, or 'ln' to LayerNorm them "
                          "(live3r.model.visual_scale); 1 = unchanged")
@@ -499,6 +502,8 @@ def main() -> int:
                          "outputs carry every scored record and are combined by scripts/merge_vsi_shards.py")
     ap.add_argument("--out", default=None)
     args = ap.parse_args()
+    if args.facts_budget > 0 and args.facts_selector == "live" and args.geom_stride >= 10**6:
+        raise SystemExit("--facts-selector live picks from the --geom-stride frames: give a stride (e.g. 30)")
 
     import av
     from lmms_eval.tasks.vsibench.utils import (
@@ -515,6 +520,7 @@ def main() -> int:
     from live3r.data.prompt import PromptBuilder
     from live3r.eval.prefix_cache import PrefixCache
     from live3r.eval.streaming import (
+        GridSelector,
         HalvingSelector,
         StreamingAudit,
         StreamingSession,
@@ -637,16 +643,27 @@ def main() -> int:
                 _c["frames"] += 1
                 _c["lifted"] += _om.add(i, dets, geom)          # the video frame index: time order and view gaps
         budget = args.budget
+        with av.open(str(path)) as c:
+            vfps = float(c.streams.video[0].average_rate or 30.0)
         if args.budget_fps > 0:                  # every frame at this rate: the budget follows the video's length
-            with av.open(str(path)) as c:
-                vfps = float(c.streams.video[0].average_rate or 30.0)
             budget = max(1, min(args.budget_cap, round(total / vfps * args.budget_fps)))
             budgets[f"{ds}/{scene}"] = budget
         for m in modes:
             sel_name, vmode = m.split("-")
-            sel = HalvingSelector(budget) if sel_name == "halving" else UniformOracleSelector(budget, total)
+            if sel_name == "halving":
+                sel = HalvingSelector(budget)
+            elif sel_name == "live":
+                # halving over the --budget-fps grid: every grid frame until the cap, then spread over all seen -
+                # the budget is the cap itself, so nothing depends on the video's length
+                live_budget = args.budget_cap if args.budget_fps > 0 else budget
+                sel = GridSelector(HalvingSelector(live_budget), round(vfps / (args.budget_fps or 1.0)))
+            else:
+                sel = UniformOracleSelector(budget, total)
             # 기하는 키프레임에서만 돌린다 (dummy·zero-init 이라 출력과 무관 — 속도만 아낀다)
-            fsel = UniformOracleSelector(args.facts_budget, total) if args.facts_budget > 0 else None
+            fsel = None
+            if args.facts_budget > 0:
+                fsel = (GridSelector(HalvingSelector(args.facts_budget), args.geom_stride)
+                        if args.facts_selector == "live" else UniformOracleSelector(args.facts_budget, total))
             sessions[m] = StreamingSession(live, sel, geom_stride=args.geom_stride, visual_mode=vmode,
                                            device=dev, audit=StreamingAudit(),
                                            scene_map=SceneMap() if args.scene_map else None,
@@ -882,7 +899,8 @@ def main() -> int:
             "route_objects": args.route_objects, "min_frames": args.min_frames, "measurements": meas_log,
             "interpret": args.interpret, "interpretations": interp_log, "metric_scales": metric_scales,
             "type_hints": args.type_hints, "describe_first": args.describe_first, "descriptions": describe_log,
-            "facts_hint": args.facts_hint, "visual_scale": args.visual_scale, "facts_budget": args.facts_budget, "budget": args.budget, "budget_fps": args.budget_fps,
+            "facts_hint": args.facts_hint, "visual_scale": args.visual_scale, "facts_budget": args.facts_budget,
+            "facts_selector": args.facts_selector, "budget": args.budget, "budget_fps": args.budget_fps,
             "budget_cap": args.budget_cap, "budgets": budgets,
             "hint_after": args.hint_after, "order_facts": args.order_facts, "count_facts": args.count_facts,
             "direction_facts": args.direction_facts, "direction_min_frames": args.direction_min_frames,

@@ -344,6 +344,29 @@ class HalvingSelector(KeyframeSelector):
         return out
 
 
+class GridSelector(KeyframeSelector):
+    """Another selector shown only every `every`-th frame. Halving over the 1 fps grid keeps, at any moment, frames
+    spread evenly over what has been seen, on the frames the geometry encoder ingests anyway (its stride): no extra
+    encoder calls, no burst of consecutive frames at the start, and below its budget every grid frame."""
+
+    def __init__(self, inner: KeyframeSelector, every: int) -> None:
+        self.inner, self.every = inner, max(1, int(every))
+        self.is_causal, self.needs_deferred = inner.is_causal, inner.needs_deferred
+        super().__init__(inner.budget)
+
+    def reset(self) -> None:
+        super().reset()
+        self.inner.reset()
+
+    def offer(self, index: int, frame: torch.Tensor):
+        if index % self.every:
+            return False, None
+        return self.inner.offer(index, frame)
+
+    def final_selection(self) -> list[int]:
+        return self.inner.final_selection()
+
+
 class UniformOracleSelector(KeyframeSelector):
     """**라이브 아님.** 총 길이를 알고 균등 추출하는 오프라인 상한선.
 
@@ -506,7 +529,10 @@ class StreamingSession:
         keep, evicted = self.selector.offer(i, raw)
         fkeep = False
         if self.facts_selector is not None:
-            fkeep, _ = self.facts_selector.offer(i, raw)
+            fkeep, fevicted = self.facts_selector.offer(i, raw)
+            if fevicted is not None:            # a causal facts selector drops frames as it goes (halving)
+                for e in (fevicted if isinstance(fevicted, (list, tuple, set)) else [fevicted]):
+                    self._facts_kept.pop(e, None)
         geom_key = fkeep if self.facts_selector is not None else keep
         run_geom = (i % self.geom_stride == 0) or geom_key
         if run_geom:

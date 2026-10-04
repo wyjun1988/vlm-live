@@ -10,6 +10,7 @@ from live3r.testing import SMALL_IDS, tiny_model
 from live3r.config import FusionConfig, GeometryConfig, Live3RConfig, LoRAConfig
 from live3r.eval.streaming import (
     SELECTORS,
+    GridSelector,
     HalvingSelector,
     ReservoirSelector,
     StreamingAudit,
@@ -308,3 +309,39 @@ def test_facts_selector_decouples_measurement_frames_from_llm_keyframes():
     for i in range(600):
         s2.push(i, frames[i])
     assert s2.facts_frames() == facts and s2.facts_kept(facts[0]).index == facts[0]
+
+
+def test_grid_selector_keeps_every_grid_frame_below_its_budget_and_halves_beyond():
+    """The live LLM frames (I-48): halving over the 1 fps grid - every grid frame while the budget lasts, then frames
+    spread over the whole stream, still on the grid."""
+    sel = GridSelector(HalvingSelector(32), 30)
+    kept = [i for i in range(30 * 20) if sel.offer(i, None)[0]]
+    assert kept == list(range(0, 600, 30)) and sel.final_selection() == kept      # 20 s < 32: every 1 fps frame
+    sel.reset()
+    for i in range(30 * 200):
+        sel.offer(i, None)
+    final = sel.final_selection()
+    assert len(final) == 32 and all(i % 30 == 0 for i in final)
+    assert final[0] == 0 and final[-1] >= 30 * 190                                  # the whole 200 s, not the start
+    assert sel.is_causal and sel.needs_deferred
+
+
+def test_live_facts_selector_halves_over_the_stride_frames():
+    """I-48: the measurement frames chosen causally - halving over the frames the encoder ingests anyway (the stride).
+    No geometry call beyond the stride frames, evicted frames are let go, and at question time the kept ones span
+    the whole stream as the oracle's would."""
+    m = make_model()
+    calls: list[tuple[int, bool]] = []
+    s = StreamingSession(m, UniformOracleSelector(40, 600), geom_stride=10, audit=StreamingAudit(),
+                         facts_selector=GridSelector(HalvingSelector(8), 10),
+                         on_geometry=lambda i, raw, g, key: calls.append((i, key)))
+    s.begin(fps=30)
+    frames = torch.randint(0, 255, (600, 72, 96, 3), dtype=torch.uint8)
+    for i in range(600):
+        s.push(i, frames[i])
+    facts = s.facts_frames()
+    assert len(facts) == 8 and facts == sorted(facts) and all(i % 10 == 0 for i in facts)
+    assert facts[0] == 0 and facts[-1] >= 500
+    assert {i for i, _ in calls} == set(range(0, 600, 10))                       # the stride frames, nothing else
+    assert set(s._facts_kept) == set(s.facts_selector.inner.kept)                # evicted frames released
+    assert all(s.facts_kept(i).geom is not None and s.facts_kept(i).index == i for i in facts)

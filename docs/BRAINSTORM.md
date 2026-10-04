@@ -82,6 +82,7 @@ time (I-21). The rule that held every time: attach geometry only for what the fr
 | + frame-count scale calibration on the metric facts at read time (I-37) | 58.0 | +1.1 vs 56.9 | [+0.3, +2.1] |
 | + a scale-prior hint for room size, object size and distance questions (I-40b) | 58.3 | +0.3 vs 58.0 | [−0.0, +0.6] |
 | + every frame at 1 fps to the LLM, the measurements still from the 32 frames (I-45d, 2026-10-04) | **61.8** | +3.5 vs 58.3 | [+0.3, +6.7] |
+| the same chosen causally - frames and measurement frames by halving over the 1 fps grid: **the live number** (I-48, 2026-10-05) | 59.4 | −2.4 vs 61.8 | [−4.4, −0.4] |
 
 Directions 69.2 → 75.0 from the accumulation; room 67.0 → 66.2 and abs distance 42.1 → 39.8 remain the cost of the
 drift; size 65.3 → 66.8 from the prior. vs keyframes only +0.5 [−0.9, +2.1]: the best measured configuration, and
@@ -695,6 +696,40 @@ partially and unevenly, so on our stream the floor box collapses and the box of 
 stays best. **Nothing attached**: a wrong count gets copied (L1), and no room estimate beats ours. What would change
 it: an instance head on Utonia's features (training), or a reconstruction that sees the whole floor.
 
+The ceiling of such a head (parked - a training job, not zero-shot): perfect counts on the ScanNet-20 classes would
+take the 61.8 run to 64.0 (+2.3, 70 questions), perfect distances between ScanNet-20 objects as well to 65.4 (+3.6,
+103 questions); counts 10 % off everywhere +1.9, 25 % off +0.5. Relative direction and relative distance questions
+name objects outside ScanNet-20 94-100 % of the time - the vocabulary limits Utonia more than its instances do.
+
+### I-48 The 61.8 stack made live: causal frame and measurement selection, LLM frame caps — **live 59.4; a 128-frame cap is free, 64 costs −0.7 (2026-10-05)**
+The 61.8 run chose its 32 measurement frames uniformly over the whole video (an oracle: it needs the length), and
+CUT3R ingested them on top of the 1 fps frames. Live versions (`--modes live-image --facts-selector live`): the LLM's
+frames and the measurement frames by halving over the 1 fps grid (`GridSelector(HalvingSelector)`) - every 1 fps
+frame until the budget, then spread over everything seen; the budgets are the cap and 32, so nothing depends on the
+video's length. CUT3R ingests exactly the 1 fps frames in all three runs, so their measurements are identical and
+the caps change only the LLM's frames (the cap binds on 37 / 12 of the 60 videos at 64 / 128; median 81 frames).
+
+| 60 videos | VSI | vs |
+|---|---|---|
+| the 61.8 run (oracle frames and measurement frames) | 61.8 | |
+| (a) live, uncapped | 59.4 | −2.4 [−4.4, −0.4] vs 61.8 |
+| (b) live, the LLM capped at 64 frames | 58.7 | −0.7 [−2.0, +0.6] vs (a) |
+| (c) live, the LLM capped at 128 frames | 59.6 | +0.2 [−0.4, +0.8] vs (a) |
+
+**The frame budget is cheap**: 128 frames (~25k visual tokens) lose nothing on VSI's 1-4 minute videos, 64 lose 0.7
+(n.s.). **The measurements are not**: (a) loses on the types the facts serve - rel direction −5.6, room size −4.0 -
+because the facts degraded: direction facts 83.4 → 72.3 % right (coverage 77 → 78 %), room-fact MRA 66.0 → 60.7
+(scale 0.97 → 1.07 × truth, scale-free 65.0 → 61.8). The other types moved only with the frames' new positions
+(counting −3.0 on 16 changed answers, order −2.0 on 6: the noise of moving the same number of frames).
+
+72 % is also the I-45b/c number, which we put down to the dense detection set; here detection is sparse (32 frames)
+and it is still 72 %. What the 83 % runs had and every 72 % run lacked: the measured frames were **extra** CUT3R
+inputs, each ingested within a second after a 1 fps frame, and only 32 of them. Hypothesis: a frame CUT3R sees right
+after a nearby view is placed more precisely, and the 32 extra views also sharpen the map (the scale-free room MRA
+fell without them). The frame-count scale calibration was fitted in the 83 % regime (32 more frames a video), hence
+1.07. Live test: measurement candidates half a second off the 1 fps grid, so each is an extra CUT3R input as in
+the oracle run.
+
 ### Lessons so far (zero-shot, 4B)
 - **L6 Attach geometry only for scene-specific quantities; the model's prior already wins on canonical ones.**
   Object size is a property of the object category — a door is ~135 cm, a sofa ~180 cm — and the pretrained model
@@ -949,5 +984,6 @@ timestamps (I-04), recency weighting / decay, possibly state windows (I-05).
 | 48 | I-45d every frame at 1 fps for the LLM, the measurements from the 58.3 run's 32 frames (`--facts-budget 32`) | I-45 | done: **61.8, +3.5 [+0.3, +6.7]** vs 58.3 - adopted; facts identical, the frames alone |
 | 49 | I-46 vanilla Qwen (no CUT3R), the stack's prompt minus the facts, 32 frames and 1 fps | I-46 | done: 54.8 / 59.1 (1 fps spliced, see I-45's correction); CUT3R's share +3.5 / +2.7 |
 | 50 | I-47 Utonia + ScanNet-20 probe on the CUT3R stream: counts and room area vs the model's answers (60 videos); 20 ARKitScenes ground-truth scans vs CUT3R | I-47 | done: counts MRA 0.26 / 0.35 vs 0.64, room 0.55 / 0.47 vs our fact 0.66 - not attached; the clean scan does not fix counting (0.20) |
+| 51 | I-48 the 61.8 stack with causal selection (live): uncapped, the LLM capped at 64 and 128 frames | I-48 | done: **59.4**, −2.4 [−4.4, −0.4] vs 61.8 (direction facts 83 → 72 %, room facts 66 → 61); cap 128 +0.2, cap 64 −0.7 |
 | 25 | I-35 encoder bake-off: VGGT window 8 behind the same maps (directions attached, metric facts logged) | I-35 | done: **CUT3R wins** — direction 76.4 vs 56.7 (72 vs 54 on common questions), room area MRA 65.8 vs 9.5 (scale-free 69.0 vs 16.2) |
 | 14 | **Sensenova-only baseline on 4 nodes x 8 H100**: zero-shot VSI (full); S1 and S2 (one epoch each) real vs control, two seeds; plain SFT (no geometry); S2 joint (no S1); the 2B pair; S2 learning curve; gate | I-12, I-16, I-18, I-22 | four-day run from 09-26 (docs/SERVER_WEEKEND.md) |
