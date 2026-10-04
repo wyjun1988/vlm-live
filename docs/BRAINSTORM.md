@@ -601,7 +601,11 @@ QA, and a single scalar gain on the visual embeddings is a zero-shot lever. Test
 with the visual embeddings × {1, 2, 3, 5.6} and LayerNorm'd, per type; the loss effect first on 200 holdout samples.
 Watch the general side too (a louder image may drown the question).
 
-### I-45 Every frame at 1 fps in the LLM, not 32 keyframes — **tested: +2.7, not yet significant; strong per type (2026-10-03)**
+### I-45 Every frame at 1 fps in the LLM, not 32 keyframes — **tested: +4.4 [+0.8, +8.0] (corrected 10-04); adopted with I-45d**
+> Correction (2026-10-04): the first vanilla 1 fps runs had all 31 questions of the longest video (scannetpp/38d58a7a31,
+> 219 frames) answered "!!!!" - a transient failure of the long sequential MPS run (the same video run alone answers
+> normally; the CUT3R runs never broke). With that video re-run alone and spliced in: format hint only **58.1 vs 53.7,
+> +4.4 [+0.8, +8.0]**; with the prior hints 59.1 vs 54.8, +4.3 [+0.7, +7.7]. The numbers below are the first run's.
 The reference team's numbers (docs/REFERENCE_70_ANALYSIS.md §9): their trained 70.83 model scored **72.18** when fed
 every frame at 1 fps (up to 512) instead of 32 uniform frames; and our own 8-keyframe run (I-36) lost 6.4. Live, the
 frames accumulate anyway (cached prefix). `eval_vsi_local.py --budget-fps 1 --budget-cap 256`: per video, its length in
@@ -636,6 +640,20 @@ direction +10.6, rel distance +8.7): the two levers stack. Cost: ~2.6x the visua
 Rule for the live design: **every frame at 1 fps goes to the LLM; the measurements are made on a sparse, fixed
 frame set** - a denser detection/tracking set made the direction facts worse (83 → 72 %). (The 32 measurement
 frames are uniform over the whole video here, an oracle choice; live they need a causal selector, e.g. halving.)
+
+### I-46 CUT3R removed: vanilla Qwen3.5 with the same prompt — **CUT3R's own share is +2.7 to +3.5 (2026-10-04)**
+The stack's prompt minus its CUT3R facts (format instruction + the three prior hints), same 60 videos:
+
+| Qwen input | vanilla + format | + prior hints (no CUT3R) | + CUT3R facts (the stack) | CUT3R's share |
+|---|---|---|---|---|
+| 32 uniform frames | 53.7 | 54.8 | 58.3 | **+3.5 [+1.8, +5.3]** |
+| every frame at 1 fps | 58.1 | 59.1 | **61.8** | **+2.7 [+0.9, +4.6]** |
+| 1 fps − 32 | +4.4 [+0.8, +8.0] | +4.3 [+0.7, +7.7] | +3.5 [+0.3, +6.7] | |
+
+CUT3R changes only the types it attaches facts to - at 1 fps rel direction +10.6, room size +10.3, abs distance +0.8,
+every other answer identical. **More frames to the LLM (59.1, no CUT3R) is worth more than CUT3R facts on 32 frames
+(58.3)**; the two add (61.8). For the live design: the frame budget of the LLM is the bigger lever, the CUT3R facts a
+consistent +3 on top.
 
 ### Lessons so far (zero-shot, 4B)
 - **L6 Attach geometry only for scene-specific quantities; the model's prior already wins on canonical ones.**
@@ -888,6 +906,7 @@ timestamps (I-04), recency weighting / decay, possibly state windows (I-05).
 | 45 | I-45 every frame at 1 fps in the LLM (`--budget-fps 1`), base + format hint, seed 1 | I-45 | done: **56.4 vs 53.7, +2.7 [−1.1, +6.4]**; order +11.5, rel dir +10.6, route +5.4; rel dist −4.7, room −4.2 |
 | 46 | I-45b the adopted streaming stack (58.3) with every frame at 1 fps | I-45 | done: **59.5, +1.2 [−2.6, +4.8]** vs 58.3; facts degraded (direction facts 83 → 72 %, CUT3R at ~2 fps) |
 | 47 | I-45c as I-45b with CUT3R fed only the 1 fps keyframes (~1 fps, the calibrated regime) | I-45 | done: **59.9, +1.6 [−2.3, +5.5]**; facts still degraded (direction 73 %) - not the ingest rate |
-| 48 | I-45d every frame at 1 fps for the LLM, the measurements from the 58.3 run's 32 frames (`--facts-budget 32`) | I-45 | done: **61.8, +3.5 [+0.3, +6.7]** vs 58.3 - adopted; facts identical, the frames alone; stacks with the facts (+5.4 over 1 fps alone) |
+| 48 | I-45d every frame at 1 fps for the LLM, the measurements from the 58.3 run's 32 frames (`--facts-budget 32`) | I-45 | done: **61.8, +3.5 [+0.3, +6.7]** vs 58.3 - adopted; facts identical, the frames alone |
+| 49 | I-46 vanilla Qwen (no CUT3R), the stack's prompt minus the facts, 32 frames and 1 fps | I-46 | done: 54.8 / 59.1 (1 fps spliced, see I-45's correction); CUT3R's share +3.5 / +2.7 |
 | 25 | I-35 encoder bake-off: VGGT window 8 behind the same maps (directions attached, metric facts logged) | I-35 | done: **CUT3R wins** — direction 76.4 vs 56.7 (72 vs 54 on common questions), room area MRA 65.8 vs 9.5 (scale-free 69.0 vs 16.2) |
 | 14 | **Sensenova-only baseline on 4 nodes x 8 H100**: zero-shot VSI (full); S1 and S2 (one epoch each) real vs control, two seeds; plain SFT (no geometry); S2 joint (no S1); the 2B pair; S2 learning curve; gate | I-12, I-16, I-18, I-22 | four-day run from 09-26 (docs/SERVER_WEEKEND.md) |

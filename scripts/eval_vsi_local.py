@@ -386,6 +386,7 @@ def main() -> int:
                     help="> 0: the keyframe budget per video = its length in seconds x this rate (1 = every frame at 1 fps, "
                          "the 70.83 reference's fps1 evaluation), capped by --budget-cap; replaces --budget")
     ap.add_argument("--budget-cap", type=int, default=256)
+    ap.add_argument("--only-videos", default=None, help="comma list of <dataset>/<scene> to keep from the selection")
     ap.add_argument("--facts-budget", type=int, default=0,
                     help="> 0: the measurements (CUT3R keyframes, object detection) are made on this many uniform frames "
                          "while the LLM gets its own keyframes (--budget / --budget-fps) - I-45d; 0: the same frames")
@@ -526,6 +527,9 @@ def main() -> int:
     root = Path(args.vsi_root)
     docs = [json.loads(line) for line in open(root / "test.jsonl")]
     vids = pick_videos(docs, args.videos, args.seed)
+    if args.only_videos:                     # debugging one video: "scannetpp/38d58a7a31,scannet/scene0011_00"
+        want = {tuple(v.split("/", 1)) for v in args.only_videos.split(",")}
+        vids = [v for v in vids if v in want]
     if args.first_videos:
         vids = vids[: args.first_videos]
     if args.num_shards > 1:   # one GPU's share of the run; scripts/merge_vsi_shards.py puts the shards together
@@ -558,7 +562,10 @@ def main() -> int:
         print(f"학습 설정 {args.config} · 기하 {cfg.geometry.name} · LoRA {cfg.lora.enabled} · 가중치 {args.weights}")
     else:
         tok = AutoTokenizer.from_pretrained(args.model)
-        base = Qwen3_5ForConditionalGeneration.from_pretrained(args.model, dtype=DTYPES[args.dtype]).to(dev).eval()
+        # sdpa as the config path (Live3RModel.from_pretrained) uses: without it the longest 1 fps video (219 frames,
+        # ~28k visual tokens) decoded to "!!!!" on MPS - 31 broken answers in I-45 / I-46 (2026-10-04)
+        base = Qwen3_5ForConditionalGeneration.from_pretrained(args.model, dtype=DTYPES[args.dtype],
+                                                               attn_implementation="sdpa").to(dev).eval()
         cfg = Live3RConfig(
             base_model=args.model, dtype=args.dtype,
             geometry=GeometryConfig(name=args.geometry, tap_layers=(6, 9, 12), hidden_size=768, image_size=512),
@@ -603,6 +610,13 @@ def main() -> int:
     timing = collections.defaultdict(float)
     budgets: dict[str, int] = {}
     for vi, (ds, scene) in enumerate(vids):
+        if dev.type == "mps":
+            # 2026-10-04: in a sequential 60-video run the longest 1 fps video (219 frames) answered "!!!!" to all 31
+            # questions and fine when run alone - free the allocator's cache between videos
+            import gc
+
+            gc.collect()
+            torch.mps.empty_cache()
         path = root / ds / f"{scene}.mp4"
         qs = [d for d in todo if d["dataset"] == ds and d["scene_name"] == scene]
         total = count_frames(path)
@@ -651,6 +665,8 @@ def main() -> int:
                 for s in sessions.values():
                     s.push(i, raw)
         timing["decode"] += time.time() - t1
+        if vi and scored and any(r and str(r[-1].get("prediction", "")).startswith("!!!") for r in scored.values()):
+            print(f"  WARNING: a broken '!!!' answer in the previous video - its results are not usable")
 
         for m, s in sessions.items():
             t2 = time.time()
