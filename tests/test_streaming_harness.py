@@ -345,3 +345,25 @@ def test_live_facts_selector_halves_over_the_stride_frames():
     assert {i for i, _ in calls} == set(range(0, 600, 10))                       # the stride frames, nothing else
     assert set(s._facts_kept) == set(s.facts_selector.inner.kept)                # evicted frames released
     assert all(s.facts_kept(i).geom is not None and s.facts_kept(i).index == i for i in facts)
+
+
+def test_offset_facts_grid_measures_on_extra_frames_right_after_a_stride_frame():
+    """I-48: candidates half a stride off the encoder's grid - every measurement frame is an extra encoder input that
+    directly follows a stride frame, as the oracle's uniform frames were; every stride frame is still ingested."""
+    m = make_model()
+    calls: list[tuple[int, bool]] = []
+    s = StreamingSession(m, UniformOracleSelector(40, 600), geom_stride=10, audit=StreamingAudit(),
+                         facts_selector=GridSelector(HalvingSelector(8), 10, offset=5),
+                         on_geometry=lambda i, raw, g, key: calls.append((i, key)))
+    s.begin(fps=30)
+    frames = torch.randint(0, 255, (600, 72, 96, 3), dtype=torch.uint8)
+    for i in range(600):
+        s.push(i, frames[i])
+    facts = s.facts_frames()
+    assert len(facts) == 8 and all(i % 10 == 5 for i in facts)
+    ingested = [i for i, _ in calls]
+    assert set(range(0, 600, 10)) <= set(ingested)                                 # every stride frame
+    extra = [i for i in ingested if i % 10]
+    assert all(i % 10 == 5 for i in extra) and set(facts) <= set(extra)            # extras only on the offset grid
+    assert all(ingested[ingested.index(i) - 1] == i - 5 for i in extra)             # each right after a stride frame
+    assert all(s.facts_kept(i).geom is not None and s.facts_kept(i).index == i for i in facts)

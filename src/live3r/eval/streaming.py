@@ -347,10 +347,13 @@ class HalvingSelector(KeyframeSelector):
 class GridSelector(KeyframeSelector):
     """Another selector shown only every `every`-th frame. Halving over the 1 fps grid keeps, at any moment, frames
     spread evenly over what has been seen, on the frames the geometry encoder ingests anyway (its stride): no extra
-    encoder calls, no burst of consecutive frames at the start, and below its budget every grid frame."""
+    encoder calls, no burst of consecutive frames at the start, and below its budget every grid frame.
 
-    def __init__(self, inner: KeyframeSelector, every: int) -> None:
-        self.inner, self.every = inner, max(1, int(every))
+    `offset` shifts the grid (frames `offset`, `offset + every`, ...): measurement frames half a second off the 1 fps
+    grid are extra encoder inputs, each right after a 1 fps frame, as the oracle's uniform frames were (I-48)."""
+
+    def __init__(self, inner: KeyframeSelector, every: int, offset: int = 0) -> None:
+        self.inner, self.every, self.offset = inner, max(1, int(every)), max(0, int(offset))
         self.is_causal, self.needs_deferred = inner.is_causal, inner.needs_deferred
         super().__init__(inner.budget)
 
@@ -359,7 +362,7 @@ class GridSelector(KeyframeSelector):
         self.inner.reset()
 
     def offer(self, index: int, frame: torch.Tensor):
-        if index % self.every:
+        if index < self.offset or (index - self.offset) % self.every:
             return False, None
         return self.inner.offer(index, frame)
 

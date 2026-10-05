@@ -730,7 +730,21 @@ fell without them). The frame-count scale calibration was fitted in the 83 % reg
 1.07. Live test: measurement candidates half a second off the 1 fps grid, so each is an extra CUT3R input as in
 the oracle run.
 
+**I-48b, the test (`--facts-offset 0.5`, cap 128): 59.5, −0.1 [−1.9, +1.8] vs (c) - the hypothesis does not hold.**
+Direction facts 76.2 % (coverage 72 %), room-fact MRA 60.8 (scale 0.93, scale-free 62.5). What the 83 % really was:
+the whole gap sits in 2-3 object triples per run. VSI asks each (A, B, C) triple 6-9 times (three difficulties, the
+roles rotated), and every flipped triple has an object our map found several times (3 lamps in one run, 2 in the
+other; 7-9 doors) - the most-observed instance changes with the frame set and the triple flips as a block (the
+layouts themselves agree up to a rotation, 0.14 m rms; nothing is mirrored). So the oracle's 83 % was in part a
+favourable draw, and oracle vs live on 60 videos is mostly this luck, not a systematic cost. Attaching a direction
+only when every instance combination agrees is no fix: 18-29 % coverage at 49-97 % right, erratic across runs.
+
 ### Lessons so far (zero-shot, 4B)
+- **L7 Count fact changes by the object triples they flip, not by questions** (I-48, 2026-10-05). VSI asks one
+  (A, B, C) triple 6-9 times, so one wrong instance choice moves the direction score by ~5 points; an object
+  detected several times is where it happens. On the 60-video set a change of the measurement frames alone moved
+  the overall score by ~2 (61.8 vs 59.4-59.6): treat differences of that size in the fact-based types as noise
+  until they hold on other videos.
 - **L6 Attach geometry only for scene-specific quantities; the model's prior already wins on canonical ones.**
   Object size is a property of the object category — a door is ~135 cm, a sofa ~180 cm — and the pretrained model
   knows it (66.7 MRA) better than we can measure it (40.3). Room area and inter-object distance are properties of
@@ -985,5 +999,6 @@ timestamps (I-04), recency weighting / decay, possibly state windows (I-05).
 | 49 | I-46 vanilla Qwen (no CUT3R), the stack's prompt minus the facts, 32 frames and 1 fps | I-46 | done: 54.8 / 59.1 (1 fps spliced, see I-45's correction); CUT3R's share +3.5 / +2.7 |
 | 50 | I-47 Utonia + ScanNet-20 probe on the CUT3R stream: counts and room area vs the model's answers (60 videos); 20 ARKitScenes ground-truth scans vs CUT3R | I-47 | done: counts MRA 0.26 / 0.35 vs 0.64, room 0.55 / 0.47 vs our fact 0.66 - not attached; the clean scan does not fix counting (0.20) |
 | 51 | I-48 the 61.8 stack with causal selection (live): uncapped, the LLM capped at 64 and 128 frames | I-48 | done: **59.4**, −2.4 [−4.4, −0.4] vs 61.8 (direction facts 83 → 72 %, room facts 66 → 61); cap 128 +0.2, cap 64 −0.7 |
+| 52 | I-48b live, cap 128, the measurement frames half a second off the 1 fps grid (extra CUT3R inputs, as the oracle's) | I-48 | done: **59.5**, −0.1 [−1.9, +1.8] vs cap 128 - no; the gap is 2-3 object triples flipping with the instance choice |
 | 25 | I-35 encoder bake-off: VGGT window 8 behind the same maps (directions attached, metric facts logged) | I-35 | done: **CUT3R wins** — direction 76.4 vs 56.7 (72 vs 54 on common questions), room area MRA 65.8 vs 9.5 (scale-free 69.0 vs 16.2) |
 | 14 | **Sensenova-only baseline on 4 nodes x 8 H100**: zero-shot VSI (full); S1 and S2 (one epoch each) real vs control, two seeds; plain SFT (no geometry); S2 joint (no S1); the 2B pair; S2 learning curve; gate | I-12, I-16, I-18, I-22 | four-day run from 09-26 (docs/SERVER_WEEKEND.md) |

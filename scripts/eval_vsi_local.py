@@ -393,6 +393,9 @@ def main() -> int:
     ap.add_argument("--facts-selector", default="oracle", choices=("oracle", "live"),
                     help="how the --facts-budget frames are chosen: uniform over the whole video (oracle - needs its "
                          "length) or halving over the --geom-stride frames as they arrive (live, causal)")
+    ap.add_argument("--facts-offset", type=float, default=0.0,
+                    help="seconds: with --facts-selector live, the measurement candidates sit this far off the "
+                         "--geom-stride frames, so each is an extra CUT3R input right after one (I-48: 0.5)")
     ap.add_argument("--visual-scale", default="1",
                     help="I-44: multiply the visual tokens the LLM receives by this gain, or 'ln' to LayerNorm them "
                          "(live3r.model.visual_scale); 1 = unchanged")
@@ -504,6 +507,8 @@ def main() -> int:
     args = ap.parse_args()
     if args.facts_budget > 0 and args.facts_selector == "live" and args.geom_stride >= 10**6:
         raise SystemExit("--facts-selector live picks from the --geom-stride frames: give a stride (e.g. 30)")
+    if args.facts_offset and args.facts_selector != "live":
+        raise SystemExit("--facts-offset shifts the live facts selector's grid: use it with --facts-selector live")
 
     import av
     from lmms_eval.tasks.vsibench.utils import (
@@ -662,7 +667,8 @@ def main() -> int:
             # 기하는 키프레임에서만 돌린다 (dummy·zero-init 이라 출력과 무관 — 속도만 아낀다)
             fsel = None
             if args.facts_budget > 0:
-                fsel = (GridSelector(HalvingSelector(args.facts_budget), args.geom_stride)
+                fsel = (GridSelector(HalvingSelector(args.facts_budget), args.geom_stride,
+                                     offset=round(args.facts_offset * vfps))
                         if args.facts_selector == "live" else UniformOracleSelector(args.facts_budget, total))
             sessions[m] = StreamingSession(live, sel, geom_stride=args.geom_stride, visual_mode=vmode,
                                            device=dev, audit=StreamingAudit(),
@@ -900,7 +906,8 @@ def main() -> int:
             "interpret": args.interpret, "interpretations": interp_log, "metric_scales": metric_scales,
             "type_hints": args.type_hints, "describe_first": args.describe_first, "descriptions": describe_log,
             "facts_hint": args.facts_hint, "visual_scale": args.visual_scale, "facts_budget": args.facts_budget,
-            "facts_selector": args.facts_selector, "budget": args.budget, "budget_fps": args.budget_fps,
+            "facts_selector": args.facts_selector, "facts_offset": args.facts_offset, "budget": args.budget,
+            "budget_fps": args.budget_fps,
             "budget_cap": args.budget_cap, "budgets": budgets,
             "hint_after": args.hint_after, "order_facts": args.order_facts, "count_facts": args.count_facts,
             "direction_facts": args.direction_facts, "direction_min_frames": args.direction_min_frames,
