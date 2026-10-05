@@ -28,6 +28,10 @@ class FakeMap:
     def pair_distance(self, a, b, min_frames=2):
         return None
 
+    def pick(self, name, min_frames=2):        # ObjectMap.pick with its default rule: the most-viewed instance
+        inst = self.lookup(name, min_frames)
+        return max(inst, key=lambda i: len(i["frames"])) if inst else None
+
 
 ORDER_Q = ("What will be the first-time appearance order of the following categories in the video: "
            "ceiling light, cup, heater, door?")
@@ -114,6 +118,35 @@ def test_direction_facts_use_the_most_observed_instance_and_need_all_three():
     om2 = FakeMap({"stove": [(1, 5, (0.0, 0.0, 0.0))], "sofa": [(2, 4, (0.0, 3.0, 0.0))]})
     assert ev.object_facts_for(q, om2, min_frames=3, direction_facts=True) == ""
     assert ev.object_facts_for(q, om, min_frames=3, direction_facts=False) == ""   # logged, not attached
+
+
+def _scored_map(rule):
+    """A real ObjectMap: stove (0, 0), sofa (0, 3) - facing +y - and two tvs: (-2, 2) on the left, seen once at
+    score 0.9, and (5, 0) on the right, seen three times at 0.85."""
+    import numpy as np
+
+    from live3r.serve.object_map import ObjectMap
+
+    om = ObjectMap(instance_rule=rule)
+    for label, xyz, frames, score in (("stove", (0, 0, 0), (1, 2, 3), 0.8), ("sofa", (0, 3, 0), (1, 2, 3), 0.8),
+                                      ("tv", (-2, 2, 0), (4,), 0.9), ("tv", (5, 0, 0), (5, 6, 7), 0.85)):
+        for f in frames:
+            om._observe(label, np.array(xyz, float), f, np.array([xyz], np.float32), score=score)
+    return om
+
+
+def test_direction_instance_rule_and_abstention():
+    """I-49: most_views takes the 3-view tv (right); score_max the more confident one (left); with abstention an
+    alternative nearly as confident (0.85 >= 0.8 x 0.9) that flips the answer leaves the question without a fact."""
+    q = ("If I am standing by the stove and facing the sofa, is the tv to my left, right, or back?\n"
+         "An object is to my back if I would have to turn at least 135 degrees in order to face it.")
+    kw = dict(min_frames=3, direction_facts=True, direction_min_frames=1)
+    assert ev.object_facts_for(q, _scored_map("most_views"), **kw).endswith("the tv is to your right.\n")
+    assert ev.object_facts_for(q, _scored_map("score_max"), **kw).endswith("the tv is to your left.\n")
+    log = []
+    assert ev.object_facts_for(q, _scored_map("score_max"), log=log, direction_abstain=0.8, **kw) == ""
+    assert log[-1]["r1"] is None
+    assert ev.object_facts_for(q, _scored_map("score_max"), direction_abstain=0.95, **kw).endswith("to your left.\n")
 
 
 ROUTE_Q = ("You are a robot beginning at the bed facing the tv. You want to navigate to the toilet. You will perform "

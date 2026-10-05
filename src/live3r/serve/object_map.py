@@ -84,7 +84,8 @@ class ObjectMap:
     """
 
     def __init__(self, merge_dist: float = 0.8, inner: float = 0.5, min_points: int = 15,
-                 keep_points: int = 200, view_gap: int = 0) -> None:
+                 keep_points: int = 200, view_gap: int = 0, log: bool = False,
+                 instance_rule: str = "most_views") -> None:
         # view_gap: two observations count as separate views only if their frame numbers are at least this far
         # apart. 0 = every detection frame is a view (right when detection runs on sparse keyframes). With
         # detection at ~1 fps "3 views" would otherwise be three near-duplicate frames (2026-09-27: distance MRA at
@@ -95,6 +96,13 @@ class ObjectMap:
         self.min_points = min_points
         self.keep_points = keep_points
         self._inst: list[dict] = []   # {"label", "obs": [xyz...], "first": frame_no, "pts": [N,3], "frames": set}
+        # log: every lifted observation as it came (label, frame, detector score, position, a point sample), so that
+        # instance rules can be replayed offline (I-49)
+        self.log: list[dict] | None = [] if log else None
+        # instance_rule: which instance stands for a named object when the map has several (see pick)
+        if instance_rule not in ("most_views", "score_max"):
+            raise ValueError(f"instance_rule must be most_views or score_max, got {instance_rule!r}")
+        self.instance_rule = instance_rule
 
     def add(self, frame_no: int, dets: list[dict], geom) -> int:
         """Lift one keyframe's detections with its CUT3R output (pointmap [1,3,H,W], conf [1,1,H,W]).
@@ -127,12 +135,13 @@ class ObjectMap:
             fr0, fr1 = int(y1 * h), int(np.ceil(y2 * h))
             fpts = pm[:, fr0:fr1, fc0:fc1].reshape(3, -1).T
             fok = (cf[fr0:fr1, fc0:fc1].reshape(-1) >= thr) & np.isfinite(fpts).all(1)
-            self._observe(canon(d["label"]), np.median(good, axis=0), frame_no, good, _thin(fpts[fok], self.keep_points))
+            self._observe(canon(d["label"]), np.median(good, axis=0), frame_no, good, _thin(fpts[fok], self.keep_points),
+                          score=d.get("score"))
             lifted += 1
         return lifted
 
     def _observe(self, label: str, xyz: np.ndarray, frame_no: int, pts: np.ndarray | None = None,
-                 box_pts: np.ndarray | None = None) -> None:
+                 box_pts: np.ndarray | None = None, score: float | None = None) -> None:
         best, best_d = None, None
         for inst in self._inst:
             if inst["label"] != label:
@@ -146,11 +155,16 @@ class ObjectMap:
                 best, best_d = inst, dist
         pts = np.zeros((0, 3), np.float32) if pts is None else pts.astype(np.float32)
         box_pts = pts if box_pts is None else box_pts.astype(np.float32)
+        score = float("nan") if score is None else float(score)
+        if self.log is not None:
+            self.log.append({"label": label, "frame": int(frame_no), "score": score, "xyz": np.asarray(xyz, np.float32),
+                             "pts": _thin(pts, 64), "box_pts": _thin(box_pts, 64)})
         if best is None:
             self._inst.append({"label": label, "obs": [xyz], "first": frame_no, "pts": pts,
-                               "box_pts": box_pts, "frames": {frame_no}})
+                               "box_pts": box_pts, "frames": {frame_no}, "scores": [score]})
         else:
             best["obs"].append(xyz)
+            best["scores"].append(score)
             best["first"] = min(best["first"], frame_no)
             best["frames"].add(frame_no)
             for key, new_pts in (("pts", pts), ("box_pts", box_pts)):
@@ -172,6 +186,24 @@ class ObjectMap:
         """Instances whose label matches `name` (synonyms, plural) and that were seen in >= min_frames separate views."""
         want = canon(name)
         return [i for i in self._inst if i["label"] == want and self.n_views(i) >= min_frames]
+
+    @staticmethod
+    def top_score(inst: dict) -> float:
+        """The instance's most confident single detection (-inf when the detector gave no scores)."""
+        s = [x for x in inst.get("scores", []) if x == x]
+        return max(s) if s else float("-inf")
+
+    def pick(self, name: str, min_frames: int = 2) -> dict | None:
+        """The instance that stands for a named object: the most-viewed one, or (instance_rule="score_max", I-49) the
+        one holding the most confident single detection - when "the lamp" has duplicates in the map, which of them is
+        seen most often changes with the frame set and flips every fact about it, while the true object usually holds
+        the most confident detection."""
+        inst = self.lookup(name, min_frames)
+        if not inst:
+            return None
+        if self.instance_rule == "score_max" and any(self.top_score(i) > float("-inf") for i in inst):
+            return max(inst, key=self.top_score)
+        return max(inst, key=lambda i: len(i["frames"]))
 
     @staticmethod
     def closest_distance(a: dict, b: dict) -> float | None:
@@ -200,7 +232,11 @@ class ObjectMap:
 
     def pair_distance(self, name_a: str, name_b: str, min_frames: int = 2) -> float | None:
         """Closest-point distance between the nearest instances of two named objects, or None if either is
-        missing / seen in fewer than min_frames keyframes (then nothing should be attached — I-28)."""
+        missing / seen in fewer than min_frames keyframes (then nothing should be attached — I-28). With
+        instance_rule="score_max", between the instances that stand for them (pick) instead."""
+        if self.instance_rule == "score_max":
+            a, b = self.pick(name_a, min_frames), self.pick(name_b, min_frames)
+            return self.closest_distance(a, b) if a is not None and b is not None else None
         A, B = self.lookup(name_a, min_frames), self.lookup(name_b, min_frames)
         ds = [self.closest_distance(a, b) for a in A for b in B]
         ds = [d for d in ds if d is not None]

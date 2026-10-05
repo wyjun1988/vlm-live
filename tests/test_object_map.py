@@ -111,3 +111,35 @@ def test_view_gap_counts_only_time_separated_observations():
     assert ObjectMap(view_gap=0).n_views(inst) == 6      # the keyframe convention: every frame is a view
     om._inst.append(dict(inst, obs=[], pts=[], box_pts=[], first=100))
     assert om.lookup("chair", min_frames=3) and not om.lookup("chair", min_frames=4)
+
+
+def test_observation_log_keeps_every_lifted_detection_with_its_score():
+    """I-49: with log=True every lifted observation is kept as it came - label (canonical), frame, detector score,
+    position, a point sample of at most 64 - merged or not; without it nothing is kept."""
+    g = _geom(lambda r, c: (np.where(c < 0.5, -1.0, 1.0), np.zeros_like(r), np.full_like(r, 2.0)))
+    dets = [{"bbox": [0.05, 0.3, 0.4, 0.7], "label": "couch", "score": 0.4},
+            {"bbox": [0.6, 0.3, 0.95, 0.7], "label": "tv"}]
+    om = ObjectMap(log=True)
+    om.add(5, dets, g)
+    om.add(9, dets[:1], g)                       # the same sofa again: merged, but logged
+    assert [(o["label"], o["frame"]) for o in om.log] == [("sofa", 5), ("tv", 5), ("sofa", 9)]
+    assert om.log[0]["score"] == 0.4 and np.isnan(om.log[1]["score"])
+    assert np.allclose(om.log[0]["xyz"], [-1.0, 0.0, 2.0]) and 0 < len(om.log[0]["pts"]) <= 64
+    assert len([i for i in om.instances() if i["label"] == "sofa"]) == 1
+    assert ObjectMap().log is None
+
+
+def test_pick_and_pair_distance_follow_the_instance_rule():
+    """I-49: two tvs - one seen in three frames at score 0.3, one seen once at 0.9. most_views picks the first and
+    pair_distance keeps the nearest pair; score_max picks the confident one for both."""
+    om = {r: ObjectMap(instance_rule=r) for r in ("most_views", "score_max")}
+    for m in om.values():
+        for f in (1, 2, 3):
+            m._observe("tv", np.array([0.0, 0.0, 0.0]), f, np.zeros((1, 3), np.float32), score=0.3)
+        m._observe("tv", np.array([4.0, 0.0, 0.0]), 4, np.full((1, 3), [4.0, 0, 0], np.float32), score=0.9)
+        m._observe("sofa", np.array([1.0, 0.0, 0.0]), 1, np.full((1, 3), [1.0, 0, 0], np.float32), score=0.5)
+    assert np.allclose(np.median(om["most_views"].pick("tv", 1)["obs"], axis=0), [0, 0, 0])
+    assert np.allclose(np.median(om["score_max"].pick("tv", 1)["obs"], axis=0), [4, 0, 0])
+    assert abs(om["most_views"].pair_distance("tv", "sofa", 1) - 1.0) < 1e-6
+    assert abs(om["score_max"].pair_distance("tv", "sofa", 1) - 3.0) < 1e-6
+    assert om["score_max"].pick("lamp", 1) is None

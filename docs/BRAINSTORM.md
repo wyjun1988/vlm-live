@@ -83,6 +83,7 @@ time (I-21). The rule that held every time: attach geometry only for what the fr
 | + a scale-prior hint for room size, object size and distance questions (I-40b) | 58.3 | +0.3 vs 58.0 | [−0.0, +0.6] |
 | + every frame at 1 fps to the LLM, the measurements still from the 32 frames (I-45d, 2026-10-04) | **61.8** | +3.5 vs 58.3 | [+0.3, +6.7] |
 | the same chosen causally - frames and measurement frames by halving over the 1 fps grid: **the live number** (I-48, 2026-10-05) | 59.4 | −2.4 vs 61.8 | [−4.4, −0.4] |
+| + the LLM capped at 128 frames (I-48c) and the most confident instance per named object, ambiguous directions not attached (I-49, 2026-10-06): **live** | **60.6** | +1.0 vs 59.6 | [+0.2, +2.1] |
 
 Directions 69.2 → 75.0 from the accumulation; room 67.0 → 66.2 and abs distance 42.1 → 39.8 remain the cost of the
 drift; size 65.3 → 66.8 from the prior. vs keyframes only +0.5 [−0.9, +2.1]: the best measured configuration, and
@@ -739,6 +740,36 @@ layouts themselves agree up to a rotation, 0.14 m rms; nothing is mirrored). So 
 favourable draw, and oracle vs live on 60 videos is mostly this luck, not a systematic cost. Attaching a direction
 only when every instance combination agrees is no fix: 18-29 % coverage at 49-97 % right, erratic across runs.
 
+### I-49 Which "lamp": the instance behind a named object — **most confident detection, ambiguous ones not attached: live 60.6, +1.0 [+0.2, +2.1] (2026-10-06)**
+I-48 traced the oracle-live gap to triples flipping with the map's choice among duplicate instances ("3 lamps" when
+VSI's question means one). Data run: the live 59.6 configuration with every object observation dumped
+(`eval_vsi_local.py --dump-objects`: label, frame, detector score, floor-plan position, point samples) for the 32
+measurement frames (set a) and for 32 frames one encoder step later (set b, each with its own CUT3R output);
+`scripts/instance_rules_lab.py` replays the online merging (202/204 direction and 176/188 distance facts reproduced)
+and scores instance rules on both sets.
+
+- Merging instances by position makes things worse (from the listings, then from the dumps: never-co-observed
+  instances within 1.5 m, mean or cluster centroids): the extra "lamps" are mostly other things detected under the
+  same name, not the same lamp drawn twice. Suppressing an instance whose points overlap another label's both ways
+  (a cabinet front that is also "door") did not help either.
+- Choosing by detector confidence does: the instance holding the most confident single detection (score_max) fixes
+  the failing triples (set a +18 facts, no video worse) but swaps the error elsewhere on set b (4 videos better,
+  3 worse). Adding abstention - no fact when an alternative instance scoring >= 0.8 x the chosen one's top detection
+  flips the answer - is the only variant that gains on both sets:
+
+| direction facts, expected accuracy (model alone 65 % where nothing is attached) | set a | set b |
+|---|---|---|
+| most-viewed instance (until now) | 71.7 | 72.0 |
+| score_max | 80.5 | 73.5 |
+| **score_max, ambiguous not attached (0.8)** | **78.3** (65 % covered, 85.6 % right) | **78.1** (53 %, 89.8 %) |
+
+Validation (`--instance-rule score_max --direction-abstain 0.8`, everything else as I-48c): **60.6, +1.0 [+0.2, +2.1]**
+- rel direction 69.8 → 76.4, abs distance 41.3 → 43.0 (the distances also between the chosen instances), every
+other answer identical; direction facts 85.6 % right at 65 % coverage, exactly as replayed. vs the 61.8 oracle run
+−1.2 [−2.9, +0.7]: direction is level (76.4 vs 75.8), room size remains (−4.0: the live map and its scale calibration,
+I-48), the rest is the noise of moved frames. The rule was picked on these 60 videos (set b is only a partial
+check), so the +1.0 wants confirming on other videos.
+
 ### Lessons so far (zero-shot, 4B)
 - **L7 Count fact changes by the object triples they flip, not by questions** (I-48, 2026-10-05). VSI asks one
   (A, B, C) triple 6-9 times, so one wrong instance choice moves the direction score by ~5 points; an object
@@ -1000,5 +1031,7 @@ timestamps (I-04), recency weighting / decay, possibly state windows (I-05).
 | 50 | I-47 Utonia + ScanNet-20 probe on the CUT3R stream: counts and room area vs the model's answers (60 videos); 20 ARKitScenes ground-truth scans vs CUT3R | I-47 | done: counts MRA 0.26 / 0.35 vs 0.64, room 0.55 / 0.47 vs our fact 0.66 - not attached; the clean scan does not fix counting (0.20) |
 | 51 | I-48 the 61.8 stack with causal selection (live): uncapped, the LLM capped at 64 and 128 frames | I-48 | done: **59.4**, −2.4 [−4.4, −0.4] vs 61.8 (direction facts 83 → 72 %, room facts 66 → 61); cap 128 +0.2, cap 64 −0.7 |
 | 52 | I-48b live, cap 128, the measurement frames half a second off the 1 fps grid (extra CUT3R inputs, as the oracle's) | I-48 | done: **59.5**, −0.1 [−1.9, +1.8] vs cap 128 - no; the gap is 2-3 object triples flipping with the instance choice |
+| 53 | I-49 data: the live cap-128 run with every object observation dumped (`--dump-objects`), two frame sets; instance rules replayed offline (`scripts/instance_rules_lab.py`) | I-49 | done: 59.6 (= I-48c); score_max + abstention 0.8 the only rule up on both sets (+6.6 / +6.1 expected direction accuracy) |
+| 54 | I-49 validation: `--instance-rule score_max --direction-abstain 0.8` | I-49 | done: **60.6, +1.0 [+0.2, +2.1]**; rel direction +6.7, abs distance +1.6, nothing else changed |
 | 25 | I-35 encoder bake-off: VGGT window 8 behind the same maps (directions attached, metric facts logged) | I-35 | done: **CUT3R wins** — direction 76.4 vs 56.7 (72 vs 54 on common questions), room area MRA 65.8 vs 9.5 (scale-free 69.0 vs 16.2) |
 | 14 | **Sensenova-only baseline on 4 nodes x 8 H100**: zero-shot VSI (full); S1 and S2 (one epoch each) real vs control, two seeds; plain SFT (no geometry); S2 joint (no S1); the 2B pair; S2 learning curve; gate | I-12, I-16, I-18, I-22 | four-day run from 09-26 (docs/SERVER_WEEKEND.md) |

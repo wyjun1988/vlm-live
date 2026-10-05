@@ -172,13 +172,32 @@ def direction_label(a, b, c, difficulty: str) -> str:
 
 
 def object_xy(om, name: str, min_frames: int, to_map=None):
-    """Floor-plan position of the most-observed tracked instance of `name`, or None."""
-    inst = om.lookup(name, min_frames)
-    if not inst:
-        return None
-    best = max(inst, key=lambda i: len(i["frames"]))
-    xyz = np.median(np.asarray(best["obs"], dtype=np.float64), axis=0)[None]
+    """Floor-plan position of the instance that stands for `name` (ObjectMap.pick: the most-observed one, or the most
+    confident with instance_rule="score_max"), or None."""
+    best = om.pick(name, min_frames)
+    return None if best is None else instance_xy(best, to_map)
+
+
+def instance_xy(inst: dict, to_map=None):
+    xyz = np.median(np.asarray(inst["obs"], dtype=np.float64), axis=0)[None]
     return (to_map(xyz) if to_map is not None else xyz)[0, :2]
+
+
+def direction_ambiguous(om, names, min_frames: int, to_map, difficulty: str, label: str, ratio: float) -> bool:
+    """I-49: another instance of a named object, nearly as confident as the chosen one (top detector score >= ratio x
+    its), that flips the answer makes the measurement ambiguous - then nothing is attached and the model answers."""
+    best = [om.pick(n, min_frames) for n in names]
+    pos = [instance_xy(i, to_map) for i in best]
+    for j, n in enumerate(names):
+        top = om.top_score(best[j])
+        for alt in om.lookup(n, min_frames):
+            if alt is best[j] or om.top_score(alt) < ratio * top:
+                continue
+            trial = list(pos)
+            trial[j] = instance_xy(alt, to_map)
+            if direction_label(*trial, difficulty) != label:
+                return True
+    return False
 
 
 # the VSI templates live in one place (live3r.serve.interpret); the LLM reading renders back to them
@@ -250,7 +269,7 @@ def object_facts_for(question: str, om, min_frames: int = 2, rel_distance: bool 
                      size_facts: bool = False, log: list | None = None, order_facts: bool = False,
                      count_facts: bool = False, direction_facts: bool = False, to_map=None,
                      direction_min_frames: int | None = None, route_plan_facts: bool = False,
-                     scale: float = 1.0) -> str:
+                     scale: float = 1.0, direction_abstain: float = 0.0) -> str:
     """I-28: at question time, look up only the objects the question names and attach measured closest-point
     distances — or nothing if an object is missing / seen in fewer than 2 keyframes. No counts (the model counts
     better from the images). NOTE: the names are read with VSI's question templates (benchmark-specific); a
@@ -340,7 +359,11 @@ def object_facts_for(question: str, om, min_frames: int = 2, rel_distance: bool 
             pos = [object_xy(om, n, k, to_map) for n in (a, b, c)]
             if any(p is None for p in pos):
                 return None
-            return direction_label(pos[0], pos[1], pos[2], difficulty)
+            lab = direction_label(pos[0], pos[1], pos[2], difficulty)
+            if direction_abstain > 0 and direction_ambiguous(om, (a, b, c), k, to_map, difficulty, lab,
+                                                             direction_abstain):
+                return None
+            return lab
 
         # directions tolerate a single view (the sign of an angle survives centroid error that a metric distance
         # does not - diagnostic 2026-09-26: 76% right at >= 1 view vs the model's 54%), so their threshold is separate
@@ -363,6 +386,38 @@ def object_facts_for(question: str, om, min_frames: int = 2, rel_distance: bool 
             return ("Measured from a 3D reconstruction of the video, closest-point distances to the " + target
                     + ": " + ", ".join(f"{o} {d:.1f} m" for o, d in meas) + ".\n")
     return ""
+
+
+def dump_observations(path: Path, s, om_a, frames_a: list[int], detect, step: int, scale: float,
+                      stash: dict) -> None:
+    """I-49: every lifted observation of the measurement frames (set a) and of a second set one `step` later (set b:
+    stashed encoder frames, each with its own CUT3R output), in floor-plan coordinates - label, frame, detector score,
+    position and point samples - so that instance rules can be replayed and compared across frame sets."""
+    from live3r.serve.object_map import ObjectMap
+
+    frames_b = sorted({f + step for f in frames_a if f + step in stash} - set(frames_a))
+    om_b = ObjectMap(log=True)
+    for fi in frames_b:
+        raw, geom = stash[fi]
+        om_b.add(fi, detect(raw.numpy()), geom)
+    to_map = s.scene_map.to_map
+    out = {"frames_a": np.array(frames_a, np.int64), "frames_b": np.array(frames_b, np.int64),
+           "scale": np.float32(scale)}
+    for tag, om in (("a", om_a), ("b", om_b)):
+        log = om.log or []
+        out[f"{tag}_label"] = np.array([o["label"] for o in log], dtype=str)
+        out[f"{tag}_frame"] = np.array([o["frame"] for o in log], np.int64)
+        out[f"{tag}_score"] = np.array([o["score"] for o in log], np.float32)
+        out[f"{tag}_xyz"] = (to_map(np.stack([o["xyz"] for o in log]).astype(np.float64)).astype(np.float32)
+                             if log else np.zeros((0, 3), np.float32))
+        for key in ("pts", "box_pts"):
+            arr = np.full((len(log), 64, 3), np.nan, np.float32)
+            for j, o in enumerate(log):
+                if len(o[key]):
+                    arr[j, : len(o[key])] = to_map(o[key].astype(np.float64)).astype(np.float32)
+            out[f"{tag}_{key}"] = arr
+    path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(path, **out)
 
 
 def count_frames(path: Path) -> int:
@@ -396,6 +451,14 @@ def main() -> int:
     ap.add_argument("--facts-offset", type=float, default=0.0,
                     help="seconds: with --facts-selector live, the measurement candidates sit this far off the "
                          "--geom-stride frames, so each is an extra CUT3R input right after one (I-48: 0.5)")
+    ap.add_argument("--instance-rule", default="most_views", choices=("most_views", "score_max"),
+                    help="which instance stands for a named object when the map has several (ObjectMap.pick; I-49)")
+    ap.add_argument("--direction-abstain", type=float, default=0.0,
+                    help="I-49: attach no direction when another instance scoring >= this x the chosen one's top "
+                         "detection flips the answer (0 = always attach)")
+    ap.add_argument("--dump-objects", default=None,
+                    help="I-49: a folder for each video's object observations (label, frame, detector score, floor-plan "
+                         "position, point samples) from the measurement frames and from a set one --geom-stride later")
     ap.add_argument("--visual-scale", default="1",
                     help="I-44: multiply the visual tokens the LLM receives by this gain, or 'ln' to LayerNorm them "
                          "(live3r.model.visual_scale); 1 = unchanged")
@@ -636,7 +699,7 @@ def main() -> int:
         if args.object_map and args.detect_stride and args.scene_map:
             from live3r.serve.object_map import ObjectMap
 
-            online_om = ObjectMap(view_gap=args.view_gap)
+            online_om = ObjectMap(view_gap=args.view_gap, instance_rule=args.instance_rule)
             det_count = {"frames": 0, "lifted": 0}
             vocab_online = vsi_vocab([d["question"] for d in qs]) if oracle_vocab else None
 
@@ -647,6 +710,11 @@ def main() -> int:
                 dets = owl(frame, _v) if args.detector == "owlv2" else detect_objects(live, pb, frame, _v or [], dev)
                 _c["frames"] += 1
                 _c["lifted"] += _om.add(i, dets, geom)          # the video frame index: time order and view gaps
+        stash: dict = {}          # --dump-objects: every encoder frame with its own CUT3R output (set b's source)
+
+        def stash_geometry(i, raw, geom, keep, _st=stash):
+            if i % args.geom_stride == 0:
+                _st[i] = (raw, geom)
         budget = args.budget
         with av.open(str(path)) as c:
             vfps = float(c.streams.video[0].average_rate or 30.0)
@@ -674,7 +742,8 @@ def main() -> int:
                                            device=dev, audit=StreamingAudit(),
                                            scene_map=SceneMap() if args.scene_map else None,
                                            map_image=args.map_image,
-                                           on_geometry=on_geometry if online_om is not None else None,
+                                           on_geometry=on_geometry if online_om is not None else
+                                           (stash_geometry if args.dump_objects else None),
                                            facts_selector=fsel)
 
         t1 = time.time()
@@ -722,7 +791,7 @@ def main() -> int:
 
                 t_det = time.time()
                 vocab = vsi_vocab([d["question"] for d in qs]) if oracle_vocab else None
-                om = ObjectMap(view_gap=args.view_gap)
+                om = ObjectMap(view_gap=args.view_gap, log=bool(args.dump_objects), instance_rule=args.instance_rule)
                 n_det = 0
                 facts_frames = s.facts_frames()          # the LLM's keyframes unless --facts-budget
                 for rank, fi in enumerate(facts_frames):
@@ -736,6 +805,11 @@ def main() -> int:
                         dets = detect_objects(live, pb, frame, vocab or [], dev)
                     n_det += om.add(fi, dets, kept.geom)   # the video frame index (was the keyframe rank)
                 obj_text = om.text(to_map=s.scene_map.to_map, n_frames=len(facts_frames))
+                if args.dump_objects:
+                    detect = (lambda fr: owl(fr, vocab)) if args.detector == "owlv2" else \
+                        (lambda fr: detect_objects(live, pb, fr, vocab or [], dev))
+                    dump_observations(Path(args.dump_objects) / f"{ds}__{scene}.npz", s, om, facts_frames, detect,
+                                      args.geom_stride, g, stash)
                 timing["detect"] += time.time() - t_det
                 objects[f"{ds}/{scene}"] = {"vocab": vocab, "lifted": n_det, "text": obj_text}
                 if obj_text and not args.route_objects:
@@ -784,7 +858,8 @@ def main() -> int:
                                                 direction_facts=args.direction_facts,
                                                 direction_min_frames=args.direction_min_frames,
                                                 route_plan_facts=args.route_plan_facts,
-                                                to_map=s.scene_map.to_map, scale=g) + attached
+                                                to_map=s.scene_map.to_map, scale=g,
+                                                direction_abstain=args.direction_abstain) + attached
                     if len(meas_log) > n_before:   # only when THIS question added an entry
                         meas_log[-1].update(id=d["id"], gt=d["ground_truth"])
                 if args.facts_hint and attached:   # I-42: tell the model to trust the attached measurements
@@ -829,6 +904,7 @@ def main() -> int:
         print(f"  [{vi + 1}/{len(vids)}] {ds}/{scene} ({total}프레임, {len(qs)}문항) · 누적 {done}문항 · "
               + " ".join(f"{m} {timing[m]:.0f}s" for m in modes), flush=True)
         del sessions, pc
+        stash.clear()
         if dev.type == "mps":
             # the MPS caching allocator keeps every buffer shape it has seen; over 60 videos with dense geometry
             # (--geom-stride) that grew past physical memory and the run swapped (2026-09-27, 16 GB of swap)
@@ -907,6 +983,7 @@ def main() -> int:
             "type_hints": args.type_hints, "describe_first": args.describe_first, "descriptions": describe_log,
             "facts_hint": args.facts_hint, "visual_scale": args.visual_scale, "facts_budget": args.facts_budget,
             "facts_selector": args.facts_selector, "facts_offset": args.facts_offset, "budget": args.budget,
+            "instance_rule": args.instance_rule, "direction_abstain": args.direction_abstain,
             "budget_fps": args.budget_fps,
             "budget_cap": args.budget_cap, "budgets": budgets,
             "hint_after": args.hint_after, "order_facts": args.order_facts, "count_facts": args.count_facts,
