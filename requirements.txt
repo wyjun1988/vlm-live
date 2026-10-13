@@ -22,3 +22,8 @@ lmms-eval>=0.7.3     # vsibench / mmsi_bench / videomme 등. 자체 의존성을
 # 선택
 flash-attn           # CUDA 전용. 맥에서는 설치하지 마라
 wandb
+
+# Voice front-end (live3r.serve.voice): Silero VAD and Smart Turn run on onnxruntime; Qwen3-ASR is native in transformers
+onnxruntime
+soundfile
+sounddevice          # only for the microphone demo (scripts/voice_demo.py --mic)

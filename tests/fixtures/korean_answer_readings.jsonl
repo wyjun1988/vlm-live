@@ -1,0 +1,30 @@
+{"id": 1, "text": "소파에서 TV까지 약 2.4m예요.", "speech": "소파에서 티비까지 약 이 점 사 미터예요.", "tags": ["decimal", "m", "english"]}
+{"id": 2, "text": "의자와 책상 사이는 85cm예요.", "speech": "의자와 책상 사이는 팔십오 센티미터예요.", "tags": ["cm"]}
+{"id": 3, "text": "문까지 0.8m 정도예요.", "speech": "문까지 영 점 팔 미터 정도예요.", "tags": ["decimal", "m"]}
+{"id": 4, "text": "침대 길이는 1.95m예요.", "speech": "침대 길이는 일 점 구오 미터예요.", "tags": ["decimal", "m"]}
+{"id": 5, "text": "냉장고 높이는 180cm예요.", "speech": "냉장고 높이는 백팔십 센티미터예요.", "tags": ["cm"]}
+{"id": 6, "text": "벽에서 3.25m 떨어져 있어요.", "speech": "벽에서 삼 점 이오 미터 떨어져 있어요.", "tags": ["decimal", "m"]}
+{"id": 7, "text": "두 의자 사이는 1m가 안 돼요.", "speech": "두 의자 사이는 일 미터가 안 돼요.", "tags": ["m"]}
+{"id": 8, "text": "침대는 왼쪽에 있어요.", "speech": "침대는 왼쪽에 있어요.", "tags": ["control"]}
+{"id": 9, "text": "의자는 4개예요.", "speech": "의자는 네 개예요.", "tags": ["counter_native"]}
+{"id": 10, "text": "쿠션은 모두 11개 있어요.", "speech": "쿠션은 모두 열한 개 있어요.", "tags": ["counter_native"]}
+{"id": 11, "text": "컵이 20개 보여요.", "speech": "컵이 스무 개 보여요.", "tags": ["counter_native"]}
+{"id": 12, "text": "방에 사람이 2명 있어요.", "speech": "방에 사람이 두 명 있어요.", "tags": ["counter_native"]}
+{"id": 13, "text": "모니터 3대가 있어요.", "speech": "모니터 세 대가 있어요.", "tags": ["counter_native"]}
+{"id": 14, "text": "책이 21권 있어요.", "speech": "책이 스물한 권 있어요.", "tags": ["counter_native"]}
+{"id": 15, "text": "램프는 1개뿐이에요.", "speech": "램프는 한 개뿐이에요.", "tags": ["counter_native"]}
+{"id": 16, "text": "의자는 3~4개 정도예요.", "speech": "의자는 서너 개 정도예요.", "tags": ["range", "counter_native"]}
+{"id": 17, "text": "넓이는 약 18㎡입니다.", "speech": "넓이는 약 십팔 제곱미터입니다.", "tags": ["area"]}
+{"id": 18, "text": "방 면적은 12.5m²예요.", "speech": "방 면적은 십이 점 오 제곱미터예요.", "tags": ["decimal", "area"]}
+{"id": 19, "text": "문은 2시 방향에 있어요.", "speech": "문은 두 시 방향에 있어요.", "tags": ["clock_direction"]}
+{"id": 20, "text": "TV는 정면에서 30° 오른쪽이에요.", "speech": "티비는 정면에서 삼십 도 오른쪽이에요.", "tags": ["angle", "english"]}
+{"id": 21, "text": "침대가 방의 40%를 차지해요.", "speech": "침대가 방의 사십 퍼센트를 차지해요.", "tags": ["percent"]}
+{"id": 22, "text": "3번째 의자가 가장 커요.", "speech": "세 번째 의자가 가장 커요.", "tags": ["ordinal"]}
+{"id": 23, "text": "화분은 2층 선반에 있어요.", "speech": "화분은 이 층 선반에 있어요.", "tags": ["counter_sino"]}
+{"id": 24, "text": "PC 모니터는 책상 위에 있어요.", "speech": "피시 모니터는 책상 위에 있어요.", "tags": ["english"]}
+{"id": 25, "text": "LED 스탠드는 침대 오른쪽에 있어요.", "speech": "엘이디 스탠드는 침대 오른쪽에 있어요.", "tags": ["english"]}
+{"id": 26, "text": "Wi-Fi 공유기는 TV 아래에 있어요.", "speech": "와이파이 공유기는 티비 아래에 있어요.", "tags": ["english"]}
+{"id": 27, "text": "iPad는 소파 위에 있어요.", "speech": "아이패드는 소파 위에 있어요.", "tags": ["english"]}
+{"id": 28, "text": "USB 허브는 노트북 왼쪽에 있어요.", "speech": "유에스비 허브는 노트북 왼쪽에 있어요.", "tags": ["english"]}
+{"id": 29, "text": "의자 4개, 테이블 1개, TV 1대가 있어요.", "speech": "의자 네 개, 테이블 한 개, 티비 한 대가 있어요.", "tags": ["counter_native", "english"]}
+{"id": 30, "text": "TV까지 2.4m, 문까지 3.1m예요.", "speech": "티비까지 이 점 사 미터, 문까지 삼 점 일 미터예요.", "tags": ["decimal", "m", "english"]}
