@@ -2,7 +2,7 @@
 
 > ## 2026-10-13 (night) — next: `ROLE=format,strategies,plain` and the run-4 preparation
 > 1. **[`docs/SERVER_RUN3.md`](SERVER_RUN3.md) §2026-10-13 (evening):** `ROLE=format,strategies,plain` - the prompt-form
->    check (run 3 trained with "\n" after images; the live rows used today's form), the strategies, then the gate.
+>    check (run 3 trained with "\n" after images; no evaluation has had it), the strategies, then the gate.
 > 2. **[`docs/SERVER_RUN4_PREP.md`](SERVER_RUN4_PREP.md):** `scripts/server_prep_run4.sh` - the training-speed check
 >    (transformers' torch Gated DeltaNet vs fla) and the VSI-590K images (~96.5 GB); it can run alongside.
 >

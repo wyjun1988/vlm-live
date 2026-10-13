@@ -202,8 +202,13 @@ def section_gdn(dev: torch.device, model_path: str, lengths: str) -> dict:
     import tempfile
 
     print(f"\n[gdn] torch vs fla Gated DeltaNet, LoRA forward + backward at {lengths} tokens of {model_path}")
-    if not importlib.util.find_spec("fla"):
-        print("  fla is not installed - nothing to compare (pip install --no-deps flash-linear-attention)")
+    try:
+        have_ops = importlib.util.find_spec("fla.ops.gated_delta_rule") is not None
+    except ModuleNotFoundError:
+        have_ops = False
+    if not have_ops:
+        print("  fla's kernels are not installed (since fla 0.5 they are fla-core, which --no-deps leaves out):"
+              " pip install --no-deps flash-linear-attention fla-core einops - nothing to compare")
         return {"gdn": None}
     res = {}
     src = str(Path(__file__).resolve().parents[1] / "src")

@@ -34,7 +34,6 @@ CFG="${CFG:-configs/server_4b_v3.yaml}"               # gated_input, LayerNorm, 
 CFG_WN="${CFG_WN:-configs/server_4b_v3_wn.yaml}"      # gated_input, the reference's wonorm variant
 CFG_PLAIN="${CFG_PLAIN:-configs/server_4b_v3_plain.yaml}"   # fusion none
 CFG_FACTS="${CFG_FACTS:-configs/server_4b_v3_plain_facts.yaml}"   # the same model; CUT3R only for measurements as text
-CFG_NL="${CFG_NL:-configs/server_4b_v3_plain_nl.yaml}"       # the same model in the prompt form it was trained with
 MIX="${MIX:-live}"                                    # configs/data/vgllm.yaml: the 70.83 run's sources without
                                                       # its six CoT variants (live: no reasoning is trained)
 REGISTRY="${REGISTRY:-configs/data/vgllm.yaml}"
@@ -154,14 +153,16 @@ n = torch.cuda.device_count(); print(n, 'GPUs'); assert n in (4, 8), f'this plan
   fi
   # the fused Gated DeltaNet (run 2's d0 compared it with the torch fallback; a mismatch there bans it here too)
   [[ -f "$R2/FLA_BAN" ]] && touch "$OUT/FLA_BAN"
-  if [[ ! -f "$OUT/FLA_BAN" ]] && ! python -c "import fla" >> "$L" 2>&1; then
-    log "p0: installing flash-linear-attention on $HOST (--no-deps)"
-    { with_lock pip pip install -q --no-deps flash-linear-attention && { python -c "import einops" 2> /dev/null \
-        || with_lock pip pip install -q einops; }; } >> "$L" 2>&1 \
-      || log "p0 warning: flash-linear-attention did not install - the Gated DeltaNet stays on the torch fallback"
+  # fla's kernels: since fla 0.5 they are the separate package fla-core, which --no-deps leaves out (found 10-13);
+  # transformers >= 5.16 uses them only through LIVE3R_GDN=fla (src/live3r/model/kernels.py)
+  if [[ ! -f "$OUT/FLA_BAN" ]] && ! python -c "import fla.ops.gated_delta_rule" >> "$L" 2>&1; then
+    log "p0: installing flash-linear-attention + fla-core on $HOST (--no-deps)"
+    { with_lock pip pip install -q --no-deps "flash-linear-attention==0.5.2" "fla-core==0.5.2" \
+        && { python -c "import einops" 2> /dev/null || with_lock pip pip install -q einops; }; } >> "$L" 2>&1 \
+      || log "p0 warning: fla did not install - the Gated DeltaNet stays on the torch path"
   fi
   if [[ -f "$OUT/FLA_BAN" ]] && python -c "import fla" 2> /dev/null; then
-    with_lock pip pip uninstall -y flash-linear-attention >> "$L" 2>&1
+    with_lock pip pip uninstall -y flash-linear-attention fla-core >> "$L" 2>&1
   fi
   with_lock pip pip install -e . --no-deps -q >> "$L" 2>&1 || { fail "p0: pip install -e . on $HOST - $L"; return 1; }
   MODEL=$(base_model "$CFG") || { fail "p0: cannot read base_model from $CFG"; return 1; }
@@ -465,13 +466,14 @@ role_strategies() {   # the zero-shot strategies (BRAINSTORM I-27..I-49) on the 
   bundle_results
   return $rc
 }
-role_format() {   # run 3 trained (and first evaluated) at 5d963f6, where every image block was followed by "\n"; the
-                  # live runs used today's form without it. Separates the format from the frame choice.
+role_format() {   # run 3 trained at 5d963f6 with "\n" after every image block; the evaluation prompt never had it
+                  # (every run so far). The 32-frame baseline again on today's code (should reproduce 71.3), and 128
+                  # live frames evaluated in the trained form (--image-newline).
   local rc=0 w="$OUT/plain/final.pt"
   have "$w" "format" || return 1
   vsi_sharded plain_oracle32_now --config "$CFG_PLAIN" --weights "$w" --modes oracle-image || rc=1
-  vsi_sharded plain_live128_nl --config "$CFG_NL" --weights "$w" --modes live-image --budget-fps 1 --budget-cap 128 \
-    || rc=1
+  vsi_sharded plain_live128_nl --config "$CFG_PLAIN" --weights "$w" --modes live-image --budget-fps 1 --budget-cap 128 \
+    --image-newline || rc=1
   report
   bundle_results
   return $rc

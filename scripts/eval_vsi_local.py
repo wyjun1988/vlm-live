@@ -451,6 +451,9 @@ def main() -> int:
     ap.add_argument("--facts-offset", type=float, default=0.0,
                     help="seconds: with --facts-selector live, the measurement candidates sit this far off the "
                          "--geom-stride frames, so each is an extra CUT3R input right after one (I-48: 0.5)")
+    ap.add_argument("--image-newline", action="store_true",
+                    help='a "\\n" after every image block of the prefix: the form run 3 was trained with (5d963f6); the '
+                         'evaluation prompt otherwise joins the blocks directly')
     ap.add_argument("--instance-rule", default="most_views", choices=("most_views", "score_max"),
                     help="which instance stands for a named object when the map has several (ObjectMap.pick; I-49)")
     ap.add_argument("--direction-abstain", type=float, default=0.0,
@@ -774,6 +777,10 @@ def main() -> int:
                     mdir.mkdir(parents=True, exist_ok=True)
                     s.last_map_image.save(mdir / f"{ds}_{scene}.png")
             segs = StreamingSession.segments(pb, pre)
+            if args.image_newline and pre["visual_mode"] == "image":
+                # the form run 3 trained with (5d963f6, before data.image_newline false): "\n" after every image block
+                n_img = len(pre["step_tokens"])
+                segs = [x + "\n" for x in segs[:n_img]] + segs[n_img:]
             if args.frame_labels and pre["visual_mode"] == "image":   # I-04: keyframes carry their time
                 n_img = len(pre["step_tokens"])
                 labels = [f"Frame {k + 1} at {fi / fps:.1f} s: " for k, fi in enumerate(pre["frame_indices"])]
@@ -984,6 +991,7 @@ def main() -> int:
             "facts_hint": args.facts_hint, "visual_scale": args.visual_scale, "facts_budget": args.facts_budget,
             "facts_selector": args.facts_selector, "facts_offset": args.facts_offset, "budget": args.budget,
             "instance_rule": args.instance_rule, "direction_abstain": args.direction_abstain,
+            "image_newline": args.image_newline,
             "budget_fps": args.budget_fps,
             "budget_cap": args.budget_cap, "budgets": budgets,
             "hint_after": args.hint_after, "order_facts": args.order_facts, "count_facts": args.count_facts,

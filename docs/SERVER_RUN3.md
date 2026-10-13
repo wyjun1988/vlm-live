@@ -19,12 +19,15 @@ direction (+3.2, n.s.). **The live design for VSI: plain SFT model, 1 fps frames
 without every question type - fixed: the smoke runs MMStar only (`SPATIAL=`), the full gate is unchanged. The gated
 arm's own gate reached 4,659 / 9,330 requests and stopped with its node (no error).
 
-**Caution - two prompt forms.** Run 3 trained, and was first evaluated (plain 71.3, gated 71.0), at `5d963f6`, where
-every image block was followed by "\n"; the live rows above used today's form without it (`image_newline: false`,
-3da9a51). So "live 32 − oracle 32" and "live 128 − oracle 32" mix the frame choice with the format. `ROLE=format`
-(~30 min) separates them: the 32-frame baseline in today's form (`plain_oracle32_now`) and 128 live frames in the
-trained form (`plain_live128_nl`, `configs/server_4b_v3_plain_nl.yaml`). (Run 3 also had 200 LoRA modules, not 248:
-`in_proj_a/b` came later - irrelevant to evaluation, the added adapters start at zero.)
+**Caution - the training form differs from the evaluation form.** Run 3 trained at `5d963f6`, where every image
+block of a training record was followed by "\n" (`data.image_newline` false, which drops it to match the evaluation,
+came with 3da9a51 - a training-only flag). The evaluation prompt never had it: image blocks joined directly, then the
+question - in the 10-12 runs as in the live ones, so the live-vs-oracle deltas are clean, but the model answers in a
+form it was not trained in. `ROLE=format` (~30 min): the 32-frame baseline again on today's code
+(`plain_oracle32_now`, should reproduce 71.3) and 128 live frames with "\n" after every image block
+(`plain_live128_nl`, `eval_vsi_local.py --image-newline`); if the trained form scores higher, the live design
+evaluates in it. (Run 3 also had 200 LoRA modules, not 248: `in_proj_a/b` came later - irrelevant to evaluation, the
+added adapters start at zero.)
 
 **Next, `ROLE=format,strategies,plain`** (one command, in that order; `format` first):
 1. `strategies` (~2-3 h, 8 GPUs): the zero-shot strategies on the live design (plain, 128 live frames) - the format

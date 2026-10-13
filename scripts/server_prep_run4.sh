@@ -24,8 +24,9 @@ log() { echo "$(date '+%F %T') [$(hostname -s 2> /dev/null || hostname)] $*" | t
 GPU=${CUDA_VISIBLE_DEVICES:-0}; GPU=${GPU%%,*}
 
 log "gdn check on GPU $GPU"
-if ! python -c "import fla" 2> /dev/null; then
-  { pip install -q --no-deps flash-linear-attention && { python -c "import einops" 2> /dev/null || pip install -q einops; }; } \
+if ! python -c "import fla.ops.gated_delta_rule" 2> /dev/null; then     # the kernels are fla-core (not pulled by --no-deps)
+  { pip install -q --no-deps "flash-linear-attention==0.5.2" "fla-core==0.5.2" \
+      && { python -c "import einops" 2> /dev/null || pip install -q einops; }; } \
     >> "$OUT/pip.log" 2>&1 || log "warning: flash-linear-attention did not install ($OUT/pip.log)"
 fi
 CUDA_VISIBLE_DEVICES=$GPU timeout 2h python scripts/diagnose_throughput.py --model "$MODEL" --gdn-check \

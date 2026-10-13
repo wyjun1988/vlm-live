@@ -5,7 +5,8 @@ transformers >= 5.16 runs the 24 Gated DeltaNet layers through `torch_chunk_gate
 (fla) is no longer used by itself. Run 3 trained at 2.1 samples/s per 8 H100 against the reference's 6.48
 (FlashAttention-3, ZeRO-2), and its step profile was tens of thousands of small ops - that loop.
 
-`LIVE3R_GDN=fla` routes the chunk and recurrent rules to fla's fused Triton kernels, which take the same arguments
+`LIVE3R_GDN=fla` routes the chunk and recurrent rules to fla's fused Triton kernels (package fla-core since fla 0.5;
+flash-linear-attention alone is the layers), which take the same arguments
 (q, k, v as [B, T, H, D], log-space g, beta; initial_state, output_final_state, cu_seqlens, use_qk_l2norm_in_kernel)
 and are what transformers' own hub mapping (kernels-community/fla) loads. Off by default, so that evaluations keep the
 numerics of the runs they are compared with; `scripts/diagnose_throughput.py --gdn-check` measures the two on the
@@ -35,7 +36,8 @@ def use_fla_gated_delta_rule() -> bool:
     try:
         from fla.ops.gated_delta_rule import chunk_gated_delta_rule, fused_recurrent_gated_delta_rule
     except Exception as exc:  # noqa: BLE001
-        log.warning("LIVE3R_GDN=fla but fla cannot be imported (%r) - the torch fallback stays", exc)
+        log.warning("LIVE3R_GDN=fla but fla's kernels cannot be imported (%r): since fla 0.5 they are the package "
+                    "fla-core (pip install --no-deps flash-linear-attention fla-core einops) - the torch path stays", exc)
         return False
     from transformers.models.qwen3_5 import modeling_qwen3_5 as q
 

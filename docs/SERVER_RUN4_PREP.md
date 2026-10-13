@@ -12,7 +12,9 @@ Run 3 reproduced the reference (plain 71.3) and the live design holds (plain at 
   add_ 62,098, SelectBackward 39,624 in 4 micro-steps).
 - **Cause.** transformers >= 5.16 runs Qwen3.5's 24 Gated DeltaNet layers through `torch_chunk_gated_delta_rule`, a
   Python loop over 64-token chunks, unless the model is kernelized through the `kernels` hub package. p0 installs
-  flash-linear-attention (fla), but fla is no longer picked up by itself - run 2's check predates this.
+  flash-linear-attention (fla), but fla is no longer picked up by itself - run 2's check predates this - and since
+  fla 0.5 its kernels are the separate package `fla-core`, which a `--no-deps` install leaves out (p0 and the prep
+  script now install both, pinned 0.5.2; fla-core wants torch >= 2.7 and triton >= 3.3).
 - **Fix (ours, opt-in).** `LIVE3R_GDN=fla` routes the chunk and recurrent rules to fla's fused kernels - the ones
   transformers' own hub mapping loads, same arguments (`src/live3r/model/kernels.py`; the loader logs which one runs).
   Off by default, so evaluations keep the numerics of the runs they are compared with.
@@ -24,9 +26,9 @@ Run 3 reproduced the reference (plain 71.3) and the live design holds (plain at 
 
 **Found on the way - what run 3 actually trained with.** The run trained at `5d963f6`, before `e6b67b0` / `3da9a51`:
 LoRA on 10 module types (200 modules; `in_proj_a/b` came with e6b67b0), "\n" after every image block
-(`image_newline` true; false since 3da9a51), the earlier SPAR mark rules, CUT3R without bf16 autocast. Its first
-evaluations (plain 71.3, gated 71.0) ran there too; the live ones (10-13) with today's form - `ROLE=format` in
-`docs/SERVER_RUN3.md` separates the two.
+(`image_newline` true; false since 3da9a51 - a training-only flag), the earlier SPAR mark rules, CUT3R without bf16
+autocast. The evaluation prompt has no such newline in any run (10-12 or 10-13); `ROLE=format` in
+`docs/SERVER_RUN3.md` also evaluates the model in its trained form (`--image-newline`).
 
 ## 2. VSI-590K (the `live_vsi` mix)
 
