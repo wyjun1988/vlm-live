@@ -159,6 +159,9 @@ class Live3RModel(nn.Module):
             tok = AutoTokenizer.from_pretrained(tok_path) if tok_path else None
             return cls(cfg, base, tok)
 
+        from .kernels import apply_gdn_backend
+
+        logger.info("Gated DeltaNet: %s (LIVE3R_GDN)", apply_gdn_backend())
         dtype = _DTYPES[cfg.dtype]
         base = Qwen3_5ForConditionalGeneration.from_pretrained(
             cfg.base_model,

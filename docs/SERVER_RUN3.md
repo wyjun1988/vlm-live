@@ -19,7 +19,14 @@ direction (+3.2, n.s.). **The live design for VSI: plain SFT model, 1 fps frames
 without every question type - fixed: the smoke runs MMStar only (`SPATIAL=`), the full gate is unchanged. The gated
 arm's own gate reached 4,659 / 9,330 requests and stopped with its node (no error).
 
-**Next, `ROLE=strategies,plain`** (one command, in that order):
+**Caution - two prompt forms.** Run 3 trained, and was first evaluated (plain 71.3, gated 71.0), at `5d963f6`, where
+every image block was followed by "\n"; the live rows above used today's form without it (`image_newline: false`,
+3da9a51). So "live 32 − oracle 32" and "live 128 − oracle 32" mix the frame choice with the format. `ROLE=format`
+(~30 min) separates them: the 32-frame baseline in today's form (`plain_oracle32_now`) and 128 live frames in the
+trained form (`plain_live128_nl`, `configs/server_4b_v3_plain_nl.yaml`). (Run 3 also had 200 LoRA modules, not 248:
+`in_proj_a/b` came later - irrelevant to evaluation, the added adapters start at zero.)
+
+**Next, `ROLE=format,strategies,plain`** (one command, in that order; `format` first):
 1. `strategies` (~2-3 h, 8 GPUs): the zero-shot strategies on the live design (plain, 128 live frames) - the format
    line alone (the reference for the routed runs), + the prior hints, + object distances, + directions (the I-49
    instance rule), and the whole zero-shot stack (room, distances, directions, hints). The measurements use
@@ -30,7 +37,7 @@ arm's own gate reached 4,659 / 9,330 requests and stopped with its node (no erro
 
 ```
 cd /group-volume/wooyeol/vlm-live && git pull
-OUT=outputs/run3_live_2x8_20260930 ROLE=strategies,plain nohup bash scripts/server_run3.sh \
+OUT=outputs/run3_live_2x8_20260930 ROLE=format,strategies,plain nohup bash scripts/server_run3.sh \
   > outputs/run3_live_2x8_20260930/master.next.$(hostname -s).log 2>&1 &
 ```
 

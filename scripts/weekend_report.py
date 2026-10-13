@@ -88,7 +88,8 @@ PHASES_RUN3 = [("data", "data pass + mix preparation"), ("calib", "speed calibra
                ("role.gated", "role gated"), ("role.plain", "role plain"), ("role.control", "role control"),
                ("role.base", "role base"), ("role.gated_wn", "role gated_wn"),
                ("role.live", "role live (the trained arms on the live path)"),
-               ("role.strategies", "role strategies (the zero-shot strategies on plain, live 128)")]
+               ("role.strategies", "role strategies (the zero-shot strategies on plain, live 128)"),
+               ("role.format", "role format (plain in today's prompt form vs the one it was trained with)")]
 ARMS_RUN3 = ("gated", "plain", "control", "gated_wn")
 COMPARISONS_RUN3 = [
     ("gated - plain (the geometry path at this data scale)  <- key", "gated:oracle-image", "plain:oracle-image"),
@@ -103,6 +104,13 @@ COMPARISONS_RUN3 = [
     ("Base: room facts - plain prompt", "base_routed_room:oracle-image", "base:oracle-image"),
     ("gated: video mode - image mode (offline protocol vs live form)", "gated_video:oracle-video", "gated:oracle-image"),
     # the live path (ROLE=live): frames chosen as the video streams, the LLM capped at 32 / 128 / 256 frames
+    # run 3 trained and first evaluated at 5d963f6 ("\n" after every image block); the live rows use today's form
+    ("plain oracle 32: today's prompt form - the trained one (no newline after images)", "plain_oracle32_now:oracle-image",
+     "plain:oracle-image"),
+    ("plain: live 32 - oracle 32, the same prompt form (choosing causally)", "plain_live32:live-image",
+     "plain_oracle32_now:oracle-image"),
+    ("plain live 128: the trained prompt form - today's", "plain_live128_nl:live-image", "plain_live128:live-image"),
+    ("plain: live 128 - oracle 32, the same prompt form", "plain_live128:live-image", "plain_oracle32_now:oracle-image"),
     ("plain: live 32 - oracle 32 (choosing the frames causally)", "plain_live32:live-image", "plain:oracle-image"),
     ("plain: live 128 - live 32 (more frames)", "plain_live128:live-image", "plain_live32:live-image"),
     ("plain: live 256 - live 128 (every 1 fps frame)", "plain_live256:live-image", "plain_live128:live-image"),

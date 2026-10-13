@@ -28,6 +28,11 @@ datasets:
   vsi_590k:            {annotation: train/vsi_590k_spar.json,              media: media, records: 302005}
   vsti_camera:         {annotation: train/vsti_camera.json,                media: media, records: 66513}
   vsti_camera_obj:     {annotation: train/vsti_camera_obj.json,            media: media, records: 48628}
+  # the same VSI-590K annotation with its images from nyu-visionx/VSI-590K, unpacked by scripts/fetch_vsi590k.py into
+  # our folder (2026-10-13; the shared media root has none of them): Hypersim, ADT, ProcTHOR, S3DIS, room tours,
+  # robotics - no ScanNet / ScanNet++ / ARKitScenes, so no VSI-Bench scene
+  vsi590k:             {annotation: train/vsi_590k_spar.json,              media: /group-volume/wooyeol/data/vsi590k_media,
+                        records: 302005}
 
 mixes:
   # the 70.83 run: the six "all" sets + their CoT variants + SQA3D + ScanQA = 2,029,000 records, one epoch
@@ -39,3 +44,6 @@ mixes:
   # ours for the live system (2026-09-30): ref70 without the six CoT variants - answers come at once, no reasoning
   # is trained (1,443,777 records; a reasoning block left in any answer is stripped to its final answer)
   live: [spar_234k, llava_hound_64k, vlm3r_scannet, vlm3r_scannetpp, vlm3r_arkit, sensenova_800k, sqa3d, scanqa]
+  # a run-4 candidate (2026-10-13): live + VSI-590K's six non-ScanNet environments (1,745,782 records)
+  live_vsi: [spar_234k, llava_hound_64k, vlm3r_scannet, vlm3r_scannetpp, vlm3r_arkit, sensenova_800k, sqa3d, scanqa,
+             vsi590k]

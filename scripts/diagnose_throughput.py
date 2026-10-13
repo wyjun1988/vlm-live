@@ -7,7 +7,7 @@ docs/SERVER_RESULTS_20260929.md §2.3 / §8.1: the weekend arms ran at 15.5-16.4
 ~2 % of an epoch. The cost does not scale with the LLM (2B == 4B), is not CUT3R or the DataLoader, and tracks the
 image path at 4-5 ms per vision patch row (~5x an Apple M2). Two suspects, both settled here:
   1. the bf16 Conv3d patch embed on a slow kernel -> fix F1 (the exact linear form, live3r.model.patch_embed);
-  2. the Gated DeltaNet on transformers' pure-torch fallback (fla / causal-conv1d missing) -> fix F2 (pip install).
+  2. the Gated DeltaNet on transformers' pure-torch path -> fix F2 (LIVE3R_GDN=fla; --gdn-check compares).
 Sections: [env] versions and which kernel implementations transformers resolved; [patch] Conv3d vs its linear form,
 synthetic, with a profiler table; [vision] (--model) the real vision tower on a 32-image keyframe batch, stock vs
 linear, ms per patch row; [llm] (--model) a 4,096-token text prefill of the language model. Ends with a verdict.
@@ -155,54 +155,80 @@ def section_model(dev: torch.device, model_path: str, images: int, llm_tokens: i
     return out
 
 
-FLA_PROBE = r"""
-import os, sys, time, torch
-if os.environ.get("BLOCK_FLA") == "1":        # transformers resolves the kernels at import: block fla before it
-    sys.modules["fla"] = None
-    sys.modules["causal_conv1d"] = None
+GDN_PROBE = r"""
+import json, os, sys, time, torch
+sys.path.insert(0, os.environ["LIVE3R_SRC"])
+from live3r.model import kernels
+backend = kernels.apply_gdn_backend()          # LIVE3R_GDN of this process, before the model is built
+from peft import LoraConfig, get_peft_model
 from transformers import Qwen3_5ForConditionalGeneration
-path, n, out, dev = sys.argv[1], int(sys.argv[2]), sys.argv[3], sys.argv[4]
-m = Qwen3_5ForConditionalGeneration.from_pretrained(path, dtype=torch.bfloat16).to(dev).eval()
-g = torch.Generator().manual_seed(0)
-ids = torch.randint(1000, 20000, (1, n), generator=g).to(dev)
+path, lengths, out, dev = sys.argv[1], [int(x) for x in sys.argv[2].split(",")], sys.argv[3], sys.argv[4]
+m = Qwen3_5ForConditionalGeneration.from_pretrained(path, dtype=torch.bfloat16, attn_implementation="sdpa").to(dev)
+targets = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj", "in_proj_qkv", "in_proj_z",
+           "in_proj_a", "in_proj_b", "out_proj"]             # run 3's LoRA (configs/server_4b_v3*.yaml)
+m = get_peft_model(m, LoraConfig(r=16, lora_alpha=32, lora_dropout=0.0, target_modules=targets))
+m.gradient_checkpointing_enable()
+m.train()
 def sync():
     torch.cuda.synchronize() if dev.startswith("cuda") else None
-with torch.no_grad():
-    o = m(input_ids=ids, labels=ids)
-    sync(); t = time.perf_counter(); m(input_ids=ids, labels=ids); sync(); ms = (time.perf_counter() - t) * 1e3
-torch.save({"loss": float(o.loss), "logits": o.logits[0, -64:].float().cpu(), "ms": ms}, out)
+res = {"backend": backend}
+for n in lengths:
+    g = torch.Generator().manual_seed(n)
+    ids = torch.randint(1000, 20000, (1, n), generator=g).to(dev)
+    def step():
+        m.zero_grad(set_to_none=True)
+        o = m(input_ids=ids, labels=ids)
+        o.loss.backward()
+        return o.loss
+    step(); sync()                                     # warm-up (Triton autotuning on the fused path)
+    torch.cuda.reset_peak_memory_stats() if dev.startswith("cuda") else None
+    t = time.perf_counter(); loss = step(); sync(); ms = (time.perf_counter() - t) * 1e3
+    gn = torch.sqrt(sum((p.grad.float() ** 2).sum() for p in m.parameters() if p.grad is not None)).item()
+    mem = torch.cuda.max_memory_allocated() / 2**30 if dev.startswith("cuda") else 0.0
+    res[str(n)] = {"loss": float(loss), "grad_norm": gn, "ms": ms, "mem_gb": mem}
+res["calls"] = dict(kernels.CALLS)
+json.dump(res, open(out, "w"))
 """
 
 
-def section_fla(dev: torch.device, model_path: str, tokens: int) -> dict:
-    """The same 4B forward with the fused Gated DeltaNet (fla) and with transformers' torch fallback, in two
-    processes: loss, logits and time. Decides whether fla may be used for training (same numerics up to bf16)."""
+def section_gdn(dev: torch.device, model_path: str, lengths: str) -> dict:
+    """One LoRA training step (forward + backward, gradient checkpointing - as train.py) of the 4B with transformers'
+    torch Gated DeltaNet and with fla's fused one (LIVE3R_GDN, live3r.model.kernels), in two processes: loss, LoRA
+    gradient norm, ms and peak memory per length, and whether the fused rule really ran. transformers >= 5.16 no longer
+    picks fla up by itself, so an installed fla says nothing about the path a run takes - this does."""
+    import json
+    import os
     import subprocess
     import tempfile
 
-    print(f"\n[fla] fused vs torch-fallback Gated DeltaNet, {tokens}-token forward of {model_path}")
+    print(f"\n[gdn] torch vs fla Gated DeltaNet, LoRA forward + backward at {lengths} tokens of {model_path}")
     if not importlib.util.find_spec("fla"):
-        print("  fla is not installed - nothing to compare (install flash-linear-attention first)")
-        return {"fla": None}
+        print("  fla is not installed - nothing to compare (pip install --no-deps flash-linear-attention)")
+        return {"gdn": None}
     res = {}
+    src = str(Path(__file__).resolve().parents[1] / "src")
     with tempfile.TemporaryDirectory() as td:
-        for name, block in (("fused", "0"), ("torch", "1")):
-            out = f"{td}/{name}.pt"
-            r = subprocess.run([sys.executable, "-c", FLA_PROBE, model_path, str(tokens), out, str(dev)],
-                               env={**__import__("os").environ, "BLOCK_FLA": block}, capture_output=True, text=True)
+        for name in ("torch", "fla"):
+            out = f"{td}/{name}.json"
+            r = subprocess.run([sys.executable, "-c", GDN_PROBE, model_path, lengths, out, str(dev)],
+                               env={**os.environ, "LIVE3R_GDN": name, "LIVE3R_SRC": src}, capture_output=True, text=True)
             if r.returncode != 0:
-                print(f"  {name} path failed:\n{r.stderr[-2000:]}")
-                return {"fla": False}
-            res[name] = torch.load(out)
-    a, b = res["fused"], res["torch"]
-    rel = ((a["logits"] - b["logits"]).norm() / b["logits"].norm()).item()
-    agree = (a["logits"].argmax(-1) == b["logits"].argmax(-1)).float().mean().item()
-    dloss = abs(a["loss"] - b["loss"])
-    ok = dloss < 0.05 and rel < 0.05 and agree > 0.9
-    print(f"  loss fused {a['loss']:.4f} vs torch {b['loss']:.4f} (|d| {dloss:.4f}) · logits rel. diff {rel:.1e} · "
-          f"top-1 agreement {100 * agree:.0f}% · time {a['ms']:.0f} vs {b['ms']:.0f} ms ({b['ms'] / max(a['ms'], 1e-6):.1f}x)")
-    print(f"  FLA {'OK' if ok else 'MISMATCH'}")
-    return {"fla": ok, "fla_speedup": b["ms"] / max(a["ms"], 1e-6)}
+                print(f"  {name} path failed:\n{r.stderr[-2500:]}")
+                return {"gdn": False}
+            res[name] = json.load(open(out))
+    a, b = res["fla"], res["torch"]
+    print(f"  backends: {b['backend']} / {a['backend']} · fused rule calls in the fla process: {a['calls']}")
+    ok = a["backend"] == "fla" and a["calls"]["chunk"] > 0
+    speed = []
+    for n in lengths.split(","):
+        x, y = a[n], b[n]
+        dloss, gratio = abs(x["loss"] - y["loss"]), x["grad_norm"] / max(y["grad_norm"], 1e-12)
+        ok = ok and dloss < 0.05 and 0.9 < gratio < 1.1
+        speed.append(y["ms"] / max(x["ms"], 1e-6))
+        print(f"  {n:>6} tokens: loss {y['loss']:.4f} / {x['loss']:.4f} (|d| {dloss:.4f}) · grad norm ratio {gratio:.3f}"
+              f" · step {y['ms']:.0f} -> {x['ms']:.0f} ms ({speed[-1]:.1f}x) · peak {y['mem_gb']:.1f} / {x['mem_gb']:.1f} GB")
+    print(f"  GDN {'OK - train with LIVE3R_GDN=fla' if ok else 'MISMATCH or not taken - keep the torch path'}")
+    return {"gdn": ok, "gdn_speedup": min(speed) if speed else None}
 
 
 def main() -> int:
@@ -214,14 +240,16 @@ def main() -> int:
     ap.add_argument("--hidden", type=int, default=1024)
     ap.add_argument("--images", type=int, default=32)
     ap.add_argument("--llm-tokens", type=int, default=4096)
-    ap.add_argument("--fla-check", action="store_true",
-                    help="with --model: compare the fused Gated DeltaNet (fla) with the torch fallback (two processes)")
+    ap.add_argument("--gdn-check", action="store_true",
+                    help="with --model: a LoRA training step with the torch and the fla Gated DeltaNet (two processes)")
+    ap.add_argument("--gdn-lengths", default="4096,12288", help="token lengths of the --gdn-check steps")
+    ap.add_argument("--fla-check", dest="gdn_check", action="store_true", help=argparse.SUPPRESS)   # run 2's name
     args = ap.parse_args()
     dev = torch.device(args.device)
     env = section_env(dev)
     patch = section_patch(dev, args.rows, args.hidden)
     model = section_model(dev, args.model, args.images, args.llm_tokens) if args.model else {}
-    fla = section_fla(dev, args.model, args.llm_tokens) if (args.model and args.fla_check) else {}
+    gdn = section_gdn(dev, args.model, args.gdn_lengths) if (args.model and args.gdn_check) else {}
 
     print("\n[verdict]")
     ratio = patch["conv_ms"] / max(patch["linear_ms"], 1e-6)
@@ -232,11 +260,12 @@ def main() -> int:
     if model:
         gain = model["vision_stock_ms_row"] / max(model["vision_linear_ms_row"], 1e-9)
         print(f"  vision tower: {model['vision_stock_ms_row']:.3f} -> {model['vision_linear_ms_row']:.3f} ms/row with F1 ({gain:.1f}x)")
-    print("  F2 NEEDED: Gated DeltaNet runs the torch fallback - install flash-linear-attention and causal-conv1d."
-          if env["gdn_fallback"] else "  Gated DeltaNet uses the fused kernels: F2 is not needed.")
-    if fla.get("fla") is not None:
-        print(f"  fla check: {'OK - keep it' if fla['fla'] else 'MISMATCH - uninstall flash-linear-attention'}"
-              + (f" ({fla['fla_speedup']:.1f}x faster forward)" if fla.get("fla_speedup") else ""))
+    print("  F2 NEEDED: Gated DeltaNet runs transformers' torch path - with transformers >= 5.16 an installed fla is not"
+          " used by itself: train with LIVE3R_GDN=fla once --gdn-check says OK."
+          if env["gdn_fallback"] else "  Gated DeltaNet uses fused kernels: F2 is not needed.")
+    if gdn.get("gdn") is not None:
+        print(f"  gdn check: {'OK - LIVE3R_GDN=fla for training' if gdn['gdn'] else 'MISMATCH - keep the torch path'}"
+              + (f" ({gdn['gdn_speedup']:.1f}x faster step, the slowest length)" if gdn.get("gdn_speedup") else ""))
     return 0
 
 

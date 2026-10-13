@@ -34,6 +34,7 @@ CFG="${CFG:-configs/server_4b_v3.yaml}"               # gated_input, LayerNorm, 
 CFG_WN="${CFG_WN:-configs/server_4b_v3_wn.yaml}"      # gated_input, the reference's wonorm variant
 CFG_PLAIN="${CFG_PLAIN:-configs/server_4b_v3_plain.yaml}"   # fusion none
 CFG_FACTS="${CFG_FACTS:-configs/server_4b_v3_plain_facts.yaml}"   # the same model; CUT3R only for measurements as text
+CFG_NL="${CFG_NL:-configs/server_4b_v3_plain_nl.yaml}"       # the same model in the prompt form it was trained with
 MIX="${MIX:-live}"                                    # configs/data/vgllm.yaml: the 70.83 run's sources without
                                                       # its six CoT variants (live: no reasoning is trained)
 REGISTRY="${REGISTRY:-configs/data/vgllm.yaml}"
@@ -80,7 +81,7 @@ NGPU=${#GPUS[@]}
 ALLG=$(IFS=,; echo "${GPUS[*]}"); ACCUM=$(( EFF_BATCH / NGPU )); SHARDS=$NGPU
 ROLE="${ROLE:-auto}"
 ALL_ROLES=(gated plain base control gated_wn)
-EXTRA_ROLES=(live strategies)       # run only when named: ROLE=live / ROLE=strategies (2026-10-13)
+EXTRA_ROLES=(live strategies format)   # run only when named: ROLE=live / strategies / format (2026-10-13)
 if [[ "$ROLE" == auto ]]; then
   RTAG=$HOST; QUEUE=("${ALL_ROLES[@]}")
 else
@@ -460,6 +461,17 @@ role_strategies() {   # the zero-shot strategies (BRAINSTORM I-27..I-49) on the 
     || rc=1
   vsi_sharded plain_live128_stack --config "$CFG_FACTS" --weights "$w" "${live[@]}" "${objects[@]}" "${dirs[@]}" \
     --route-facts "${hints[@]}" || rc=1
+  report
+  bundle_results
+  return $rc
+}
+role_format() {   # run 3 trained (and first evaluated) at 5d963f6, where every image block was followed by "\n"; the
+                  # live runs used today's form without it. Separates the format from the frame choice.
+  local rc=0 w="$OUT/plain/final.pt"
+  have "$w" "format" || return 1
+  vsi_sharded plain_oracle32_now --config "$CFG_PLAIN" --weights "$w" --modes oracle-image || rc=1
+  vsi_sharded plain_live128_nl --config "$CFG_NL" --weights "$w" --modes live-image --budget-fps 1 --budget-cap 128 \
+    || rc=1
   report
   bundle_results
   return $rc
