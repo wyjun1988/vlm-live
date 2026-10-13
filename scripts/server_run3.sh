@@ -79,6 +79,7 @@ NGPU=${#GPUS[@]}
 ALLG=$(IFS=,; echo "${GPUS[*]}"); ACCUM=$(( EFF_BATCH / NGPU )); SHARDS=$NGPU
 ROLE="${ROLE:-auto}"
 ALL_ROLES=(gated plain base control gated_wn)
+EXTRA_ROLES=(live)                  # run only when named: ROLE=live (the live path on the trained arms, 2026-10-13)
 if [[ "$ROLE" == auto ]]; then
   RTAG=$HOST; QUEUE=("${ALL_ROLES[@]}")
 else
@@ -416,6 +417,28 @@ role_gated_wn() {
   gate_arm 0 gated_wn "$CFG_WN" || rc=1
   return $rc
 }
+role_live() {   # the trained arms on the live path: frames chosen as the video streams (halving over the 1 fps grid,
+                # budgets independent of the video's length - BRAINSTORM I-48), the LLM capped at 32 / 128 / 256 frames
+  local rc=0 arm cfg cap
+  for arm in plain gated; do
+    cfg=$CFG_PLAIN; [[ $arm == gated ]] && cfg=$CFG
+    have "$OUT/$arm/final.pt" "live VSI $arm" || { rc=1; continue; }
+    for cap in 32 128 256; do
+      vsi_sharded "${arm}_live$cap" --config "$cfg" --weights "$OUT/$arm/final.pt" --modes live-image \
+        --budget-fps 1 --budget-cap "$cap" || rc=1
+    done
+  done
+  report
+  bundle_results
+  return $rc
+}
+bundle_results() {   # what to send back in one file: the report, STATUS, the arms' VSI results, the gate logs
+  local f files=(REPORT.md STATUS)
+  for f in "$OUT"/vsi/{plain,gated,base}*.json "$OUT"/gate*.log; do
+    [[ -f "$f" && "$f" != *_step* ]] && files+=("${f#"$OUT"/}")
+  done
+  tar -czf "$OUT/results_to_send.tar.gz" -C "$OUT" "${files[@]}" && log "to send: $OUT/results_to_send.tar.gz"
+}
 
 # ============================================================================================ run
 log "started on $HOST (GPUs $ALLG, accum $ACCUM) at $(git log --oneline -1 2> /dev/null) - roles: ${QUEUE[*]}"
@@ -431,7 +454,7 @@ fi
 { is_done calib || with_lock calib _calib; } && load_budget || exit 1
 report
 for r in "${QUEUE[@]}"; do
-  case " ${ALL_ROLES[*]} " in *" $r "*) ;; *) fail "unknown role '$r'"; continue ;; esac
+  case " ${ALL_ROLES[*]} ${EXTRA_ROLES[*]} " in *" $r "*) ;; *) fail "unknown role '$r'"; continue ;; esac
   is_done "role.$r" && continue
   [[ -f "$OUT/role.$r.skipped" ]] && continue
   if [[ "$ROLE" == auto ]]; then claim "$r" || continue; fi

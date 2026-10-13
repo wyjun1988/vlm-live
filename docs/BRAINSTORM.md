@@ -103,6 +103,12 @@ the maps are the ones a long video needs.
 A small SFT lands **11.9 below** prompting the base: it fixes the answer format but collapses numeric answers onto
 the training prior. Scale is the missing ingredient (literature: ~+20 from data, +1..3 from the 3D encoder).
 
+**Run 3 (2026-10-13, the VG-LLM `live` mix, 1.42 M samples, one pass; all 288 videos, 32 uniform frames as images):**
+plain SFT **71.3**, gated input fusion (CUT3R) **71.0** - the reference's 70.83 reproduced with our implementation.
+gated − plain −0.2 [−1.6, +1.1]: at this data scale the 3D encoder adds nothing in the LLM input, and the routed room
+facts cost on the trained arms (−0.7 / −0.8: they size rooms better than the measurement). Data was the ingredient;
+for the live system CUT3R's VSI value is now an open question (next: the trained arms on the live path, `ROLE=live`).
+
 ### Model size
 
 | | instruction only | + routed measurements | gain | copies the measurement (room / distance) |
@@ -227,6 +233,27 @@ and the maps inherit any drift because they live in the first frame's coordinate
 ### I-06 Halving-aware incremental prefill — **parked**
 Append keyframes to the LLM cache as they arrive and rebuild only on evictions. Not needed on H100 (full
 rebuild is fast enough); relevant for an on-device demo.
+
+### I-50 Voice front-end: a spoken Korean question in, its text out — **built; 4.5 % of real Korean turns truncated at a 0.80 s mean wait (2026-10-13)**
+User request 2026-10-12; the survey and the choices are in docs/VOICE_FRONTEND.md. `live3r.serve.voice`: Silero VAD
+v6.2 -> Smart Turn v3.2 scores each pause 0.2 s in -> the turn commits after 0.7 s of silence when it says finished,
+1.5 s when not -> Qwen3-ASR-1.7B transcribes (speculatively, from the scoring point) -> the reader (I-38).
+- `scripts/voice_eot_eval.py` on eot-bench `ko` (377 real human-to-agent turns): eot-bench's own protocol reproduces
+  the published Smart Turn numbers (9.7 % cut-offs at 0.6 s, as published; 710 vs 734 ms at 5 %; the VAD baseline
+  exactly), so the preprocessing is right. End to end with our VAD, counted per turn: **4.5 % truncated at a mean
+  wait of 0.80 s** - 0.9 % of the turns under 8 s of speech (0.1-0.5 mid-turn pauses each), 10.3 % of the longer ones
+  (2.5 pauses). The action delay is the knob (0.6 s: 8.0 % at 0.71 s; 0.8 s: 2.9 % at 0.88 s); the threshold is flat
+  over 0.4-0.8. A plain 1.0 s silence timeout gives 3.4 % at 1.03 s: the detector buys ~0.2 s at equal truncation.
+- A text end-of-turn model (Namo-v1-Korean) on the reference transcript up to each pause - its upper bound - adds
+  nothing measurable, alone or fused (best 6.9 % vs 8.8 % at a 0.7 s wait, in-sample over a large grid): in these
+  calls people pause after complete sentences and go on. Not attached.
+- `scripts/voice_asr_eval.py`: Qwen3-ASR-1.7B vs the benchmark's reference transcript, CER 10.3 % (7.5 % without
+  numbers, Latin letters or truncated references). The reference is machine-made and often the wrong side ("메일이"
+  vs "매일에", "룸 이용료" vs "이용류"), and the model keeps fillers and stutters the reference drops, so the true
+  error is lower. 0.44 s per question on the M2.
+- `scripts/voice_demo.py --reader`: 7 synthetic Korean questions (macOS `say`, pauses up to 0.9 s, one after "-면"):
+  7 turns, no truncation, transcripts exact but one character (변 -> 편); the 4B reads 7/7 (type and roles).
+Open: our own spoken spatial questions (the eot-bench turns are reservation calls), the ASR pass on the H100.
 
 ---
 
@@ -1033,5 +1060,7 @@ timestamps (I-04), recency weighting / decay, possibly state windows (I-05).
 | 52 | I-48b live, cap 128, the measurement frames half a second off the 1 fps grid (extra CUT3R inputs, as the oracle's) | I-48 | done: **59.5**, −0.1 [−1.9, +1.8] vs cap 128 - no; the gap is 2-3 object triples flipping with the instance choice |
 | 53 | I-49 data: the live cap-128 run with every object observation dumped (`--dump-objects`), two frame sets; instance rules replayed offline (`scripts/instance_rules_lab.py`) | I-49 | done: 59.6 (= I-48c); score_max + abstention 0.8 the only rule up on both sets (+6.6 / +6.1 expected direction accuracy) |
 | 54 | I-49 validation: `--instance-rule score_max --direction-abstain 0.8` | I-49 | done: **60.6, +1.0 [+0.2, +2.1]**; rel direction +6.7, abs distance +1.6, nothing else changed |
+| 55 | I-50 voice front-end, end of turn on eot-bench `ko` (377 real turns): the benchmark's protocol, our VAD per turn, a text detector on the reference words | I-50 | done: protocol reproduces the published Smart Turn numbers; **4.5 % of turns truncated at a 0.80 s mean wait** (0.9 % under 8 s); the text detector adds nothing |
+| 56 | I-50 Qwen3-ASR-1.7B on the same turns; synthetic Korean questions through the whole chain to the reader | I-50 | done: CER 10.3 % vs a machine-made reference (7.5 % filtered, the model often the right side); demo 7/7 turns, reader 7/7 |
 | 25 | I-35 encoder bake-off: VGGT window 8 behind the same maps (directions attached, metric facts logged) | I-35 | done: **CUT3R wins** — direction 76.4 vs 56.7 (72 vs 54 on common questions), room area MRA 65.8 vs 9.5 (scale-free 69.0 vs 16.2) |
 | 14 | **Sensenova-only baseline on 4 nodes x 8 H100**: zero-shot VSI (full); S1 and S2 (one epoch each) real vs control, two seeds; plain SFT (no geometry); S2 joint (no S1); the 2B pair; S2 learning curve; gate | I-12, I-16, I-18, I-22 | four-day run from 09-26 (docs/SERVER_WEEKEND.md) |

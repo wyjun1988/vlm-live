@@ -6,6 +6,36 @@ use the data; we do not take their code. So this run trains **our implementation
 mix** without its chain-of-thought part (the live system answers at once - the lead's call, 2026-09-30), against a
 no-geometry arm at equal data, on our live evaluation path.
 
+## 2026-10-13 — the result, and next: the trained arms on the live path (`ROLE=live`)
+
+**Result (REPORT.md of 10-13; all 288 videos / 5,130 questions; 32 uniform frames as images at 192 tokens a frame -
+the reference's protocol):** plain **71.3**, gated **71.0** against the reference's 70.83. gated − plain −0.2
+[−1.6, +1.1]: the geometry path adds nothing at this data scale (their own runs: 70.83 vs 70.89). Room facts now cost
+on the trained arms (gated −0.8 [−1.6, −0.1], its room size 75.3 → 67.6; plain 71.3 → 70.6): the trained models size
+rooms better than the measurement does (MRA ~66). The video path loses 6.1 to images. The gated learning curve still
+rises (68.9 / 69.9 / 70.6 / 71.0 at the quarters).
+
+**Next, `ROLE=live` (evaluation only, ~2-3 h on one 8-GPU node):** the plain and gated final checkpoints on the live
+path - frames chosen as the video streams (halving over the 1 fps grid; the budget is the cap, so nothing depends on
+the video's length - BRAINSTORM I-48), the LLM capped at 32, 128 and 256 frames (256 = every 1 fps frame of a VSI
+video). It answers what choosing causally costs at 32 frames, what more frames buy (the reference: 72.18 at 1 fps),
+and whether gated − plain moves with more frames. REPORT.md is then regenerated with the new rows and comparisons,
+and everything to send back is bundled into `results_to_send.tar.gz` (the report, STATUS, the arms' VSI results with
+their per-question answers, and the gate logs).
+
+```
+cd /group-volume/wooyeol/vlm-live && git pull
+OUT=outputs/run3_live_2x8_20260930 ROLE=live nohup bash scripts/server_run3.sh \
+  > outputs/run3_live_2x8_20260930/master.live.$(hostname -s).log 2>&1 &
+tail -f outputs/run3_live_2x8_20260930/STATUS
+```
+
+It can start now, next to the running `plain+base+gated` process (that one only waits on the gated arm's VideoMME gate
+on GPU 7; the live role uses all 8 GPUs and shares GPU 7 with it). No longer needed: control and gated_wn (the key
+comparison is answered) - `touch outputs/run3_live_2x8_20260930/role.{control,gated_wn}.skipped` keeps an auto run
+from resuming them. Send back `outputs/run3_live_2x8_20260930/results_to_send.tar.gz`. It carries `gate_smoke.log`:
+the lmms-eval gate fails every time ("wrote no results"), and its exception is in that log.
+
 ## What is new (all ours, written from the understood design)
 
 | piece | what | where |

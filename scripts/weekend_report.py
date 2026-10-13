@@ -86,7 +86,8 @@ PHASES_RUN3 = [("data", "data pass + mix preparation"), ("calib", "speed calibra
                ("gate_smoke", "gate smoke"), ("gate_base", "gate: base"), ("gate_base_video", "gate: base video"),
                ("gate_plain", "gate: plain"), ("gate_gated", "gate: gated"), ("gate_gated_wn", "gate: gated_wn"),
                ("role.gated", "role gated"), ("role.plain", "role plain"), ("role.control", "role control"),
-               ("role.base", "role base"), ("role.gated_wn", "role gated_wn")]
+               ("role.base", "role base"), ("role.gated_wn", "role gated_wn"),
+               ("role.live", "role live (the trained arms on the live path)")]
 ARMS_RUN3 = ("gated", "plain", "control", "gated_wn")
 COMPARISONS_RUN3 = [
     ("gated - plain (the geometry path at this data scale)  <- key", "gated:oracle-image", "plain:oracle-image"),
@@ -100,6 +101,14 @@ COMPARISONS_RUN3 = [
     ("Room facts, same prompt: gated - plain", "gated_routed_room:oracle-image", "plain_routed_room:oracle-image"),
     ("Base: room facts - plain prompt", "base_routed_room:oracle-image", "base:oracle-image"),
     ("gated: video mode - image mode (offline protocol vs live form)", "gated_video:oracle-video", "gated:oracle-image"),
+    # the live path (ROLE=live): frames chosen as the video streams, the LLM capped at 32 / 128 / 256 frames
+    ("plain: live 32 - oracle 32 (choosing the frames causally)", "plain_live32:live-image", "plain:oracle-image"),
+    ("plain: live 128 - live 32 (more frames)", "plain_live128:live-image", "plain_live32:live-image"),
+    ("plain: live 256 - live 128 (every 1 fps frame)", "plain_live256:live-image", "plain_live128:live-image"),
+    ("plain: live 128 - oracle 32 (the live design vs the baseline)", "plain_live128:live-image", "plain:oracle-image"),
+    ("gated - plain, live 32", "gated_live32:live-image", "plain_live32:live-image"),
+    ("gated - plain, live 128", "gated_live128:live-image", "plain_live128:live-image"),
+    ("gated: live 128 - oracle 32", "gated_live128:live-image", "gated:oracle-image"),
     ("Run 3 gated - run 2 S2 real (data + design + resolution)", "gated:oracle-image", "r2_s2_real:oracle-image"),
     ("Run 3 plain - run 2 plain SFT (data + resolution)", "plain:oracle-image", "r2_s2_sft:oracle-image"),
 ]

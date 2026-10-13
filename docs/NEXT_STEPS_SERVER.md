@@ -1,5 +1,10 @@
 # 서버 다음 진행사항 — 2026-09-23 (09-24 M2 실측 반영)
 
+> ## 2026-10-13 — next: the trained run-3 arms on the live path (`ROLE=live`)
+> Run 3 reproduced the 70: plain 71.3, gated 71.0 (gated − plain −0.2 [−1.6, +1.1]). **Run the `ROLE=live` command in
+> [`docs/SERVER_RUN3.md`](SERVER_RUN3.md) §2026-10-13** (evaluation only, ~2-3 h on one node; it can start next to the
+> running gate) and send back `results_to_send.tar.gz`. control and gated_wn are no longer needed.
+>
 > ## 2026-09-30 — next: run 3 (after run 2)
 > **Run [`docs/SERVER_RUN3.md`](SERVER_RUN3.md)**: `scripts/server_run3.sh`, one command on every node. Our
 > implementation of the 70.83 reference's design (gated input fusion, long side 512, one stage) trained on the VG-LLM
