@@ -1,6 +1,7 @@
 # 서버 다음 진행사항 — 2026-09-23 (09-24 M2 실측 반영)
 
 > ## 2026-10-13 (night) — next: `ROLE=format,strategies,plain` and the run-4 preparation
+> Where the project stands, what each result decides: [`docs/STATUS_20261013.md`](STATUS_20261013.md).
 > 1. **[`docs/SERVER_RUN3.md`](SERVER_RUN3.md) §2026-10-13 (evening):** `ROLE=format,strategies,plain` - the prompt-form
 >    check (run 3 trained with "\n" after images; no evaluation has had it), the strategies, then the gate.
 > 2. **[`docs/SERVER_RUN4_PREP.md`](SERVER_RUN4_PREP.md):** `scripts/server_prep_run4.sh` - the training-speed check
