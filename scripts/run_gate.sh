@@ -19,7 +19,7 @@ set -euo pipefail
 CONFIG="${1:?config yaml}"
 WEIGHTS="${2:?학습 가중치 (.pt)}"
 OUT="${3:-outputs/gate}"
-SPATIAL="${SPATIAL:-vsibench}"
+SPATIAL="${SPATIAL-vsibench}"     # empty = no spatial task (the smoke: lmms-eval's VSI aggregation needs every type)
 GENERAL="${GENERAL:-videomme}"
 REFERENCE="${REFERENCE-mmstar}"
 BUDGET="${BUDGET:-32}"
@@ -31,7 +31,7 @@ ONLY="${ONLY:-all}"
 # exited 0 without writing results (lmms-eval 0.7.3 swallows exceptions below DEBUG), so run 2 smokes first
 read -r -a EXTRA <<< "${LMMS_EXTRA:-}"
 step() { [[ "$ONLY" == all || "$ONLY" == "$1" ]]; }
-TASKS="${SPATIAL},${GENERAL}${REFERENCE:+,${REFERENCE}}"
+TASKS=$(t=(); for x in "$SPATIAL" "$GENERAL" "$REFERENCE"; do [[ -n "$x" ]] && t+=("$x"); done; IFS=,; echo "${t[*]}")
 
 COMMON="config=${CONFIG},keyframe_budget=${BUDGET},eval_path=live3r,enable_thinking=False"
 [[ -n "${BASE_MODEL:-}" ]] && COMMON="pretrained=${BASE_MODEL},${COMMON}"

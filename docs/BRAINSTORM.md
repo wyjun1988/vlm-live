@@ -108,6 +108,10 @@ plain SFT **71.3**, gated input fusion (CUT3R) **71.0** - the reference's 70.83 
 gated − plain −0.2 [−1.6, +1.1]: at this data scale the 3D encoder adds nothing in the LLM input, and the routed room
 facts cost on the trained arms (−0.7 / −0.8: they size rooms better than the measurement). Data was the ingredient;
 for the live system CUT3R's VSI value is now an open question (next: the trained arms on the live path, `ROLE=live`).
+**On the live path (2026-10-13):** plain with frames chosen as the video streams and the LLM capped at 128 frames
+scores **72.7**, +1.4 [+0.2, +2.7] over its offline 71.3 (32 → 128 frames +2.2; 128 → 256 +0.3; choosing causally at
+32 −0.8, n.s.); gated − plain −0.2 at 128 too (appearance order −4.7, significant). The zero-shot frame findings
+(I-45, I-48) carried over to the trained model; the measurement facts (I-27..I-49) did not (room facts −0.7 / −0.8).
 
 ### Model size
 

@@ -379,7 +379,9 @@ role_plain() {
   # the lmms-eval gate: a 4-sample debug smoke first (lmms-eval swallows exceptions below DEBUG), then the two base
   # runs every arm's verdict is taken against (each trained arm runs its own gate when its role gets there)
   if ! is_done gate_smoke; then
-    on_gpu 0 env GENERAL=mmstar REFERENCE= ONLY=trained LMMS_EXTRA="--limit 4 --verbosity DEBUG" timeout 2h \
+    # no VSI in the smoke: with --limit 4 lmms-eval's VSI aggregation raises KeyError on the missing question types
+    # (what failed every smoke until 10-13); the full gate runs all of VSI-Bench
+    on_gpu 0 env GENERAL=mmstar REFERENCE= SPATIAL= ONLY=trained LMMS_EXTRA="--limit 4 --verbosity DEBUG" timeout 2h \
       bash scripts/run_gate.sh "$CFG_PLAIN" "$OUT/plain/final.pt" "$OUT/gate_smoke" > "$OUT/gate_smoke.log" 2>&1
     if gate_results "$OUT/gate_smoke/trained"; then mark gate_smoke
     else fail "gate smoke: lmms-eval wrote no results - $OUT/gate_smoke.log has the exception; gate skipped"; return 1; fi
@@ -389,6 +391,8 @@ role_plain() {
   sleep 5                                # the two base runs take their locks before the arm's check waits on them
   gate_arm 2 plain "$CFG_PLAIN" & c=$!
   wait_all $a $b $c || rc=1
+  report
+  bundle_results
   return $rc
 }
 role_control() {
@@ -432,9 +436,9 @@ role_live() {   # the trained arms on the live path: frames chosen as the video 
   bundle_results
   return $rc
 }
-bundle_results() {   # what to send back in one file: the report, STATUS, the arms' VSI results, the gate logs
+bundle_results() {   # what to send back in one file: the report, STATUS, the arms' VSI results, the gate logs and verdicts
   local f files=(REPORT.md STATUS)
-  for f in "$OUT"/vsi/{plain,gated,base}*.json "$OUT"/gate*.log; do
+  for f in "$OUT"/vsi/{plain,gated,base}*.json "$OUT"/gate_*.log "$OUT"/gate_check_*.txt; do
     [[ -f "$f" && "$f" != *_step* ]] && files+=("${f#"$OUT"/}")
   done
   tar -czf "$OUT/results_to_send.tar.gz" -C "$OUT" "${files[@]}" && log "to send: $OUT/results_to_send.tar.gz"

@@ -1,5 +1,10 @@
 # 서버 다음 진행사항 — 2026-09-23 (09-24 M2 실측 반영)
 
+> ## 2026-10-13 (evening) — next: the general-ability gate for plain (`ROLE=plain`)
+> The live path holds: plain at 128 live frames 72.7 (+1.4 over 71.3). **Run the `ROLE=plain` command in
+> [`docs/SERVER_RUN3.md`](SERVER_RUN3.md) §2026-10-13 (evening)** - the gate (VideoMME / MMStar / VSI vs the base),
+> with the smoke fixed - and send back `results_to_send.tar.gz` (~7 h on 3 GPUs).
+>
 > ## 2026-10-13 — next: the trained run-3 arms on the live path (`ROLE=live`)
 > Run 3 reproduced the 70: plain 71.3, gated 71.0 (gated − plain −0.2 [−1.6, +1.1]). **Run the `ROLE=live` command in
 > [`docs/SERVER_RUN3.md`](SERVER_RUN3.md) §2026-10-13** (evaluation only, ~2-3 h on one node; it can start next to the

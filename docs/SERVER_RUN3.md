@@ -6,6 +6,27 @@ use the data; we do not take their code. So this run trains **our implementation
 mix** without its chain-of-thought part (the live system answers at once - the lead's call, 2026-09-30), against a
 no-geometry arm at equal data, on our live evaluation path.
 
+## 2026-10-13 (evening) — the live path holds: plain 72.7; next: the general-ability gate for plain (`ROLE=plain`)
+
+**Live result (`ROLE=live`, all 5,130 questions):** the trained plain model with frames chosen as the video streams
+and the LLM capped at 128 frames scores **72.7**, +1.4 [+0.2, +2.7] over its offline baseline (71.3, 32 oracle
+frames) and above the reference's 70.83. Choosing causally costs −0.8 [−2.2, +0.6] at 32 frames; 32 → 128 frames
++2.2 [+0.9, +3.6] (abs distance +4.0 and object size +1.3 significant); 128 → 256 +0.3 (128 is enough). gated −
+plain stays at −0.2 [−1.4, +1.1] at 128 frames: the geometry trades appearance order (−4.7 [−9.1, −0.7]) against rel
+direction (+3.2, n.s.). **The live design for VSI: plain SFT model, 1 fps frames capped at 128, causal selection.**
+
+**The gate never ran:** the smoke (`--limit 4`) included VSI-Bench, whose lmms-eval aggregation raises `KeyError`
+without every question type - fixed: the smoke runs MMStar only (`SPATIAL=`), the full gate is unchanged. The gated
+arm's own gate reached 4,659 / 9,330 requests and stopped with its node (no error). **Next, `ROLE=plain`** (~7 h on 3
+GPUs; training and VSI are done and skipped): the smoke, then base, base video and plain gates in parallel, the
+verdict (`gate_check_plain.txt`), and `results_to_send.tar.gz`:
+
+```
+cd /group-volume/wooyeol/vlm-live && git pull
+OUT=outputs/run3_live_2x8_20260930 ROLE=plain nohup bash scripts/server_run3.sh \
+  > outputs/run3_live_2x8_20260930/master.gate.$(hostname -s).log 2>&1 &
+```
+
 ## 2026-10-13 — the result, and next: the trained arms on the live path (`ROLE=live`)
 
 **Result (REPORT.md of 10-13; all 288 videos / 5,130 questions; 32 uniform frames as images at 192 tokens a frame -
