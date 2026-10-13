@@ -33,6 +33,7 @@ ROOT="${ROOT:-/group-volume/wooyeol/vlm-live}"
 CFG="${CFG:-configs/server_4b_v3.yaml}"               # gated_input, LayerNorm, g = 0.5 at step 0
 CFG_WN="${CFG_WN:-configs/server_4b_v3_wn.yaml}"      # gated_input, the reference's wonorm variant
 CFG_PLAIN="${CFG_PLAIN:-configs/server_4b_v3_plain.yaml}"   # fusion none
+CFG_FACTS="${CFG_FACTS:-configs/server_4b_v3_plain_facts.yaml}"   # the same model; CUT3R only for measurements as text
 MIX="${MIX:-live}"                                    # configs/data/vgllm.yaml: the 70.83 run's sources without
                                                       # its six CoT variants (live: no reasoning is trained)
 REGISTRY="${REGISTRY:-configs/data/vgllm.yaml}"
@@ -79,7 +80,7 @@ NGPU=${#GPUS[@]}
 ALLG=$(IFS=,; echo "${GPUS[*]}"); ACCUM=$(( EFF_BATCH / NGPU )); SHARDS=$NGPU
 ROLE="${ROLE:-auto}"
 ALL_ROLES=(gated plain base control gated_wn)
-EXTRA_ROLES=(live)                  # run only when named: ROLE=live (the live path on the trained arms, 2026-10-13)
+EXTRA_ROLES=(live strategies)       # run only when named: ROLE=live / ROLE=strategies (2026-10-13)
 if [[ "$ROLE" == auto ]]; then
   RTAG=$HOST; QUEUE=("${ALL_ROLES[@]}")
 else
@@ -432,6 +433,33 @@ role_live() {   # the trained arms on the live path: frames chosen as the video 
         --budget-fps 1 --budget-cap "$cap" || rc=1
     done
   done
+  report
+  bundle_results
+  return $rc
+}
+_fetch_owlv2() {   # the object detector of the measurement strategies (I-09), once into checkpoints/
+  [[ -f checkpoints/owlv2-base-patch16-ensemble/config.json ]] && return 0
+  python -c "from huggingface_hub import snapshot_download as s
+s('google/owlv2-base-patch16-ensemble', local_dir='checkpoints/owlv2-base-patch16-ensemble')" \
+    > "$OUT/owlv2_fetch.log" 2>&1 || { fail "OWLv2 download - $OUT/owlv2_fetch.log"; return 1; }
+}
+role_strategies() {   # the zero-shot strategies (BRAINSTORM I-27..I-49) on the live design: plain at 128 live frames.
+  # The routed runs put "Answer directly in the requested format" into the prefix, so each strategy is read against
+  # the run with that line alone (fmt); fmt - live128 is the line's own effect.
+  local rc=0 w="$OUT/plain/final.pt"
+  local live=(--modes live-image --budget-fps 1 --budget-cap 128) hints=(--type-hints room_size,size,abs_distance)
+  local objects=(--scene-map --no-map-image --object-map --detector owlv2 --detector-device cuda --route-objects
+                 --min-frames 3 --facts-budget 32 --facts-selector live --geom-stride 30 --instance-rule score_max)
+  local dirs=(--direction-facts --direction-min-frames 1 --direction-abstain 0.8)
+  have "$w" "strategies" || return 1
+  { [[ -f checkpoints/owlv2-base-patch16-ensemble/config.json ]] || with_lock owlv2 _fetch_owlv2; } || return 1
+  vsi_sharded plain_live128_fmt --config "$CFG_PLAIN" --weights "$w" "${live[@]}" --format-hint || rc=1
+  vsi_sharded plain_live128_hints --config "$CFG_PLAIN" --weights "$w" "${live[@]}" --format-hint "${hints[@]}" || rc=1
+  vsi_sharded plain_live128_dist --config "$CFG_FACTS" --weights "$w" "${live[@]}" "${objects[@]}" || rc=1
+  vsi_sharded plain_live128_dist_dir --config "$CFG_FACTS" --weights "$w" "${live[@]}" "${objects[@]}" "${dirs[@]}" \
+    || rc=1
+  vsi_sharded plain_live128_stack --config "$CFG_FACTS" --weights "$w" "${live[@]}" "${objects[@]}" "${dirs[@]}" \
+    --route-facts "${hints[@]}" || rc=1
   report
   bundle_results
   return $rc

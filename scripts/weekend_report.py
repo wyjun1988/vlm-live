@@ -87,7 +87,8 @@ PHASES_RUN3 = [("data", "data pass + mix preparation"), ("calib", "speed calibra
                ("gate_plain", "gate: plain"), ("gate_gated", "gate: gated"), ("gate_gated_wn", "gate: gated_wn"),
                ("role.gated", "role gated"), ("role.plain", "role plain"), ("role.control", "role control"),
                ("role.base", "role base"), ("role.gated_wn", "role gated_wn"),
-               ("role.live", "role live (the trained arms on the live path)")]
+               ("role.live", "role live (the trained arms on the live path)"),
+               ("role.strategies", "role strategies (the zero-shot strategies on plain, live 128)")]
 ARMS_RUN3 = ("gated", "plain", "control", "gated_wn")
 COMPARISONS_RUN3 = [
     ("gated - plain (the geometry path at this data scale)  <- key", "gated:oracle-image", "plain:oracle-image"),
@@ -109,6 +110,15 @@ COMPARISONS_RUN3 = [
     ("gated - plain, live 32", "gated_live32:live-image", "plain_live32:live-image"),
     ("gated - plain, live 128", "gated_live128:live-image", "plain_live128:live-image"),
     ("gated: live 128 - oracle 32", "gated_live128:live-image", "gated:oracle-image"),
+    # the zero-shot strategies on the live design (ROLE=strategies); the routed runs carry the format line, so they are
+    # read against fmt (the line alone)
+    ("plain live 128: + the format line", "plain_live128_fmt:live-image", "plain_live128:live-image"),
+    ("  + prior hints (vs the format line)", "plain_live128_hints:live-image", "plain_live128_fmt:live-image"),
+    ("  + object distances (vs the format line)", "plain_live128_dist:live-image", "plain_live128_fmt:live-image"),
+    ("  + directions, I-49 rule (vs distances)", "plain_live128_dist_dir:live-image", "plain_live128_dist:live-image"),
+    ("  the zero-shot stack: room, distances, directions, hints (vs the format line)", "plain_live128_stack:live-image",
+     "plain_live128_fmt:live-image"),
+    ("plain live 128: the zero-shot stack - nothing", "plain_live128_stack:live-image", "plain_live128:live-image"),
     ("Run 3 gated - run 2 S2 real (data + design + resolution)", "gated:oracle-image", "r2_s2_real:oracle-image"),
     ("Run 3 plain - run 2 plain SFT (data + resolution)", "plain:oracle-image", "r2_s2_sft:oracle-image"),
 ]

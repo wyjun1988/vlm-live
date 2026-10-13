@@ -1,0 +1,51 @@
+# Run 3's plain arm, for evaluating the zero-shot measurement strategies on it (ROLE=strategies, docs/SERVER_RUN3.md):
+# the model is server_4b_v3_plain.yaml unchanged (fusion none: CUT3R never reaches the LLM); CUT3R runs only for the
+# measurements attached as text, with the frame-count scale calibration of the zero-shot stack (BRAINSTORM I-37).
+patch_embed: linear
+base_model: /group-volume/wooyeol/models/Qwen3.5-4B
+dtype: bf16
+attn_implementation: sdpa
+
+geometry:
+  name: cut3r
+  checkpoint: checkpoints/cut3r_512_dpt_4_64.pth
+  tap_layers: [12]
+  hidden_size: 768
+  image_size: 512
+  stride: 1
+  freeze: true
+  expose_pose_token: false
+  options:
+    repo_path: third_party/CUT3R
+    autocast: bf16         # CUT3R's encoder + rollout under bf16 autocast (the reference's setting; ~2x on H100)
+    scale_anchor: {mode: frame_count, a: 0.3224, b: -1.3781}   # as configs/m2_zeroshot_4b_anchor_v2.yaml
+    scale_anchor_apply: global
+
+fusion:
+  mode: none
+
+lora:
+  enabled: true
+  r: 16
+  alpha: 32
+  dropout: 0.05
+  # every linear layer of the LLM, as the reference's adapter (248 modules on the 4B; ours had left out in_proj_a/b)
+  target_modules: [q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj, in_proj_qkv, in_proj_z, in_proj_a,
+                   in_proj_b, out_proj]
+
+data:
+  vlm_long_side: 512
+  max_images: 32
+  max_length: 12800
+  video_as_images: true
+  video_fps: 0.5
+  video_min_frames: 4
+  video_max_frames: 8
+  marks: draw           # spar_info marks drawn where their frame is certain (data/marks.py)
+  strip_reasoning: true  # live: no chain of thought is trained (a leftover <think> block is cut)
+  image_newline: false   # "<image>\n" -> the image block, as the reference renders training text (= the eval form)
+
+stream:
+  max_visual_tokens: 16384
+  budget_policy: evict
+  target_fps: 30.0
