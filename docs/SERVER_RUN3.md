@@ -6,6 +6,44 @@ use the data; we do not take their code. So this run trains **our implementation
 mix** without its chain-of-thought part (the live system answers at once - the lead's call, 2026-09-30), against a
 no-geometry arm at equal data, on our live evaluation path.
 
+## 2026-10-14 — format, strategies and the gate are in: the live design is plain + frames; nothing we attach helps
+
+**format.** `plain_oracle32_now` 71.3 (−0.0 [−0.1, −0.0] vs the 10-12 run: today's code reproduces it). The trained
+form - "\n" after every image block - scores **lower**: `plain_live128_nl` 71.5, −1.1 [−1.9, −0.4] vs 72.7 (room size
+−3.2 significant, rel direction −1.8 n.s., 927 of 968 direction answers changed). The evaluation form stays; run 4
+trains in it (`image_newline: false`, the default since 3da9a51).
+
+**strategies** (plain, 128 live frames, 72.7; each against the run with the format line alone, which itself is
++0.0 [−0.4, +0.4]):
+
+| added | VSI | vs the format line | where |
+|---|---|---|---|
+| prior hints | 72.6 | −0.0 [−0.2, +0.2] | abs distance +1.0 *, room −0.7, size −0.5 |
+| object distances (I-29, I-49 instance rule) | 72.5 | **−0.2 [−0.3, −0.1]** | abs distance −1.4 *: the trained model's own estimate (61) beats the measurement |
+| + directions (I-33, I-49 abstention) | 72.4 | −0.0 [−0.2, +0.1] vs distances | no answer moved |
+| the whole zero-shot stack (+ room facts) | 71.7 | **−1.0 [−1.5, −0.5]** | room size −6.3 * |
+
+None of the measurement strategies helps the trained model; the two that do anything hurt. With gated − plain at −0.2,
+CUT3R's VSI value after SFT at this scale is ~0 as tokens and ≤ 0 as text. **The live design for VSI is the plain
+model with 1 fps frames capped at 128, chosen causally** - CUT3R stays only for what frames cannot give (metric
+outputs, scene memory beyond the cap), to be justified on its own.
+
+**gate** (plain, lmms-eval `eval_path=live3r`, halving 32 - the live selection): VSI **70.67** (per type: appear 78.2,
+abs dist 59.0, count 73.1, rel dist 72.3, size 77.4, room 73.1, route 47.9, rel dir 84.3), Video-MME 62.74, MMStar
+62.64. Gate 1 (vs the base's best format, video 49.83): +20.83 ≥ +1.0 passed. Gate 2 (Video-MME vs the base 37.19):
++25.56 ≥ −1.0 passed. **Caveat:** the base reference answers without the format instruction and loses most of its
+score to unparsable answers (MMStar 33.66 for a 4B), so gate 2 passes trivially; a fair general-ability reference is
+the base *with* the format line (as the local harness's `base_hint`) or the model card's Video-MME at a comparable
+frame budget - one lmms-eval run, to add before run 4's gate. The absolute 62.74 is at the level a 4B reaches at this
+frame budget; general ability is not visibly broken.
+
+**GDN check** (`docs/SERVER_RUN4_PREP.md`): fla 4.9× / 7.2× faster at 4k / 12k tokens, loss and gradients within
+1e-3 - run 4 trains with the fused kernels. p0 failed once on run440212 (Triton on CPU tensors in the tests, from
+transformers 5.18's import-time fla fallback) - fixed in `tests/conftest.py`.
+
+**Housekeeping:** the server's checkout carries local edits (the GDN check's output format, a `gate-resume` step) that
+are not in `origin/main` - push or send them before the next `git pull`.
+
 ## 2026-10-13 (evening) — the live path holds: plain 72.7; next: the strategies on it and the gate (`ROLE=strategies,plain`)
 
 **Live result (`ROLE=live`, all 5,130 questions):** the trained plain model with frames chosen as the video streams

@@ -21,6 +21,18 @@ Run 3 reproduced the reference (plain 71.3) and the live design holds (plain at 
 - **Check before use.** `scripts/diagnose_throughput.py --gdn-check`: one LoRA training step (forward + backward,
   gradient checkpointing) at 4,096 and 12,288 tokens with each, in two processes. OK = |Δ loss| < 0.05, gradient norm
   within 10 %, and the fused rule actually called. Then run 4 trains with `LIVE3R_GDN=fla`.
+- **Result (10-14, one H100, `gdn_check.txt`):** 4,096 tokens: step 2,980 → 607 ms (**4.9×**), loss |Δ| 0.0001,
+  gradient-norm ratio 1.001, peak memory 12.3 → 10.7 GB; 12,288 tokens: 12,811 → 1,772 ms (**7.2×**), |Δ| 0.0010,
+  ratio 0.996, 19.5 → 14.8 GB. GDN OK: run 4 trains with the fused kernels. The whole step gains less (vision tower,
+  data, DDP unchanged); the calibration step of run 4 gives the samples/s.
+- **transformers 5.18 (the server's version) uses fla by itself** once `fla` is importable: the modeling module
+  resolves `chunk_gated_delta_rule` to fla at import time (`use_kernel_func_from_hub_with_fallback`, priority: hub
+  kernels, then the package, then torch) with no device check. So on the server every training and evaluation now
+  runs the fused kernels automatically (the evaluations of 10-13 and before ran the torch path; the check puts the
+  numerics within 1e-3); `LIVE3R_GDN=fla` is needed only on 5.16 / 5.17 and is harmless on 5.18. The flip side: the
+  test suite builds tiny models on the CPU, and fla on CPU tensors raises "Pointer argument cannot be accessed from
+  Triton" - the p0 failure on run440212 right after p0 installed fla-core. `tests/conftest.py` now blocks `fla` for
+  the suite (`LIVE3R_TEST_FLA=1` lets it through), so p0 passes on every node.
 - **Smaller items for run 4:** `--no-find-unused` for the plain arm (DDP's extra graph walk; nothing is unused there);
   the vision tower runs SDPA per image (no flash-attn on the nodes).
 

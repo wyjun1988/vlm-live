@@ -112,6 +112,11 @@ for the live system CUT3R's VSI value is now an open question (next: the trained
 scores **72.7**, +1.4 [+0.2, +2.7] over its offline 71.3 (32 → 128 frames +2.2; 128 → 256 +0.3; choosing causally at
 32 −0.8, n.s.); gated − plain −0.2 at 128 too (appearance order −4.7, significant). The zero-shot frame findings
 (I-45, I-48) carried over to the trained model; the measurement facts (I-27..I-49) did not (room facts −0.7 / −0.8).
+**The zero-shot strategies on the trained model (2026-10-14, plain at 128 live frames, each vs the format line):**
+prior hints −0.0, object distances −0.2 [−0.3, −0.1] (abs distance −1.4: the model's own estimate beats the
+measurement), directions −0.0, the whole stack −1.0 [−1.5, −0.5] (room facts −6.3 on room size). The trained form
+("\n" after images) evaluates 1.1 lower than the evaluation form. The gate passed (VSI 70.67 live-32 via lmms-eval,
+Video-MME 62.74, MMStar 62.64; the base reference is format-handicapped - see docs/SERVER_RUN3.md 10-14).
 
 ### Model size
 
@@ -802,6 +807,10 @@ I-48), the rest is the noise of moved frames. The rule was picked on these 60 vi
 check), so the +1.0 wants confirming on other videos.
 
 ### Lessons so far (zero-shot, 4B)
+- **L8 Measurement facts are a zero-shot lever only** (2026-10-14). On the untrained model they were worth +3 to +9;
+  on the model trained on 1.4 M VSI-domain samples every one of them is ≤ 0 (distances −0.2, the stack −1.0) because
+  the trained model's own estimates are better than what we measure from CUT3R. What survived SFT: the frame budget
+  (1 fps, cap 128: +2.2) and causal selection (−0.8, n.s.). CUT3R's VSI value after SFT is ~0 as tokens and as text.
 - **L7 Count fact changes by the object triples they flip, not by questions** (I-48, 2026-10-05). VSI asks one
   (A, B, C) triple 6-9 times, so one wrong instance choice moves the direction score by ~5 points; an object
   detected several times is where it happens. On the 60-video set a change of the measurement frames alone moved
