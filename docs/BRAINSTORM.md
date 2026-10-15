@@ -836,6 +836,8 @@ right of a frame = a pan right: yaw +9.8°; from the left −8.5°; a centre zoo
 up). Lesson L6 holds here too: the fact carries what two photographs cannot show. VGGT for the same facts
 (computed alone, read by the 4B): 36.5, +9.0 [+1.8, +16.8] - Motion (Cam.) 35.1 vs CUT3R's 50.0, Cam–Cam 37.6 vs
 36.6: CUT3R's recurrent regime wins the consecutive-frame pairs, the two are level on wide baselines; CUT3R stays.
+The 2B base: camera types 24.0 → 34.7 (+10.8 [+2.4, +19.2]), Motion (Cam.) 20.3 → 43.2 - the fact is worth about
+as much at 2B as at 4B (28 of 167 answers with the fact still unparsable prose, so more in truth).
 Open: the same on run 3's plain model (does SFT keep it, as it did not for the VSI facts?), the word-phrased turn
 questions (both encoders disagree with the human on 10 of 11 while the synthetic check and the coordinate-form
 questions agree with our sign), and the Cam–Obj / Cam–Reg types with object positions from the registered points.

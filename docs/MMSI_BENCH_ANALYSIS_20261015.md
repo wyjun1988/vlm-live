@@ -145,6 +145,12 @@ the options is the same for both (VGGT: lateral 71 %, depth 88 %, vertical 57 %,
 disagree with both encoders on 10 of 11 word-phrased questions while the synthetic check and MMSI's coordinate-form
 questions agree with our sign: those questions may describe the view's rotation, not the camera's - to check.
 
+**The 2B base (the demo-scale question; 256 new tokens - with 96 its prose never reached a letter):** camera types
+24.0 → 34.7, +10.8 [+2.4, +19.2]; Motion (Cam.) 20.3 → **43.2**, Cam–Cam 26.9 → 28.0. The fact carries the 2B
+almost as far as the 4B on the motion type (43.2 vs 50.0), and 28 of its 167 answers with the fact were still
+unparsable prose (scored 0), so the true gain is larger. A measurement the model cannot make itself does not need
+the bigger model to be used.
+
 **All 1,000 questions, the base with the format line (same run, 3 prompts):** plain **30.8** - above Qwen2.5-VL-7B's
 25.9 and level with Qwen2.5-VL-72B's 30.7 on the leaderboard, so the base 4B is not at chance; image labels 30.3
 (−0.5 [−2.8, +1.7]), long side 768 30.7 (−0.1 [−1.9, +1.7]) - neither helps. Per type (plain): Cam–Obj 44.2,
