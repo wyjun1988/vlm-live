@@ -17,6 +17,10 @@ reaches a letter (the smoke of 10-15: 2 of 3 answers unparsable), as on VSI befo
 model answers a letter either way.
 A question whose prompt is identical under two variants is answered once (greedy). Paired bootstrap over questions
 between variants. The dataset comes from the HF hub (RunsenXu/MMSI-Bench, cached by `datasets`).
+
+The camera facts can be computed apart from the LLM pass (another encoder, or the M2's memory - VGGT-1B next to the
+4B swaps): `--facts-only --geom-config <yaml>` writes {question id: fact} from that config's geometry stream alone;
+`--facts-from <json>` makes the `camera` variant read them instead of running the model's own encoder.
 """
 
 from __future__ import annotations
@@ -80,6 +84,42 @@ def build_model(config: str, weights: str | None, device: str, dtype: str):
     return live.to(device).eval()
 
 
+def facts_only(a, docs, is_camera_question) -> int:
+    """The camera facts from --geom-config's geometry stream alone, {question id: sentence} to --out."""
+    from live3r.config import Live3RConfig
+    from live3r.eval.lmms_live3r import wants_axes_form
+    from live3r.geometry.registry import build_geometry_stream
+    from live3r.serve.camera_facts import camera_motion_from_images, camera_motion_text
+
+    cfg = Live3RConfig.from_yaml(a.geom_config or a.config)
+    geom = build_geometry_stream(cfg.geometry).to(a.device).eval()
+    unit = getattr(geom, "patch_size", 16)
+    facts, failed, t0 = {}, 0, time.time()
+    for n, doc in enumerate(docs, 1):
+        imgs = list(doc["images"])
+        if not (is_camera_question(doc) and len(imgs) >= 2):
+            continue
+        try:
+            rel = camera_motion_from_images(geom, imgs, cfg.geometry.image_size, unit, a.device)
+        except Exception as exc:  # noqa: BLE001
+            print(f"  [{doc['id']}] failed: {exc!r}", flush=True)
+            rel = None
+        if rel is None:
+            failed += 1
+            continue
+        facts[str(doc["id"])] = camera_motion_text(rel, axes_form=wants_axes_form(doc["question"]))
+        if a.device == "mps" and n % 10 == 0:
+            torch.mps.empty_cache()
+        if n % 20 == 0 or n == len(docs):
+            print(f"  [{n}/{len(docs)}] {time.time() - t0:.0f}s · {len(facts)} facts · {failed} failed", flush=True)
+    out = Path(a.out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps({"geom_config": a.geom_config or a.config, "geometry": cfg.geometry.name,
+                               "n": len(facts), "failed": failed, "facts": facts}, indent=1, ensure_ascii=False))
+    print(f"saved {out}: {len(facts)} facts, {failed} failed")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--config", required=True)
@@ -91,6 +131,10 @@ def main() -> int:
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--max-new-tokens", type=int, default=48)
     ap.add_argument("--format-line", action="store_true", help="the format line in front of every variant (the base)")
+    ap.add_argument("--facts-only", action="store_true",
+                    help="compute the camera facts only (no LLM) with --geom-config's geometry stream, to --out")
+    ap.add_argument("--geom-config", default=None, help="the yaml whose geometry section builds the facts' encoder")
+    ap.add_argument("--facts-from", default=None, help="a --facts-only output: the camera variant reads these facts")
     ap.add_argument("--out", required=True)
     a = ap.parse_args()
 
@@ -107,6 +151,9 @@ def main() -> int:
     types = [norm_type(t) for t in a.types.split(",") if t]
     docs = load_docs(types, a.limit)
     print(f"{len(docs)} questions" + (f" of types {types}" if types else "") + f" · variants {variants}", flush=True)
+    if a.facts_only:
+        return facts_only(a, docs, is_camera_question)
+    facts_from = json.load(open(a.facts_from))["facts"] if a.facts_from else None
     live = build_model(a.config, a.weights, a.device, a.dtype)
     pb = PromptBuilder.from_model(live)
     tok = live.tokenizer
@@ -126,7 +173,8 @@ def main() -> int:
                 labels = True
             elif v == "camera":
                 if is_camera_question(doc) and len(imgs) >= 2:
-                    fact = camera_fact_text(live, imgs, doc["question"])
+                    fact = (facts_from.get(str(doc["id"]), "") if facts_from is not None
+                            else camera_fact_text(live, imgs, doc["question"]))
                     text = fact + text
             elif v == "hint" and not a.format_line:
                 text = FORMAT_LINE + text
@@ -190,6 +238,7 @@ def main() -> int:
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps({"config": a.config, "weights": a.weights, "types": types, "variants": variants,
                                "format_line": a.format_line, "max_new_tokens": a.max_new_tokens,
+                               "facts_from": a.facts_from,
                                "device": a.device, "summary": lines, "records": records}, indent=1, ensure_ascii=False))
     print(f"saved {out}")
     return 0
