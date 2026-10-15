@@ -237,16 +237,32 @@ def wants_axes_form(question: str) -> bool:
     return "coordinate system" in q and "y up" in q.replace("+", "")
 
 
-_SECOND = re.compile(r"\b(?:photo|image|picture|view|viewpoint|perspective)\s*(?:2|two)\b|\bsecond\s+(?:photo|image|picture|view|viewpoint|perspective)\b|\bperspective of the second\b")
-_FIRST = re.compile(r"\b(?:photo|image|picture|view|viewpoint|perspective)\s*(?:1|one)\b|\bfirst\s+(?:photo|image|picture|view|viewpoint|perspective)\b|\bperspective of the first\b")
+_IMG2 = r"(?:(?:photo|image|picture|view|viewpoint|perspective)\s*(?:2|two)\b|second\s+(?:photo|image|picture|view|viewpoint|perspective)\b|perspective of the second\b|viewpoint (?:in|of) the second\b)"
+_IMG1 = r"(?:(?:photo|image|picture|view|viewpoint|perspective)\s*(?:1|one)\b|first\s+(?:photo|image|picture|view|viewpoint|perspective)\b|perspective of the first\b|viewpoint (?:in|of) the first\b)"
+_FROM_TO = re.compile(r"\bfrom\b(.{0,90}?)\bto\b(.{0,120})")
+_OBTAINED = re.compile(r"(.{0,120}?)\bobtained\s+(?:from|by)\b(.{0,120})")
+_CHANGE_OBTAIN = re.compile(r"(.{0,120}?)\b(?:changed|transformed|change|transform)\b(.{0,80}?)\bobtain\b(.{0,120})")
 
 
 def asked_reverse(question: str) -> bool:
-    """True when the question goes from the second image to the first (its second-image mention comes before its
-    first-image mention: "from the position where photo 2 was taken to the position where photo 1 ...")."""
+    """True when the question goes from the second image to the first. Word order is not the direction ("how is
+    the viewpoint in the second image obtained from the viewpoint in the first" is first -> second - 41 of MMSI's
+    Cam-Cam questions; a rule by mention order sent them backwards, 10-16), so the structure decides: "from X to Y",
+    "Y obtained from / by X", "X changed / transformed ... to obtain Y" - reverse when X is the second image and Y
+    the first."""
     q = question.lower()
-    a, b = _SECOND.search(q), _FIRST.search(q)
-    return bool(a and b and a.start() < b.start())
+    m = _FROM_TO.search(q)
+    if m and re.search(_IMG2, m.group(1)) and re.search(_IMG1, m.group(2)):
+        return True
+    m = _OBTAINED.search(q)
+    if m:
+        target, source = m.group(1), m.group(2)
+        return bool(re.search(_IMG1, target) and re.search(_IMG2, source))
+    m = _CHANGE_OBTAIN.search(q)
+    if m:
+        source, target = m.group(1), m.group(3)
+        return bool(re.search(_IMG2, source) and re.search(_IMG1, target))
+    return False
 
 
 def view_turn_phrasing(question: str) -> bool:
