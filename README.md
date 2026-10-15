@@ -1,5 +1,11 @@
 # Live3R — 스트리밍 3D 공간이해 VLM
 
+> **Status 2026-10-15 — read [`docs/SUMMARY_20261015.md`](docs/SUMMARY_20261015.md) first.** The thesis below (geometry
+> tokens injected into the decoder) was tested and did not pay (−1.6 in run 1, −0.2 in run 3). What works: the plain
+> SFT model on the VG-LLM `live` mix with every frame at 1 fps, capped at 128 and chosen causally - **VSI-Bench 72.7
+> live** against the in-house offline 70.83. CUT3R is out of the VSI loop; the open items are latency, run 4's scope
+> and the voice front-end.
+
 **스트리밍 3D 기하 인코더의 잠재 토큰을 Qwen3.5 소형 VLM 디코더에 다깊이 residual 로 주입해,
 프레임당 상수 비용으로 공간을 이해하고 즉시 답하는 모델.**
 
