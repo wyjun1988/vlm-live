@@ -39,7 +39,7 @@ import torch
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "src"))
 
-VARIANTS = ("plain", "labels", "camera", "hint", "ls768", "ls1024")
+VARIANTS = ("plain", "labels", "camera", "camera_cam", "hint", "ls768", "ls1024")
 
 
 def norm_type(t: str) -> str:
@@ -171,10 +171,10 @@ def main() -> int:
             text, labels, long_side, fact = (FORMAT_LINE + text0 if a.format_line else text0), False, 0, ""
             if v == "labels":
                 labels = True
-            elif v == "camera":
+            elif v in ("camera", "camera_cam"):      # camera_cam: the turn always as the camera's (no phrasing rule)
                 if is_camera_question(doc) and len(imgs) >= 2:
                     fact = (facts_from.get(str(doc["id"]), "") if facts_from is not None
-                            else camera_fact_text(live, imgs, doc["question"]))
+                            else camera_fact_text(live, imgs, doc["question"], view_turns=(False if v == "camera_cam" else None)))
                     text = fact + text
             elif v == "hint" and not a.format_line:
                 text = FORMAT_LINE + text
@@ -224,7 +224,7 @@ def main() -> int:
         base_v = variants[0]
         for v in variants[1:]:
             d = np.array([r["variants"][v]["score"] - r["variants"][base_v]["score"] for r in records])
-            if v == "camera":
+            if v.startswith("camera"):
                 sub = np.array([r["variants"][v]["fact"] is not None for r in records])
                 d_sub = d[sub] if sub.any() else d
                 bs = [d_sub[rng.integers(0, len(d_sub), len(d_sub))].mean() for _ in range(2000)]

@@ -137,6 +137,14 @@ sentence against the correct options with v2 (60 judgements): lateral 69 %, forw
 (33 % under the old threshold), turn 1 of 6 (six judgements; the synthetic check says the sign is right, so these
 are reconstruction errors on wide-baseline pairs - the VGGT question).
 
+**VGGT instead of CUT3R for the two-view poses (same base, same 167 questions, facts computed by the encoder alone
+and read by the 4B):** 36.5, +9.0 [+1.8, +16.8] - Motion (Cam.) 35.1 (CUT3R 50.0), Cam–Cam 37.6 (CUT3R 36.6). CUT3R
+wins the first-person motion pairs (consecutive frames, a small baseline: its video regime) by 15 points; on the
+wide-baseline Cam–Cam pairs the two are level. CUT3R stays the encoder of the fact. The sentence's agreement with
+the options is the same for both (VGGT: lateral 71 %, depth 88 %, vertical 57 %, turn 0 of 5) - the turn judgements
+disagree with both encoders on 10 of 11 word-phrased questions while the synthetic check and MMSI's coordinate-form
+questions agree with our sign: those questions may describe the view's rotation, not the camera's - to check.
+
 **All 1,000 questions, the base with the format line (same run, 3 prompts):** plain **30.8** - above Qwen2.5-VL-7B's
 25.9 and level with Qwen2.5-VL-72B's 30.7 on the leaderboard, so the base 4B is not at chance; image labels 30.3
 (−0.5 [−2.8, +1.7]), long side 768 30.7 (−0.1 [−1.9, +1.7]) - neither helps. Per type (plain): Cam–Obj 44.2,

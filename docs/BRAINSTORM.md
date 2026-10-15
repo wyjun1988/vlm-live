@@ -833,9 +833,12 @@ degrees, no direction words under 0.3 m, the axis form); Cam–Cam 29.0 → 29.0
 37.7 → **42.5** (+15.0 [+6.6, +22.8]). All 1,000 questions: the base 30.8 (Qwen2.5-VL-72B 30.7); image labels −0.5,
 long side 768 −0.1 - nothing else moved it. The sign conventions were settled with synthetic crops (a crop from the
 right of a frame = a pan right: yaw +9.8°; from the left −8.5°; a centre zoom "moved forward"; from the top pitch
-up). Lesson L6 holds here too: the fact carries what two photographs cannot show. Open: the same on run 3's plain
-model (does SFT keep it, as it did not for the VSI facts?), VGGT instead of CUT3R for wide baselines, and the
-Cam–Obj / Cam–Reg types with object positions from the registered points.
+up). Lesson L6 holds here too: the fact carries what two photographs cannot show. VGGT for the same facts
+(computed alone, read by the 4B): 36.5, +9.0 [+1.8, +16.8] - Motion (Cam.) 35.1 vs CUT3R's 50.0, Cam–Cam 37.6 vs
+36.6: CUT3R's recurrent regime wins the consecutive-frame pairs, the two are level on wide baselines; CUT3R stays.
+Open: the same on run 3's plain model (does SFT keep it, as it did not for the VSI facts?), the word-phrased turn
+questions (both encoders disagree with the human on 10 of 11 while the synthetic check and the coordinate-form
+questions agree with our sign), and the Cam–Obj / Cam–Reg types with object positions from the registered points.
 
 ### Lessons so far (zero-shot, 4B)
 - **L8 Measurement facts are a zero-shot lever only** (2026-10-14). On the untrained model they were worth +3 to +9;

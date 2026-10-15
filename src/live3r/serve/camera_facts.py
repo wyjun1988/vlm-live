@@ -33,11 +33,13 @@ def relative_pose(c2w_a, c2w_b) -> dict:
 
 
 def camera_motion_text(rel: dict, min_share: float = 0.25, min_move: float = 0.05, name_move: float = 0.3,
-                       min_turn: float = 5.0, axes_form: bool = False) -> str:
+                       min_turn: float = 5.0, axes_form: bool = False, view_turns: bool = False) -> str:
     """The sentence: the directions whose component is at least `min_share` of the distance - named only when the
     distance is at least `name_move` (below it the distance alone: small two-view translations are noise), the turn
     and the tilt when at least `min_turn` degrees (MMSI's first-person pairs turn by ~10 degrees). `axes_form` adds
-    the same motion in the vocabulary of MMSI's coordinate-system questions (+Y up, -Z forward, right-handed)."""
+    the same motion in the vocabulary of MMSI's coordinate-system questions (+Y up, -Z forward, right-handed).
+    `view_turns` names the turn as the VIEW's (the picture swings left when the camera turns right): MMSI's "how can
+    the perspective be changed to obtain" questions count it that way (two encoders vs the labels, 2026-10-16)."""
     d = rel["distance"]
     words = []
     for key, pos, neg in (("right", "to the right", "to the left"), ("forward", "forward", "backward"),
@@ -52,7 +54,8 @@ def camera_motion_text(rel: dict, min_share: float = 0.25, min_move: float = 0.0
     else:
         move = f"moved about {d:.1f} m"
     yaw, pitch = rel["yaw_deg"], rel["pitch_deg"]
-    turn = (f"turned {'right' if yaw > 0 else 'left'} by about {abs(yaw):.0f} degrees" if abs(yaw) >= min_turn
+    right = (yaw > 0) != view_turns
+    turn = (f"turned {'right' if right else 'left'} by about {abs(yaw):.0f} degrees" if abs(yaw) >= min_turn
             else "kept its heading")
     tilt = (f" and tilted {'up' if pitch > 0 else 'down'} by about {abs(pitch):.0f} degrees"
             if abs(pitch) >= min_turn else "")

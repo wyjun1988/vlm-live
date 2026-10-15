@@ -27,6 +27,7 @@ sparbench, blink, videomme, vsisuper, revsi
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 
 import torch
@@ -236,9 +237,31 @@ def wants_axes_form(question: str) -> bool:
     return "coordinate system" in q and "y up" in q.replace("+", "")
 
 
-def camera_fact_text(live, images, question: str = "") -> str:
-    """The camera motion between the first and the last image from the geometry encoder's poses, as a sentence
-    (in the question's axis vocabulary too when it defines one); "" when the model has no pose-decoding encoder."""
+_SECOND = re.compile(r"\b(?:photo|image|picture|view|viewpoint|perspective)\s*(?:2|two)\b|\bsecond\s+(?:photo|image|picture|view|viewpoint|perspective)\b|\bperspective of the second\b")
+_FIRST = re.compile(r"\b(?:photo|image|picture|view|viewpoint|perspective)\s*(?:1|one)\b|\bfirst\s+(?:photo|image|picture|view|viewpoint|perspective)\b|\bperspective of the first\b")
+
+
+def asked_reverse(question: str) -> bool:
+    """True when the question goes from the second image to the first (its second-image mention comes before its
+    first-image mention: "from the position where photo 2 was taken to the position where photo 1 ...")."""
+    q = question.lower()
+    a, b = _SECOND.search(q), _FIRST.search(q)
+    return bool(a and b and a.start() < b.start())
+
+
+def view_turn_phrasing(question: str) -> bool:
+    """MMSI's "how can / is the perspective ... be changed / transformed ... to obtain" questions, whose labels count
+    a turn as the view's (both encoders disagreed with them on 4 of 4, and agreed with the dashcam and the
+    coordinate-form questions)."""
+    q = question.lower()
+    return bool(re.search(r"perspective.{0,60}(changed|transformed|change|transform).{0,80}obtain", q))
+
+
+def camera_fact_text(live, images, question: str = "", view_turns: bool | None = None) -> str:
+    """The camera motion between the first and the last image from the geometry encoder's poses, as a sentence -
+    in the direction the question asks (second -> first when it says so), in the question's axis vocabulary when it
+    defines one, the turn as the view's for the perspective-change phrasing (`view_turns`, None = by the phrasing);
+    "" when the model has no pose-decoding encoder."""
     geom = getattr(live, "geometry", None)
     if geom is None or not hasattr(geom, "ingest"):
         return ""
@@ -247,13 +270,18 @@ def camera_fact_text(live, images, question: str = "") -> str:
 
     unit = getattr(geom, "patch_size", 16)
     device = next(live.base.parameters()).device
+    imgs = [load_visual(v) for v in images]
+    if asked_reverse(question):
+        imgs = imgs[::-1]
     try:
-        rel = camera_motion_from_images(geom, [load_visual(v) for v in images], live.cfg.geometry.image_size, unit,
-                                        device)
+        rel = camera_motion_from_images(geom, imgs, live.cfg.geometry.image_size, unit, device)
     except Exception as exc:  # noqa: BLE001 - a failed reconstruction leaves the question without a fact
         logger.warning("camera facts: the reconstruction failed (%r) - nothing attached", exc)
         return ""
-    return camera_motion_text(rel, axes_form=wants_axes_form(question)) if rel else ""
+    if not rel:
+        return ""
+    vt = view_turn_phrasing(question) if view_turns is None else view_turns
+    return camera_motion_text(rel, axes_form=wants_axes_form(question), view_turns=vt)
 
 
 def _stream_one(self, live, prompt, video, context, gk, doc_id) -> str:

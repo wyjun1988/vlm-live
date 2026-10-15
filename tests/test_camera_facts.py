@@ -109,3 +109,23 @@ def test_wrapper_routes_camera_question_types_only():
     assert not is_camera_question({"question_type": "Positional Relationship (Cam.–Obj.)"})
     assert not is_camera_question({"question_type": "Motion (Obj.)"})
     assert not is_camera_question({"question_type": "MSR"}) and not is_camera_question({})
+
+
+def test_view_turns_flip_the_turn_words_only():
+    rel = relative_pose(_pose(), _pose(t=(1.0, 0, 1.5), yaw_deg=35))
+    assert "turned right by about 35 degrees" in camera_motion_text(rel)
+    t = camera_motion_text(rel, view_turns=True)
+    assert "turned left by about 35 degrees" in t and "moved to the right and forward" in t
+
+
+def test_wrapper_reads_the_asked_direction_and_the_perspective_phrasing():
+    from live3r.eval.lmms_live3r import asked_reverse, view_turn_phrasing
+
+    assert asked_reverse("To move from the position where photo 2 was taken to the position where photo 1 was taken, what should I do?")
+    assert asked_reverse("How is the perspective of the second image transformed to obtain the perspective of the first image?")
+    assert not asked_reverse("How can the perspective of the first image be changed to obtain the perspective of the second image?")
+    assert not asked_reverse("The images are taken continuously from a first-person perspective. In which direction are you moving?")
+    assert view_turn_phrasing("How can the perspective of the first image be changed to obtain the perspective of the second image?")
+    assert view_turn_phrasing("How is the perspective of the first image transformed to obtain the perspective of the second image?")
+    assert not view_turn_phrasing("These two images are consecutive pictures taken by a dashcam on a car. How was this car moving?")
+    assert not view_turn_phrasing("The camera coordinate system is defined as +Y up, -Z forward. How is the viewpoint of the second image obtained from the first?")
