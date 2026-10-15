@@ -41,6 +41,21 @@ frame budget; general ability is not visibly broken.
 1e-3 - run 4 trains with the fused kernels. p0 failed once on run440212 (Triton on CPU tensors in the tests, from
 transformers 5.18's import-time fla fallback) - fixed in `tests/conftest.py`.
 
+**Is the gated path really active, or is gated − plain ≈ 0 a bug? (asked 10-15)** The evidence says it is active
+and read: (1) the arm trained 23.1 M projector + 0.02 M fusion + 30.5 M LoRA parameters with `fusion.mode
+gated_input`; (2) the per-token gate moved from its start of 0.500 ± 0.000 to 0.41 ± 0.06 at the end - about 40 %
+geometry in every fused token, neither closed nor saturated; (3) the holdout probe at the last step: loss 0.656 with
+the real geometry, 1.026 with shuffled geometry, 0.908 with none - the model reads the geometry's content (real wins
+88 % of samples) and a wrong geometry is worse than no geometry; (4) the step-0 check: the reference-style start
+changes the first answer token on 75 % of samples before any training. On VSI the geometry then helps the metric
+types (abs distance 60.9 vs 57.0, room size 75.3 vs 73.5, rel direction 86.9 vs 85.1) and costs the relational ones
+(appearance order 77.5 vs 80.3, rel distance 69.3 vs 73.2, route 47.9 vs 50.5) - the zero-shot lesson L2 again -
+netting −0.2; at 128 live frames the same pattern (order −4.7 significant, rel direction +3.2). The reference team's
+own runs show the same (CUT3R 70.83 vs no geometry 70.89). Not run, and the only open doubts: `gated_raw` (the
+near-base start; the LayerNorm start makes visual tokens 5.6× louder and may be what costs order / relation) and
+`gated_wn`. The definitive answer-level test would be the gated model evaluated on VSI with another video's geometry
+(an eval-time `--geom-donor`, not implemented): the same 71.0 would mean the content never reaches the answers.
+
 **Housekeeping:** the server's checkout carries local edits (the GDN check's output format, a `gate-resume` step) that
 are not in `origin/main` - push or send them before the next `git pull`.
 
