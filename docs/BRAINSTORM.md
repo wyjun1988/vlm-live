@@ -806,6 +806,20 @@ other answer identical; direction facts 85.6 % right at 65 % coverage, exactly a
 I-48), the rest is the noise of moved frames. The rule was picked on these 60 videos (set b is only a partial
 check), so the +1.0 wants confirming on other videos.
 
+### I-51 Questions mid-stream, at the moment they become answerable — **proposed (2026-10-15); the tracker's first-seen times are not yet good enough to time them**
+Every live evaluation so far asks at the end of the video, as VSI does. A live system is asked during the stream,
+about things seen a while ago. Six of VSI's eight types have answers that do not change once the named objects
+have appeared (abs / rel distance, rel direction, route, size, appearance order); counting and room size depend on
+how much was seen and stay end-only. Protocol: ask each such question at the first time all its objects have been
+seen (+ a margin), the same ground truth; compare with the end-of-video answer; the delta against "time since
+seen" is the memory curve within a video. Longer memory needs OVO-S-Bench (`docs/BENCHMARKS.md` §2).
+
+The timestamps would come from the tracker's first detections. Checked offline against VSI's appearance-order
+ground truth on the 60 videos (the I-49 dumps: detections on the 32 measurement frames): all four objects found in
+83 % of the 148 order questions, the exact order right in 22.8 % (chance 4 %), pairwise 64 % (chance 50 %) - too
+coarse to time questions by. Before the protocol: detection at 1 fps for the timestamps (not 32 frames) and a
+"seen in >= 2 frames" rule, then this check again; the bar is pairwise >= 85 %.
+
 ### Lessons so far (zero-shot, 4B)
 - **L8 Measurement facts are a zero-shot lever only** (2026-10-14). On the untrained model they were worth +3 to +9;
   on the model trained on 1.4 M VSI-domain samples every one of them is ≤ 0 (distances −0.2, the stack −1.0) because
