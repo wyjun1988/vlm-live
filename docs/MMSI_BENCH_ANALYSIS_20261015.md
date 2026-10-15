@@ -103,7 +103,33 @@ Each run is ~1,000 short answers (minutes to tens of minutes on one GPU); the pe
 `results.json`. Read: base vs 512 (what run 3 bought on MMSI), 768 / 1024 vs 512 (resolution), labels vs 512,
 camera vs 512 on the two camera types only (167 questions; the rest of the prompt is unchanged).
 
-## 5. Plan
+## 5. Results on the base model (M2, zero-shot, 2026-10-15)
+
+Run 3's weights are on the server; the base Qwen3.5-4B with the format line is the local stand-in
+(`scripts/mmsi_probe_local.py`, the server's prompt and scoring). The 167 camera questions, three prompts:
+
+| type | plain | + camera-motion fact | + image labels | n |
+|---|---|---|---|---|
+| Motion (Cam.) | 25.7 | **48.6** | 17.6 | 74 |
+| Cam–Cam | 29.0 | 29.0 | 35.5 | 93 |
+| both | 27.5 | 37.7 (+10.2 [+2.4, +18.0]) | 27.5 (+0.0) | 167 |
+
+The camera-motion sentence from CUT3R's two-view poses takes the base from chance to 48.6 on the first-person
+motion questions - the first measurement-as-text gain since SFT took the VSI ones away, and on the type where
+GPT-5 scores 32.4. Cam–Cam did not move: its questions come in two vocabularies, "where is the second camera
+relative to me" (where the fact answered correctly and the base still chose otherwise) and MMSI's own coordinate
+system ("+Y up, -Z forward, right-handed: move in the positive X ... rotate by a negative angle around Y"), which the
+base cannot map our words onto - the fact now adds that form when the question defines the system. Image labels
+do nothing.
+
+The sentence against the correct options (`scripts/mmsi_camera_fact_check.py`, 71 axis judgements): lateral 69 %,
+forward / backward 88 %, vertical 33 %, turn 1 of 6 - the vertical and turn cases were the thresholds, not the
+signs: the motion questions turn by ~10 degrees (the sentence said "kept its heading" below 10) and translate by
+~0.1 m (noise named as directions). A synthetic check settled the conventions (a crop from the right of a frame =
+a pan right: yaw +9.8; from the left −8.5; a centre zoom "moved forward"; from the top pitch up). Thresholds now:
+turns and tilts from 5 degrees, direction words only from 0.3 m. The camera types re-run with these follows.
+
+## 6. Plan
 
 1. Per-type scores of the current measurement and of the base (which model and path - to confirm).
 2. Three evaluation-only runs on the plain model: resolution 768 / 1024, image labels, CUT3R relative-pose facts on

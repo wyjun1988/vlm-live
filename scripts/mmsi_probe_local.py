@@ -126,7 +126,7 @@ def main() -> int:
                 labels = True
             elif v == "camera":
                 if is_camera_question(doc) and len(imgs) >= 2:
-                    fact = camera_fact_text(live, imgs)
+                    fact = camera_fact_text(live, imgs, doc["question"])
                     text = fact + text
             elif v == "hint" and not a.format_line:
                 text = FORMAT_LINE + text

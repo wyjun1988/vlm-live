@@ -207,7 +207,7 @@ def _live3r_generate(self, requests) -> list[str]:
             else:
                 items, fidx = [v for v in visuals if not is_video(v)], None
                 if getattr(self, "camera_facts", False) and len(items) >= 2 and is_camera_question(doc):
-                    text = camera_fact_text(live, items) + text
+                    text = camera_fact_text(live, items, context) + text
             prepared = prepare_inputs(live, prompt, text, items, fidx,
                                       use_geometry=self.use_geometry, visual_mode=mode, fps=fps,
                                       image_labels=getattr(self, "image_labels", False))
@@ -230,9 +230,15 @@ def is_camera_question(doc) -> bool:
     return "Cam.-Cam." in t or "Motion (Cam.)" in t
 
 
-def camera_fact_text(live, images) -> str:
-    """The camera motion between the first and the last image from the geometry encoder's poses, as a sentence;
-    "" when the model has no pose-decoding encoder."""
+def wants_axes_form(question: str) -> bool:
+    """MMSI's coordinate-system questions ("+Y up, -Z forward, right-handed") want the motion in that vocabulary."""
+    q = question.lower()
+    return "coordinate system" in q and "y up" in q.replace("+", "")
+
+
+def camera_fact_text(live, images, question: str = "") -> str:
+    """The camera motion between the first and the last image from the geometry encoder's poses, as a sentence
+    (in the question's axis vocabulary too when it defines one); "" when the model has no pose-decoding encoder."""
     geom = getattr(live, "geometry", None)
     if geom is None or not hasattr(geom, "ingest"):
         return ""
@@ -247,7 +253,7 @@ def camera_fact_text(live, images) -> str:
     except Exception as exc:  # noqa: BLE001 - a failed reconstruction leaves the question without a fact
         logger.warning("camera facts: the reconstruction failed (%r) - nothing attached", exc)
         return ""
-    return camera_motion_text(rel) if rel else ""
+    return camera_motion_text(rel, axes_form=wants_axes_form(question)) if rel else ""
 
 
 def _stream_one(self, live, prompt, video, context, gk, doc_id) -> str:

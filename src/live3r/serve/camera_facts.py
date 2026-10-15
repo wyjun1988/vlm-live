@@ -32,15 +32,18 @@ def relative_pose(c2w_a, c2w_b) -> dict:
             "distance": float(np.linalg.norm(t)), "yaw_deg": yaw, "pitch_deg": pitch}
 
 
-def camera_motion_text(rel: dict, min_share: float = 0.25, min_move: float = 0.05, min_turn: float = 10.0) -> str:
-    """The sentence: the directions whose component is at least `min_share` of the distance, the turn when the yaw
-    is at least `min_turn` degrees, the tilt likewise."""
+def camera_motion_text(rel: dict, min_share: float = 0.25, min_move: float = 0.05, name_move: float = 0.3,
+                       min_turn: float = 5.0, axes_form: bool = False) -> str:
+    """The sentence: the directions whose component is at least `min_share` of the distance - named only when the
+    distance is at least `name_move` (below it the distance alone: small two-view translations are noise), the turn
+    and the tilt when at least `min_turn` degrees (MMSI's first-person pairs turn by ~10 degrees). `axes_form` adds
+    the same motion in the vocabulary of MMSI's coordinate-system questions (+Y up, -Z forward, right-handed)."""
     d = rel["distance"]
     words = []
     for key, pos, neg in (("right", "to the right", "to the left"), ("forward", "forward", "backward"),
                           ("down", "down", "up")):
         v = rel[key]
-        if d >= min_move and abs(v) >= min_share * d:
+        if d >= name_move and abs(v) >= min_share * d:
             words.append(pos if v > 0 else neg)
     if d < min_move:
         move = "stayed in place"
@@ -53,7 +56,35 @@ def camera_motion_text(rel: dict, min_share: float = 0.25, min_move: float = 0.0
             else "kept its heading")
     tilt = (f" and tilted {'up' if pitch > 0 else 'down'} by about {abs(pitch):.0f} degrees"
             if abs(pitch) >= min_turn else "")
-    return f"{PREFIX}{move} and {turn}{tilt}.\n"
+    text = f"{PREFIX}{move} and {turn}{tilt}."
+    if axes_form:
+        text += " " + axes_sentence(rel, min_share, name_move, min_turn)
+    return text + "\n"
+
+
+def axes_sentence(rel: dict, min_share: float = 0.25, name_move: float = 0.3, min_turn: float = 5.0) -> str:
+    """The motion in a right-handed camera frame with +Y up and -Z forward (MMSI's coordinate-system questions):
+    right = +X, forward = -Z, up = +Y; a turn to the right is a negative angle about Y, a tilt up a positive angle
+    about X."""
+    d = rel["distance"]
+    moves = []
+    for key, pos, neg in (("right", "positive X", "negative X"), ("forward", "negative Z", "positive Z"),
+                          ("down", "negative Y", "positive Y")):
+        v = rel[key]
+        if d >= name_move and abs(v) >= min_share * d:
+            moves.append(pos if v > 0 else neg)
+    rots = []
+    if abs(rel["yaw_deg"]) >= min_turn:
+        rots.append(f"a {'negative' if rel['yaw_deg'] > 0 else 'positive'} angle around the Y axis")
+    if abs(rel["pitch_deg"]) >= min_turn:
+        rots.append(f"a {'positive' if rel['pitch_deg'] > 0 else 'negative'} angle around the X axis")
+    parts = []
+    if moves:
+        parts.append("a move in the " + " and ".join(moves) + " direction" + ("s" if len(moves) > 1 else ""))
+    if rots:
+        parts.append("a rotation by " + " and ".join(rots))
+    body = " and ".join(parts) if parts else "no move and no rotation"
+    return f"In a right-handed camera coordinate system with +Y up and -Z forward, that is {body}."
 
 
 def camera_motion_from_images(geom, images, image_size: int, unit: int, device) -> dict | None:

@@ -45,6 +45,32 @@ def test_camera_motion_text_reads_the_dominant_directions():
     assert "moved backward" in t and "kept its heading" in t and "tilted" not in t
     t = camera_motion_text(relative_pose(_pose(), _pose(t=(0, -0.5, 0), pitch_deg=25)))
     assert "moved up" in t and "tilted up by about 25 degrees" in t
+    # a small translation keeps its size but names no direction; a 10-degree pan is a turn (MMSI's pairs)
+    t = camera_motion_text(relative_pose(_pose(), _pose(t=(0.08, -0.06, 0.05), yaw_deg=10)))
+    assert "moved about 0.1 m" in t and "to the right" not in t and "turned right by about 10 degrees" in t
+
+
+def test_axes_sentence_speaks_mmsi_coordinate_system():
+    """+Y up, -Z forward, right-handed: right = +X, forward = -Z, up = +Y; a turn right = a negative angle about Y."""
+    from live3r.serve.camera_facts import axes_sentence
+
+    rel = relative_pose(_pose(), _pose(t=(1.0, -0.8, 1.5), yaw_deg=30, pitch_deg=12))
+    s = axes_sentence(rel)
+    assert "positive X" in s and "negative Z" in s and "positive Y" in s
+    assert "negative angle around the Y axis" in s and "positive angle around the X axis" in s
+    t = camera_motion_text(rel, axes_form=True)
+    assert t.count("\n") == 1 and "In a right-handed camera coordinate system" in t
+    assert "In a right-handed" not in camera_motion_text(rel)
+    rel2 = relative_pose(_pose(), _pose(t=(-0.6, 0, -0.5), yaw_deg=-40))
+    s2 = axes_sentence(rel2)
+    assert "negative X" in s2 and "positive Z" in s2 and "positive angle around the Y axis" in s2
+
+
+def test_wrapper_detects_coordinate_system_questions():
+    from live3r.eval.lmms_live3r import wants_axes_form
+
+    assert wants_axes_form("The camera coordinate system is defined as +Y up, -Z forward, and is a right-handed system. How...")
+    assert not wants_axes_form("The images are taken continuously from a first-person perspective. In which direction are you moving?")
 
 
 class _FakeGeom:
