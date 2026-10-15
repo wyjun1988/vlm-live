@@ -820,6 +820,23 @@ ground truth on the 60 videos (the I-49 dumps: detections on the 32 measurement 
 coarse to time questions by. Before the protocol: detection at 1 fps for the timestamps (not 32 frames) and a
 "seen in >= 2 frames" rule, then this check again; the bar is pairwise >= 85 %.
 
+### I-52 Camera motion between two photographs as a sentence — MMSI-Bench — **tested on the base: camera types 27.5 → 42.5, +15.0 [+6.6, +22.8] (2026-10-15)**
+MMSI-Bench's camera questions (Cam–Cam 93, Motion (Cam.) 74) ask how the camera moved between two photographs;
+open 7-8B models answer at chance and GPT-5 scores 32.4 on the motion type. A two-view reconstruction returns
+exactly that, so the geometry encoder's poses of the two images become a sentence (`live3r.serve.camera_facts`:
+relative pose in the first camera's frame - to the right / forward / up, the distance, the yaw and tilt; and, for
+questions that define "+Y up, −Z forward, right-handed", the same in that vocabulary) attached to those two types
+(`lmms_live3r` model_arg `camera_facts=True`; `scripts/mmsi_probe_local.py` on the M2).
+
+Base Qwen3.5-4B with the format line, zero-shot: Motion (Cam.) 25.7 → 48.6 (v1) → **50.0** (v2: turns from 5
+degrees, no direction words under 0.3 m, the axis form); Cam–Cam 29.0 → 29.0 → **36.6**; the 167 together 27.5 →
+37.7 → **42.5** (+15.0 [+6.6, +22.8]). All 1,000 questions: the base 30.8 (Qwen2.5-VL-72B 30.7); image labels −0.5,
+long side 768 −0.1 - nothing else moved it. The sign conventions were settled with synthetic crops (a crop from the
+right of a frame = a pan right: yaw +9.8°; from the left −8.5°; a centre zoom "moved forward"; from the top pitch
+up). Lesson L6 holds here too: the fact carries what two photographs cannot show. Open: the same on run 3's plain
+model (does SFT keep it, as it did not for the VSI facts?), VGGT instead of CUT3R for wide baselines, and the
+Cam–Obj / Cam–Reg types with object positions from the registered points.
+
 ### Lessons so far (zero-shot, 4B)
 - **L8 Measurement facts are a zero-shot lever only** (2026-10-14). On the untrained model they were worth +3 to +9;
   on the model trained on 1.4 M VSI-domain samples every one of them is ≤ 0 (distances −0.2, the stack −1.0) because

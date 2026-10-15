@@ -129,6 +129,23 @@ signs: the motion questions turn by ~10 degrees (the sentence said "kept its hea
 a pan right: yaw +9.8; from the left −8.5; a centre zoom "moved forward"; from the top pitch up). Thresholds now:
 turns and tilts from 5 degrees, direction words only from 0.3 m. The camera types re-run with these follows.
 
+**Facts v2 on the camera types (same base, same 167 questions):** Motion (Cam.) 25.7 → **50.0**, Cam–Cam 29.0 →
+**36.6** (the coordinate-system sentence), both 27.5 → **42.5**: **+15.0 [+6.6, +22.8]**, 53 answers changed. On
+these 167 questions the base with the fact is above every open model's overall level on the leaderboard, and its
+camera-motion score is 1.5 × GPT-5's (50.0 vs 32.4) - from two-view poses the model cannot infer from pixels. The
+sentence against the correct options with v2 (60 judgements): lateral 69 %, forward / backward 88 %, vertical 73 %
+(33 % under the old threshold), turn 1 of 6 (six judgements; the synthetic check says the sign is right, so these
+are reconstruction errors on wide-baseline pairs - the VGGT question).
+
+**All 1,000 questions, the base with the format line (same run, 3 prompts):** plain **30.8** - above Qwen2.5-VL-7B's
+25.9 and level with Qwen2.5-VL-72B's 30.7 on the leaderboard, so the base 4B is not at chance; image labels 30.3
+(−0.5 [−2.8, +1.7]), long side 768 30.7 (−0.1 [−1.9, +1.7]) - neither helps. Per type (plain): Cam–Obj 44.2,
+Measurement 40.6, Obj–Reg 37.6, Appearance 33.3, Object motion 32.9, Cam–Reg 32.5, Cam–Cam 29.0, Reg–Reg 28.4,
+Camera motion 25.7, Obj–Obj 25.5, MSR 22.7. The lever on this benchmark is what the model cannot see in two
+photographs (the camera's own motion, correspondences) - exactly where the fact helped - not the prompt form or
+resolution. The format line itself matters for the base (16 unparsable answers remain even with it; without it most
+answers were prose).
+
 ## 6. Plan
 
 1. Per-type scores of the current measurement and of the base (which model and path - to confirm).
