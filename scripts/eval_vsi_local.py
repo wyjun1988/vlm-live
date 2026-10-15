@@ -420,6 +420,31 @@ def dump_observations(path: Path, s, om_a, frames_a: list[int], detect, step: in
     np.savez_compressed(path, **out)
 
 
+def donor_frames(path: Path):
+    """A `geometry_source` for StreamingSession: another video's frames, in order, cycling (--geom-donor)."""
+    import av
+
+    state: dict = {"c": None, "it": None}
+
+    def _open():
+        if state["c"] is not None:
+            state["c"].close()
+        state["c"] = av.open(str(path))
+        state["it"] = state["c"].decode(video=0)
+
+    def source(i, raw):
+        for _ in range(2):
+            if state["it"] is None:
+                _open()
+            try:
+                return torch.from_numpy(next(state["it"]).to_ndarray(format="rgb24"))
+            except StopIteration:
+                _open()
+        return raw
+
+    return source
+
+
 def count_frames(path: Path) -> int:
     import av
 
@@ -451,6 +476,9 @@ def main() -> int:
     ap.add_argument("--facts-offset", type=float, default=0.0,
                     help="seconds: with --facts-selector live, the measurement candidates sit this far off the "
                          "--geom-stride frames, so each is an extra CUT3R input right after one (I-48: 0.5)")
+    ap.add_argument("--geom-donor", action="store_true",
+                    help="control: the geometry encoder is fed the NEXT video's frames while the LLM sees this video's "
+                         "(a fused arm: does the geometry's content reach the answers? same score = no)")
     ap.add_argument("--image-newline", action="store_true",
                     help='a "\\n" after every image block of the prefix: the form run 3 was trained with (5d963f6); the '
                          'evaluation prompt otherwise joins the blocks directly')
@@ -686,6 +714,9 @@ def main() -> int:
     think_log: list = []
     timing = collections.defaultdict(float)
     budgets: dict[str, int] = {}
+    donors: dict[str, str] = {}
+    if args.geom_donor and len(vids) < 2:
+        raise SystemExit("--geom-donor needs at least two videos (the donor is the next video in the list)")
     for vi, (ds, scene) in enumerate(vids):
         if dev.type == "mps":
             # 2026-10-04: in a sequential 60-video run the longest 1 fps video (219 frames) answered "!!!!" to all 31
@@ -714,6 +745,11 @@ def main() -> int:
                 _c["frames"] += 1
                 _c["lifted"] += _om.add(i, dets, geom)          # the video frame index: time order and view gaps
         stash: dict = {}          # --dump-objects: every encoder frame with its own CUT3R output (set b's source)
+        donor_fn = None
+        if args.geom_donor:
+            dds, dscene = vids[(vi + 1) % len(vids)]
+            donors[f"{ds}/{scene}"] = f"{dds}/{dscene}"
+            donor_fn = donor_frames(root / dds / f"{dscene}.mp4")
 
         def stash_geometry(i, raw, geom, keep, _st=stash):
             if i % args.geom_stride == 0:
@@ -747,7 +783,7 @@ def main() -> int:
                                            map_image=args.map_image,
                                            on_geometry=on_geometry if online_om is not None else
                                            (stash_geometry if args.dump_objects else None),
-                                           facts_selector=fsel)
+                                           facts_selector=fsel, geometry_source=donor_fn)
 
         t1 = time.time()
         with av.open(str(path)) as c:
@@ -991,7 +1027,7 @@ def main() -> int:
             "facts_hint": args.facts_hint, "visual_scale": args.visual_scale, "facts_budget": args.facts_budget,
             "facts_selector": args.facts_selector, "facts_offset": args.facts_offset, "budget": args.budget,
             "instance_rule": args.instance_rule, "direction_abstain": args.direction_abstain,
-            "image_newline": args.image_newline,
+            "image_newline": args.image_newline, "geom_donor": args.geom_donor, "donors": donors,
             "budget_fps": args.budget_fps,
             "budget_cap": args.budget_cap, "budgets": budgets,
             "hint_after": args.hint_after, "order_facts": args.order_facts, "count_facts": args.count_facts,

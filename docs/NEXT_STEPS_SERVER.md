@@ -5,6 +5,9 @@
 > update: [`docs/STATUS_20261013.md`](STATUS_20261013.md).
 > MMSI-Bench (the second accuracy target): what it is, where the model will fail, what to change -
 > [`docs/MMSI_BENCH_ANALYSIS_20261015.md`](MMSI_BENCH_ANALYSIS_20261015.md).
+> Implemented 10-15, to run when convenient: the MMSI probes (§4 of that doc), `ROLE=gateref` and the gated
+> donor test (`docs/SERVER_RUN3.md` §2026-10-14), run 4 with `GDN=fla` / `PASSES` / `live_vsi_cam`
+> (`docs/SERVER_RUN4_PREP.md` §Run 4).
 > 1. **[`docs/SERVER_RUN3.md`](SERVER_RUN3.md) §2026-10-13 (evening):** `ROLE=format,strategies,plain` - the prompt-form
 >    check (run 3 trained with "\n" after images; no evaluation has had it), the strategies, then the gate.
 > 2. **[`docs/SERVER_RUN4_PREP.md`](SERVER_RUN4_PREP.md):** `scripts/server_prep_run4.sh` - the training-speed check

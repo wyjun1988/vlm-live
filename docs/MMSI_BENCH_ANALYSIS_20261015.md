@@ -75,7 +75,35 @@ measurement (lmms-eval prints all eleven) will say.
   scene-level exposure, the same for the in-house system; read the ScanNet-sourced types with that in mind.
 - Model size is not the lever (the authors' finding); 4B stays.
 
-## 4. Plan
+## 4. How to run the probes (implemented 2026-10-15)
+
+All through lmms-eval's `mmsi_bench` task with our model wrapper (`eval_path=live3r`), on the run-3 plain checkpoint;
+`model_args` knobs: `vlm_long_side=<px>` (evaluate at another long side, shrink-only), `image_labels=True`
+("Image k: " before every block), `camera_facts=True` (CUT3R's relative pose between the two images as a sentence,
+attached to the Cam–Cam and Motion (Cam.) questions - `live3r.serve.camera_facts`; the config must carry a
+pose-decoding encoder: `configs/server_4b_v3_plain_facts.yaml`), `format_hint=True` (the format line).
+
+```
+W=outputs/run3_live_2x8_20260930/plain/final.pt
+for v in "base" "512" "768" "1024" "labels" "camera"; do
+  case $v in
+    base)   A="config=configs/server_4b_v3_plain.yaml,use_geometry=False";;
+    512)    A="config=configs/server_4b_v3_plain.yaml,weights=$W,use_geometry=False";;
+    768)    A="config=configs/server_4b_v3_plain.yaml,weights=$W,use_geometry=False,vlm_long_side=768";;
+    1024)   A="config=configs/server_4b_v3_plain.yaml,weights=$W,use_geometry=False,vlm_long_side=1024";;
+    labels) A="config=configs/server_4b_v3_plain.yaml,weights=$W,use_geometry=False,image_labels=True";;
+    camera) A="config=configs/server_4b_v3_plain_facts.yaml,weights=$W,use_geometry=False,camera_facts=True";;
+  esac
+  CUDA_VISIBLE_DEVICES=0 python -m lmms_eval --model live3r --model_args "$A,eval_path=live3r,enable_thinking=False" \
+    --tasks mmsi_bench --batch_size 1 --log_samples --output_path outputs/mmsi/$v > outputs/mmsi/$v.log 2>&1
+done
+```
+
+Each run is ~1,000 short answers (minutes to tens of minutes on one GPU); the per-type scores are in each
+`results.json`. Read: base vs 512 (what run 3 bought on MMSI), 768 / 1024 vs 512 (resolution), labels vs 512,
+camera vs 512 on the two camera types only (167 questions; the rest of the prompt is unchanged).
+
+## 5. Plan
 
 1. Per-type scores of the current measurement and of the base (which model and path - to confirm).
 2. Three evaluation-only runs on the plain model: resolution 768 / 1024, image labels, CUT3R relative-pose facts on

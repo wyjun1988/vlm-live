@@ -56,6 +56,21 @@ near-base start; the LayerNorm start makes visual tokens 5.6× louder and may be
 `gated_wn`. The definitive answer-level test would be the gated model evaluated on VSI with another video's geometry
 (an eval-time `--geom-donor`, not implemented): the same 71.0 would mean the content never reaches the answers.
 
+**Two follow-ups, implemented 10-15.** (1) `ROLE=gateref` (~5 h on one GPU): the base with the format line
+(`gate/base_hint`) and every finished arm's verdict re-checked against it - the general gate's fair reference
+(`check_gate.py` uses the `hint` alt for the general tasks when present; new gates run it by themselves).
+(2) `eval_vsi_local.py --geom-donor`: the gated arm evaluated with the NEXT video's frames fed to the geometry encoder
+while the LLM sees the real ones - the answer-level test of whether the geometry's content reaches the answers:
+
+```
+OUT=outputs/run3_live_2x8_20260930 ROLE=gateref nohup bash scripts/server_run3.sh > outputs/run3_live_2x8_20260930/master.gateref.$(hostname -s).log 2>&1 &
+# the donor test, 8 shards as vsi_sharded does (or one GPU, ~2 h):
+python scripts/eval_vsi_local.py --config configs/server_4b_v3.yaml --weights outputs/run3_live_2x8_20260930/gated/final.pt \
+  --modes oracle-image --videos 288 --seed 1 --geom-donor --out outputs/run3_live_2x8_20260930/vsi/gated_donor.json
+```
+
+`gated_donor` ≈ `gated` (71.0) means the content never reaches the answers; a drop means it does.
+
 **Housekeeping:** the server's checkout carries local edits (the GDN check's output format, a `gate-resume` step) that
 are not in `origin/main` - push or send them before the next `git pull`.
 

@@ -53,6 +53,10 @@ EFF_BATCH=64                        # the reference's global batch; micro-steps 
 LR=1e-5; LORA_LR=5e-5; WD=0.01      # merger + gate / LoRA (the reference's rates); cosine, warmup 3 %
 BETA2=0.999                         # AdamW (0.9, 0.999) as the reference
 DONOR_BUFFER="${DONOR_BUFFER:-64}"
+GDN="${GDN:-torch}"                 # fla: the fused Gated DeltaNet (docs/SERVER_RUN4_PREP.md; 5.18 uses it by itself)
+PASSES="${PASSES:-1}"               # passes over the mix per arm (run 3: one)
+CALIB_CFG="${CALIB_CFG:-$CFG}"      # the arm the speed calibration times (the gated one is the slowest; run 4: plain)
+[[ "$GDN" == fla ]] && export LIVE3R_GDN=fla
 PROBE_SRC="${PROBE_SRC:-vlm3r_scannet}"   # the probe's holdout: VSI-style QA on ScanNet training scenes
 VSI=(--videos 288 --seed 1)         # all of VSI-Bench: 288 videos, 5,130 questions
 VSI_HOURS="${VSI_HOURS:-12}"        # per shard; one shard per GPU
@@ -80,7 +84,7 @@ NGPU=${#GPUS[@]}
 ALLG=$(IFS=,; echo "${GPUS[*]}"); ACCUM=$(( EFF_BATCH / NGPU )); SHARDS=$NGPU
 ROLE="${ROLE:-auto}"
 ALL_ROLES=(gated plain base control gated_wn)
-EXTRA_ROLES=(live strategies format)   # run only when named: ROLE=live / strategies / format (2026-10-13)
+EXTRA_ROLES=(live strategies format gateref)   # run only when named (2026-10-13/15)
 if [[ "$ROLE" == auto ]]; then
   RTAG=$HOST; QUEUE=("${ALL_ROLES[@]}")
 else
@@ -213,11 +217,11 @@ _data() {
   mark data
 }
 plan() {   # budget.env from the calibrated speed of the gated arm
-  python - "$(sps_of "$OUT/calib.log")" "$TRAIN_HOURS" "$EFF_BATCH" "$(n_train)" > "$OUT/budget.env.tmp" << 'EOF' || return 1
+  python - "$(sps_of "$OUT/calib.log")" "$TRAIN_HOURS" "$EFF_BATCH" "$(n_train)" "$PASSES" > "$OUT/budget.env.tmp" << 'EOF' || return 1
 import math, sys
 sps = float(sys.argv[1]) if sys.argv[1] else 0.0
-hours, eff, n = float(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4])
-target = n if (sps <= 0 or hours <= 0) else min(n, hours * 3600 * sps * 0.95)
+hours, eff, n, passes = float(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4]), max(1, int(sys.argv[5]))
+target = n * passes if (sps <= 0 or hours <= 0) else min(n * passes, hours * 3600 * sps * 0.95)
 st = max(50, int(target // eff))
 print(f"N_TRAIN={n}\nEFF_BATCH={eff}\nCALIB_SPS={sps:.3f}\nSTEPS={st}\nEPOCHS={max(1, math.ceil(st * eff / n))}"
       f"\nSAVE={max(10, math.ceil(st / 4))}\nPROBE={max(5, math.ceil(st / 8))}\nRESUME_EVERY={max(10, min(200, math.ceil(st / 20)))}")
@@ -231,10 +235,10 @@ train_cmd() {   # the trainer's common arguments
 }
 _calib() {
   is_done calib && return 0
-  log "calib: 12 steps of the gated arm at the production settings ($NGPU GPUs x accum $ACCUM) on $HOST"
+  log "calib: 12 steps of $CALIB_CFG at the production settings ($NGPU GPUs x accum $ACCUM, GDN $GDN) on $HOST"
   # shellcheck disable=SC2046
   CUDA_VISIBLE_DEVICES=$ALLG timeout 4h torchrun --nproc_per_node "$NGPU" --master_port 29531 $(train_cmd) \
-    --config "$CFG" --output "$OUT/calib" \
+    --config "$CALIB_CFG" --output "$OUT/calib" \
     --max-steps 12 --save-every 0 --log-every 2 --dump-samples 3 > "$OUT/calib.log" 2>&1 \
     || { fail "calib - $OUT/calib.log"; return 1; }
   grep -aq "sync OK" "$OUT/calib.log" || { fail "calib: ranks not in sync"; return 1; }
@@ -336,13 +340,14 @@ gate_arm() {    # gpu arm cfg: the trained arm, then its verdict against the two
   is_done "gate_$arm" && return 0
   have "$OUT/$arm/final.pt" "gate $arm" || return 1
   mkdir -p "$d"; ln -sfn ../gate/base "$d/base"; ln -sfn ../gate/base_video "$d/base_video"
+  ln -sfn ../gate/base_hint "$d/base_hint"
   if ! gate_results "$d/trained"; then
     log "gate $arm started on $HOST GPU $g"
     on_gpu "$g" env "${genv[@]}" ONLY=trained timeout 20h bash scripts/run_gate.sh "$cfg" "$OUT/$arm/final.pt" "$d" \
       > "$OUT/gate_$arm.log" 2>&1
     gate_results "$d/trained" || { fail "gate $arm: no results written - $OUT/gate_$arm.log"; return 1; }
   fi
-  { need_base "$g" base && need_base "$g" base_video; } || return 1
+  { need_base "$g" base && need_base "$g" base_video && need_base "$g" base_hint; } || return 1
   env "${genv[@]}" ONLY=check bash scripts/run_gate.sh "$cfg" "$OUT/$arm/final.pt" "$d" > "$OUT/gate_check_$arm.txt" 2>&1
   mark "gate_$arm"
 }
@@ -376,7 +381,7 @@ role_gated() {
 }
 role_plain() {
   local rc=0 a b c
-  train_arm plain "$CFG_PLAIN" || return 1
+  train_arm plain "$CFG_PLAIN" --no-find-unused || return 1     # nothing is unused without geometry: no DDP graph walk
   eval_arm plain "$CFG_PLAIN" || rc=1
   report
   # the lmms-eval gate: a 4-sample debug smoke first (lmms-eval swallows exceptions below DEBUG), then the two base
@@ -391,9 +396,10 @@ role_plain() {
   fi
   need_base 0 base & a=$!
   need_base 1 base_video & b=$!
-  sleep 5                                # the two base runs take their locks before the arm's check waits on them
+  need_base 3 base_hint & d=$!           # the general gate's fair reference: the base with the format line
+  sleep 5                                # the base runs take their locks before the arm's check waits on them
   gate_arm 2 plain "$CFG_PLAIN" & c=$!
-  wait_all $a $b $c || rc=1
+  wait_all $a $b $d $c || rc=1
   report
   bundle_results
   return $rc
@@ -475,6 +481,20 @@ role_format() {   # run 3 trained at 5d963f6 with "\n" after every image block; 
   vsi_sharded plain_live128_nl --config "$CFG_PLAIN" --weights "$w" --modes live-image --budget-fps 1 --budget-cap 128 \
     --image-newline || rc=1
   report
+  bundle_results
+  return $rc
+}
+role_gateref() {   # the fair general-ability reference (the base with the format line, 10-15) and every finished
+                   # arm's verdict against it - for arms whose gate ran before base_hint existed
+  local rc=0 arm cfg d genv; read -r -a genv <<< "$(gate_env)"
+  need_base 0 base_hint || return 1
+  for arm in plain gated gated_wn; do
+    d="$OUT/gate_$arm"; gate_results "$d/trained" 2> /dev/null || continue
+    cfg=$CFG_PLAIN; [[ $arm == gated ]] && cfg=$CFG; [[ $arm == gated_wn ]] && cfg=$CFG_WN
+    ln -sfn ../gate/base_hint "$d/base_hint"
+    env "${genv[@]}" ONLY=check bash scripts/run_gate.sh "$cfg" "$OUT/$arm/final.pt" "$d" > "$OUT/gate_check_$arm.txt" 2>&1 || rc=1
+    log "gate $arm against base + the format line: $(grep -a '판정' "$OUT/gate_check_$arm.txt" | tail -n 1)"
+  done
   bundle_results
   return $rc
 }

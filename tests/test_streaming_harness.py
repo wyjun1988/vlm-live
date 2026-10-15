@@ -367,3 +367,25 @@ def test_offset_facts_grid_measures_on_extra_frames_right_after_a_stride_frame()
     assert all(i % 10 == 5 for i in extra) and set(facts) <= set(extra)            # extras only on the offset grid
     assert all(ingested[ingested.index(i) - 1] == i - 5 for i in extra)             # each right after a stride frame
     assert all(s.facts_kept(i).geom is not None and s.facts_kept(i).index == i for i in facts)
+
+
+def test_geometry_source_feeds_the_encoder_another_frame_while_the_llm_keeps_the_real_ones():
+    """--geom-donor: the encoder ingests what geometry_source returns (once per encoder call); the LLM's keyframes
+    stay the real frames."""
+    m = make_model()
+    seen: list[int] = []
+    donor = torch.full((72, 96, 3), 7, dtype=torch.uint8)
+
+    def source(i, raw):
+        seen.append(i)
+        return donor
+
+    a = StreamingAudit()
+    s = StreamingSession(m, HalvingSelector(8), geom_stride=3, audit=a, geometry_source=source)
+    s.begin(fps=30)
+    frames = torch.randint(8, 255, (30, 72, 96, 3), dtype=torch.uint8)
+    for i in range(30):
+        s.push(i, frames[i])
+    assert len(seen) == a.geometry_calls and seen == sorted(seen)
+    assert set(range(0, 30, 3)) <= set(seen)
+    assert all(torch.equal(s._kept[i].raw, frames[i]) for i in s._kept)

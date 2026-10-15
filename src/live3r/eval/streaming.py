@@ -447,8 +447,12 @@ class StreamingSession:
         map_image: bool = True,
         on_geometry=None,
         facts_selector=None,
+        geometry_source=None,
     ) -> None:
-        """on_geometry(frame_index, raw_frame, geom_output, is_keyframe): called for every frame the geometry
+        """geometry_source(frame_index, raw_frame) -> frame: what the geometry encoder ingests instead of the frame
+        itself - a control that feeds it ANOTHER video's frames while the LLM keeps the real ones (eval_vsi_local.py
+        --geom-donor: does the geometry's content reach the answers of a fused model?).
+        on_geometry(frame_index, raw_frame, geom_output, is_keyframe): called for every frame the geometry
         encoder ingests (every `geom_stride`-th frame and every keyframe) - the hook for an object map that is
         built online from the geometry stream instead of from the LLM's keyframes afterwards (I-02: the maps'
         coverage must not depend on how much of the video the LLM gets to see)."""
@@ -468,6 +472,7 @@ class StreamingSession:
         # detection), so the LLM's keyframes can differ from them - e.g. every frame at 1 fps for the LLM, the
         # measurements from 32 uniform frames as before (I-45d). None: the LLM's keyframes serve both, as always.
         self.facts_selector = facts_selector
+        self.geometry_source = geometry_source
         self._facts_kept: dict[int, _Kept] = {}
         self.geom_stride = max(1, geom_stride)
         self.mode = mode
@@ -539,7 +544,8 @@ class StreamingSession:
         geom_key = fkeep if self.facts_selector is not None else keep
         run_geom = (i % self.geom_stride == 0) or geom_key
         if run_geom:
-            self._last_geom = m.geometry.ingest(self._prep_geom(raw))
+            geom_in = raw if self.geometry_source is None else self.geometry_source(i, raw)
+            self._last_geom = m.geometry.ingest(self._prep_geom(geom_in))
             self.audit.geometry_calls += 1
             self.audit.geometry_state_bytes.append(m.geometry.state_bytes())
             if self.scene_map is not None and self._last_geom.pointmap is not None:

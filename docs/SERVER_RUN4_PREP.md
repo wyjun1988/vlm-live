@@ -61,7 +61,27 @@ share scenes with VSI-Bench. `scripts/fetch_vsi590k.py` downloads (resumable), u
 a sample of records per source. The registry entry `vsi590k` reads the same annotation with that media root; the
 mix `live_vsi` = `live` + `vsi590k` (1,745,782 records).
 
-## Run
+## Run 4 (when the preparation is in)
+
+`scripts/server_run3.sh` with its new knobs (10-15): `GDN=fla` (the fused kernels for calibration and training),
+`PASSES` (passes over the mix per arm), `CALIB_CFG` (the arm the speed calibration times), the mix `live_vsi_cam`
+(`live_vsi` + the two VSTI camera sets, 1,860,923 records - `docs/MMSI_BENCH_ANALYSIS_20261015.md`), and the plain
+arm trains with `--no-find-unused`. The gate now also runs the base with the format line (`base_hint`) as the
+general gate's fair reference; `ROLE=gateref` adds that reference and re-checks the finished arms of a run.
+
+```
+cd /group-volume/wooyeol/vlm-live && git pull && mkdir -p outputs/run4
+OUT=outputs/run4 PREP=data/vgllm_live_vsi_cam MIX=live_vsi_cam GDN=fla PASSES=1 \
+  CALIB_CFG=configs/server_4b_v3_plain.yaml ROLE=plain nohup bash scripts/server_run3.sh \
+  > outputs/run4/master.$(hostname -s).log 2>&1 &
+```
+
+A new `PREP` because the mix differs (the preparation writes JSONL + index per source there). One pass of 1.86 M
+samples at the measured 2.1 samples/s would be ~250 h; the calibration step reports the speed with the fused
+kernels first (the budget follows it). `PASSES=2` doubles the steps. After it: the live evaluations
+(`ROLE=live`) and MMSI as in `docs/MMSI_BENCH_ANALYSIS_20261015.md` §4.
+
+## Run (the preparation)
 
 ```
 cd /group-volume/wooyeol/vlm-live && git pull && mkdir -p outputs/run4_prep

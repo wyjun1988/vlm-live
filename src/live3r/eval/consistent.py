@@ -152,6 +152,7 @@ def prepare_inputs(
     use_geometry: bool = True,
     visual_mode: str = "image",
     fps: float | None = None,
+    image_labels: bool = False,
 ) -> PreparedInput:
     """이미지(또는 영상에서 뽑은 키프레임) 리스트 + 질문 → 모델 입력.
 
@@ -161,6 +162,7 @@ def prepare_inputs(
         use_geometry: False 면 기하 없이 (베이스라인 확인용 — zero-init 이면 출력이 같고 더 빠르다)
         visual_mode: "image" | "video". video 는 **영상 키프레임에만** 적용된다 (이미지 문항은 그대로)
         fps: 비디오 모드 타임스탬프용 원본 fps (모르면 30)
+        image_labels: "Image k: " before every image block (multi-image questions that refer to images by order)
     """
     if visual_mode not in ("image", "video"):
         raise ValueError(f"visual_mode 는 image | video — 받은 값 {visual_mode!r}")
@@ -174,6 +176,8 @@ def prepare_inputs(
 
     vlm = [prepare_image(v, spec) for v in visuals]
     segments = [prompt.image_segment(tokens_per_step(g[0], spec)) for _, g in vlm]
+    if image_labels:
+        segments = [f"Image {k}: {seg}\n" for k, seg in enumerate(segments, 1)]
     q = _question_with_placeholders(question, len(visuals))
     try:
         ids = prompt.build_query(q, segments)

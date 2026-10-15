@@ -47,3 +47,7 @@ mixes:
   # a run-4 candidate (2026-10-13): live + VSI-590K's six non-ScanNet environments (1,745,782 records)
   live_vsi: [spar_234k, llava_hound_64k, vlm3r_scannet, vlm3r_scannetpp, vlm3r_arkit, sensenova_800k, sqa3d, scanqa,
              vsi590k]
+  # run 4 with camera supervision (2026-10-15, docs/MMSI_BENCH_ANALYSIS_20261015.md): live_vsi + the two VSTI camera
+  # sets - camera travel between frames, camera-to-object distance (1,860,923 records)
+  live_vsi_cam: [spar_234k, llava_hound_64k, vlm3r_scannet, vlm3r_scannetpp, vlm3r_arkit, sensenova_800k, sqa3d,
+                 scanqa, vsi590k, vsti_camera, vsti_camera_obj]

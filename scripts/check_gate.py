@@ -128,6 +128,14 @@ def main() -> int:
                     baseline_note[task] = f"기준선 {best} {cands[best]:.2f}"
                     print(f"{'':<22} ↳ 게이트1 기준선 = 베이스 최선 형식: {listed} → {best} {cands[best]:.2f}"
                           f" · Δ {t - cands[best]:+.2f}")
+                elif task in general and "hint" in alts:   # 게이트 2 기준선 = 형식 지시문을 받은 베이스 (2026-10-15)
+                    am = numeric_metrics(alts["hint"].get(task, {}))
+                    if main_key in am:
+                        bh = to_points(am[main_key], tm[k])[0]
+                        primary[task] = t - bh
+                        baseline_note[task] = f"기준선 hint {bh:.2f}"
+                        print(f"{'':<22} ↳ 게이트2 기준선 = 베이스 + 형식 지시문 (형식 실패를 뺀 값): {bh:.2f}"
+                              f" · Δ {t - bh:+.2f}")
 
     verdicts = []
     for task in spatial:

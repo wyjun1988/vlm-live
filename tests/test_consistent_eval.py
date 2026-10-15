@@ -100,6 +100,21 @@ def test_placeholders_interleave_when_count_matches(live):
 
 
 @needs_tok
+def test_image_labels_name_the_blocks_in_order(live):
+    """MMSI's questions refer to images by order: image_labels puts "Image k: " before every block."""
+    from live3r.data.prompt import PromptBuilder
+    from live3r.eval.consistent import prepare_inputs
+
+    pb = PromptBuilder.from_model(live)
+    imgs = [np.zeros((256, 256, 3), dtype=np.uint8)] * 2
+    t = pb.tok.decode(prepare_inputs(live, pb, "How did the camera move?", imgs, image_labels=True).input_ids[0])
+    assert "Image 1: <|vision_start|>" in t and "Image 2: <|vision_start|>" in t
+    assert t.index("Image 1:") < t.index("Image 2:") < t.index("How did the camera move?")
+    plain = pb.tok.decode(prepare_inputs(live, pb, "How did the camera move?", imgs).input_ids[0])
+    assert "Image 1:" not in plain
+
+
+@needs_tok
 def test_adapter_loop_video_goes_through_image_keyframes(live, tmp_path):
     """lmms 어댑터 생성 루프 — 영상 문항이 비디오 모드가 아니라 키프레임 이미지로 들어가는지."""
     from live3r.eval.lmms_live3r import _live3r_generate

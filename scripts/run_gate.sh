@@ -24,7 +24,7 @@ GENERAL="${GENERAL:-videomme}"
 REFERENCE="${REFERENCE-mmstar}"
 BUDGET="${BUDGET:-32}"
 BEST_FORMAT="${BEST_FORMAT:-1}"   # 1 = 게이트 1 기준선을 베이스의 최선 형식으로 (베이스를 비디오 모드로도 잰다)
-# ONLY = one step: base | base_video | trained | check. scripts/server_weekend.sh runs the three measurements
+# ONLY = one step: base | base_video | base_hint | trained | check. scripts/server_weekend.sh runs the three measurements
 # on separate GPUs at once, then 'check'. Default 'all' runs them in order as before.
 ONLY="${ONLY:-all}"
 # extra lmms-eval arguments, e.g. LMMS_EXTRA="--limit 4 --verbosity DEBUG" for a smoke: the weekend's three gate runs
@@ -42,14 +42,21 @@ python -m lmms_eval --model live3r --model_args "${COMMON},use_geometry=False" \
   --tasks "$TASKS" --batch_size 1 --log_samples --output_path "$OUT/base" ${EXTRA[@]+"${EXTRA[@]}"}
 fi
 
+if step base_hint; then
+echo "== [1b/3] 베이스 + 형식 지시문 — 일반 게이트의 공정한 기준선 (형식 실패를 뺀 베이스) =="
+python -m lmms_eval --model live3r --model_args "${COMMON},use_geometry=False,format_hint=True" \
+  --tasks "$TASKS" --batch_size 1 --log_samples --output_path "$OUT/base_hint" ${EXTRA[@]+"${EXTRA[@]}"}
+fi
+
 ALT=()
+[[ -d "$OUT/base_hint" ]] && ALT+=(--base-alt "hint=$OUT/base_hint")   # the general gate's reference when present
 if [[ "$BEST_FORMAT" == "1" ]]; then
   if step base_video; then
   echo "== [2/3] 베이스 — 비디오 모드, 공간 태스크만 (게이트 1 최선 형식 기준선) =="
   python -m lmms_eval --model live3r --model_args "${COMMON},use_geometry=False,visual_mode=video" \
     --tasks "$SPATIAL" --batch_size 1 --log_samples --output_path "$OUT/base_video" ${EXTRA[@]+"${EXTRA[@]}"}
   fi
-  ALT=(--base-alt "video=$OUT/base_video")
+  ALT+=(--base-alt "video=$OUT/base_video")
 fi
 
 if step trained; then

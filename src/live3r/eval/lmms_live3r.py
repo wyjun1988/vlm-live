@@ -69,6 +69,11 @@ class Live3R(_Qwen3_5Base):
         visual_mode: 영상 키프레임을 LLM 에 넣는 형식 — "image"(기본, 학습·라이브 경로) | "video".
             오프라인·스트리밍 공통. video 는 게이트 1 의 "베이스 최선 형식" 기준선을 잴 때 쓴다.
         streaming, selector, geom_stride, stream_mode: 스트리밍 평가 설정
+        vlm_long_side: > 0 evaluates at this long side instead of the config's (MMSI's large photos; shrink-only)
+        image_labels: "Image k: " before every image block (questions that refer to images by order)
+        camera_facts: for MMSI's camera-camera / camera-motion questions, the camera motion between the two images
+            from the geometry encoder's poses, attached as text (live3r.serve.camera_facts)
+        format_hint: the format line in front of every question (the fair general-ability reference for the base)
     """
 
     #: greedy 기본값 — 태스크가 온도를 명시하면 그걸 따른다 (모듈 docstring 참고)
@@ -88,6 +93,10 @@ class Live3R(_Qwen3_5Base):
         stream_mode: str = "deferred",
         visual_mode: str = "image",
         enable_thinking: bool = False,
+        vlm_long_side: int = 0,
+        image_labels: bool = False,
+        camera_facts: bool = False,
+        format_hint: bool = False,
         **kwargs,
     ) -> None:
         from ..config import Live3RConfig
@@ -111,6 +120,9 @@ class Live3R(_Qwen3_5Base):
         self.geom_stride = int(geom_stride)
         self.stream_mode = stream_mode
         self.visual_mode = visual_mode
+        self.image_labels = _as_bool(image_labels)
+        self.camera_facts = _as_bool(camera_facts)
+        self.format_hint = _as_bool(format_hint)
         self.stream_reports: list[dict] = []
 
         # 상위 클래스가 이미 올려둔 베이스 모델을 그대로 감싼다 (두 번 로드하지 않는다)
@@ -118,6 +130,10 @@ class Live3R(_Qwen3_5Base):
         live.freeze_base()
         if cfg.lora.enabled:
             live = apply_lora(live, cfg.lora)
+        if int(vlm_long_side) > 0:          # another input size at evaluation (shrink-only, as the training rule)
+            from dataclasses import replace
+
+            live.spec = replace(live.spec, long_side=int(vlm_long_side))
         if weights:
             _load_trained(live, weights)
         else:
@@ -173,12 +189,14 @@ def _live3r_generate(self, requests) -> list[str]:
     results = []
     for req in tqdm(requests, disable=(self.rank != 0), desc="Live3R"):
         context, gen_kwargs, doc_to_visual, doc_id, task, split = req.args
-        visuals = doc_to_visual(self.task_dict[task][split][doc_id]) or []
+        doc = self.task_dict[task][split][doc_id]
+        visuals = doc_to_visual(doc) or []
         video = next((v for v in visuals if is_video(v)), None)
         gk = self._build_generate_kwargs(gen_kwargs)
+        text = FORMAT_LINE + context if getattr(self, "format_hint", False) else context
 
         if video is not None and self.streaming:
-            ans = _stream_one(self, live, prompt, video, context, gk, doc_id)
+            ans = _stream_one(self, live, prompt, video, text, gk, doc_id)
         else:
             mode = getattr(self, "visual_mode", "image")
             fps = None
@@ -188,8 +206,11 @@ def _live3r_generate(self, requests) -> list[str]:
                 fps = video_fps(video) if mode == "video" else None
             else:
                 items, fidx = [v for v in visuals if not is_video(v)], None
-            prepared = prepare_inputs(live, prompt, context, items, fidx,
-                                      use_geometry=self.use_geometry, visual_mode=mode, fps=fps)
+                if getattr(self, "camera_facts", False) and len(items) >= 2 and is_camera_question(doc):
+                    text = camera_fact_text(live, items) + text
+            prepared = prepare_inputs(live, prompt, text, items, fidx,
+                                      use_geometry=self.use_geometry, visual_mode=mode, fps=fps,
+                                      image_labels=getattr(self, "image_labels", False))
             ans = generate(live, prepared, self.tokenizer, **gk)
 
         for term in gen_kwargs.get("until", []) or []:
@@ -197,6 +218,36 @@ def _live3r_generate(self, requests) -> list[str]:
                 ans = ans.split(term)[0]
         results.append(self._strip_thinking(ans))
     return results
+
+
+FORMAT_LINE = "Answer directly in the requested format without explanation.\n"   # as scripts/eval_vsi_local.py
+
+
+def is_camera_question(doc) -> bool:
+    """MMSI-Bench's camera-camera and camera-motion types (the `question_type` field; the dash varies)."""
+    t = str(doc.get("question_type", doc.get("category", ""))) if isinstance(doc, dict) else ""
+    t = t.replace("\u2013", "-").replace("\u2014", "-")
+    return "Cam.-Cam." in t or "Motion (Cam.)" in t
+
+
+def camera_fact_text(live, images) -> str:
+    """The camera motion between the first and the last image from the geometry encoder's poses, as a sentence;
+    "" when the model has no pose-decoding encoder."""
+    geom = getattr(live, "geometry", None)
+    if geom is None or not hasattr(geom, "ingest"):
+        return ""
+    from ..serve.camera_facts import camera_motion_from_images, camera_motion_text
+    from .consistent import load_visual
+
+    unit = getattr(geom, "patch_size", 16)
+    device = next(live.base.parameters()).device
+    try:
+        rel = camera_motion_from_images(geom, [load_visual(v) for v in images], live.cfg.geometry.image_size, unit,
+                                        device)
+    except Exception as exc:  # noqa: BLE001 - a failed reconstruction leaves the question without a fact
+        logger.warning("camera facts: the reconstruction failed (%r) - nothing attached", exc)
+        return ""
+    return camera_motion_text(rel) if rel else ""
 
 
 def _stream_one(self, live, prompt, video, context, gk, doc_id) -> str:
