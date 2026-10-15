@@ -820,7 +820,7 @@ ground truth on the 60 videos (the I-49 dumps: detections on the 32 measurement 
 coarse to time questions by. Before the protocol: detection at 1 fps for the timestamps (not 32 frames) and a
 "seen in >= 2 frames" rule, then this check again; the bar is pairwise >= 85 %.
 
-### I-52 Camera motion between two photographs as a sentence — MMSI-Bench — **tested on the base: camera types 27.5 → 42.5, +15.0 [+6.6, +22.8] (2026-10-15)**
+### I-52 Camera motion between two photographs as a sentence — MMSI-Bench — **tested on the base: camera types 27.5 → 45.5, +18.0 [+9.6, +26.3] (2026-10-16, v4)**
 MMSI-Bench's camera questions (Cam–Cam 93, Motion (Cam.) 74) ask how the camera moved between two photographs;
 open 7-8B models answer at chance and GPT-5 scores 32.4 on the motion type. A two-view reconstruction returns
 exactly that, so the geometry encoder's poses of the two images become a sentence (`live3r.serve.camera_facts`:
@@ -838,11 +838,21 @@ up). Lesson L6 holds here too: the fact carries what two photographs cannot show
 36.6: CUT3R's recurrent regime wins the consecutive-frame pairs, the two are level on wide baselines; CUT3R stays.
 The 2B base: camera types 24.0 → 34.7 (+10.8 [+2.4, +19.2]), Motion (Cam.) 20.3 → 43.2 - the fact is worth about
 as much at 2B as at 4B (28 of 167 answers with the fact still unparsable prose, so more in truth).
+**v4 (10-16): 27.5 → 45.5, +18.0 [+9.6, +26.3]** - the question read before the fact is written: its direction
+(second → first for nine questions, by sentence structure - a word-order rule sent 41 backwards and lost 10 points on
+Cam–Cam) and the turn's owner (the "perspective ... changed to obtain" phrasing counts the view's turn, the opposite
+word: +3.2). Cam–Cam 29.0 → 41.9, Motion (Cam.) 50.0; turn agreement 6 of 6. Lesson L9: a measurement is only as
+good as the reading of what is asked - direction, frame and whose motion - and the reading is cheaper to fix than
+the measurement.
 Open: the same on run 3's plain model (does SFT keep it, as it did not for the VSI facts?), the word-phrased turn
 questions (both encoders disagree with the human on 10 of 11 while the synthetic check and the coordinate-form
 questions agree with our sign), and the Cam–Obj / Cam–Reg types with object positions from the registered points.
 
 ### Lessons so far (zero-shot, 4B)
+- **L9 A measurement is only as good as the reading of the question** (I-52, 2026-10-16): the same CUT3R poses were
+  worth +15 or +18 on MMSI's camera types depending on whether the fact followed the asked direction and named the
+  turn as the question does; a wrong reading (word order for direction) cost 10 points. Read direction, frame and
+  whose motion before writing the sentence; that reading is cheaper to fix than the encoder.
 - **L8 Measurement facts are a zero-shot lever only** (2026-10-14). On the untrained model they were worth +3 to +9;
   on the model trained on 1.4 M VSI-domain samples every one of them is ≤ 0 (distances −0.2, the stack −1.0) because
   the trained model's own estimates are better than what we measure from CUT3R. What survived SFT: the frame budget

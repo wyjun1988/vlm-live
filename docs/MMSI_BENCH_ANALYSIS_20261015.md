@@ -137,6 +137,19 @@ sentence against the correct options with v2 (60 judgements): lateral 69 %, forw
 (33 % under the old threshold), turn 1 of 6 (six judgements; the synthetic check says the sign is right, so these
 are reconstruction errors on wide-baseline pairs - the VGGT question).
 
+**Facts v4 - reading the question (10-16): camera types 27.5 → 45.5, +18.0 [+9.6, +26.3].** Two readings of the
+question fixed what v2 left: the asked direction (nine questions go from the second image to the first, e.g. "how
+can the viewpoint of the first image be obtained from the second", "from taking photo 2 to taking photo 1" - the
+fact is now computed in that direction) and the turn's owner ("how can the perspective ... be changed to obtain"
+questions count a turn as the view's: the picture swings left when the camera turns right - both encoders agreed
+with each other and disagreed with those labels 4 of 4, while the dashcam, coordinate-form and synthetic checks
+agreed with the camera's sign). Motion (Cam.) 50.0, Cam–Cam 29.0 → **41.9** (38.7 with the turn always as the
+camera's: the view rule is worth +3.2); the sentence's agreement with the options: lateral 66 %, depth 88 %,
+vertical 82 %, turn 6 of 6. A wrong reading costs more than a wrong pose: v3 read the direction by word order and
+sent 41 Cam–Cam questions backwards (Cam–Cam 30.1 / 26.9, below v2) - the structure of the sentence decides
+("from X to Y", "Y obtained from X", "X changed to obtain Y"). Over all 1,000 questions this fact alone would put
+the base at ~33.8 (+18 on 167 of 1,000).
+
 **VGGT instead of CUT3R for the two-view poses (same base, same 167 questions, facts computed by the encoder alone
 and read by the 4B):** 36.5, +9.0 [+1.8, +16.8] - Motion (Cam.) 35.1 (CUT3R 50.0), Cam–Cam 37.6 (CUT3R 36.6). CUT3R
 wins the first-person motion pairs (consecutive frames, a small baseline: its video regime) by 15 points; on the
